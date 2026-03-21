@@ -3,8 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from shared.events import Event
-from shared.models import EmotionState, Language
+from shared.models import EmotionState, Language, RouteDecision, Transcript, VisionDetection
 
 
 class LifecycleStage(StrEnum):
@@ -14,21 +13,29 @@ class LifecycleStage(StrEnum):
     LISTENING = "listening"
     PROCESSING = "processing"
     RESPONDING = "responding"
+    ERROR = "error"
 
 
 @dataclass(slots=True)
 class OrchestratorState:
-    """Minimal state container for future orchestration logic."""
+    """Mutable state container for orchestrated robot interactions."""
 
     lifecycle: LifecycleStage = LifecycleStage.IDLE
     active_language: Language = Language.ENGLISH
     emotion: EmotionState = EmotionState.NEUTRAL
-    last_event: Event | None = None
+    last_event_name: str | None = None
     active_user_id: str | None = None
+    current_transcript: Transcript | None = None
+    current_response: str | None = None
+    last_detections: tuple[VisionDetection, ...] = ()
+    last_error: str | None = None
+    interaction_id: int = 0
+    last_route: RouteDecision | None = None
+    eyes_open: bool = False
+    head_direction: str = "center"
 
     @classmethod
     def initial(cls) -> "OrchestratorState":
         """Create the default starting state for the application."""
 
         return cls()
-

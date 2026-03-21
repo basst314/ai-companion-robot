@@ -71,14 +71,87 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 ---
 
+## Setup
+
+Use these steps on a fresh machine such as a Raspberry Pi or another development environment.
+
+### 1. Create a virtual environment
+
+```bash
+python3 -m venv .venv
+```
+
+### 2. Activate it
+
+macOS / Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+### 3. Install the project
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+### 4. Verify the setup
+
+```bash
+.venv/bin/pytest -q
+```
+
+Expected result right now:
+
+```text
+8 passed
+```
+
+---
+
+## Run
+
+Start the current interactive mock app with:
+
+```bash
+.venv/bin/python src/main.py
+```
+
+If the virtual environment is already activated, you can also run:
+
+```bash
+python src/main.py
+```
+
+Then type messages at the `You>` prompt.
+
+Examples:
+- `open your eyes`
+- `look at me`
+- `turn your head left`
+- `who do you see`
+- `what do you know about me`
+- `tell me a joke`
+- `please use your local brain`
+
+Exit with:
+
+```text
+exit
+```
+
+---
+
 ## Notes
 
 - The orchestrator runs locally and coordinates all components
 - Cloud services are used selectively for higher-quality reasoning
 - The system should degrade gracefully when offline
+- Current implementation status and feature checklist live in `docs/progress.md`
 
 ---
 
 ## Status
 
-Early development
+Early working prototype with mocked end-to-end orchestration
