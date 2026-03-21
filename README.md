@@ -73,7 +73,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 ## Setup
 
-Use these steps on a fresh machine such as a Raspberry Pi or another development environment.
+Use these steps on a fresh machine (for example, a Raspberry Pi) or in another development environment.
 
 ### 1. Create a virtual environment
 
@@ -81,7 +81,7 @@ Use these steps on a fresh machine such as a Raspberry Pi or another development
 python3 -m venv .venv
 ```
 
-### 2. Activate it
+### 2. Activate the virtual environment
 
 macOS / Linux:
 
