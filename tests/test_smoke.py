@@ -27,6 +27,21 @@ def test_main_returns_success_code() -> None:
     assert main() == 0
 
 
+def test_interactive_console_handles_eof_cleanly(monkeypatch) -> None:
+    """Interactive mode should exit gracefully when stdin closes."""
+
+    config = AppConfig()
+    config.runtime.interactive_console = True
+    service = build_application(config)
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
+
+    asyncio.run(service.run())
+
+    assert service.state.lifecycle is LifecycleStage.IDLE
+    assert service.state.last_error is None
+
+
 def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     """A manual input should complete one full end-to-end turn."""
 

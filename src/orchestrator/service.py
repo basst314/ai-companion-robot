@@ -74,7 +74,12 @@ class OrchestratorService:
 
         if self.config.runtime.interactive_console:
             while True:
-                raw_text = await asyncio.to_thread(input, "You> ")
+                try:
+                    raw_text = await asyncio.to_thread(input, "You> ")
+                except (EOFError, KeyboardInterrupt):
+                    logger.info("interactive console closed; stopping orchestrator loop")
+                    break
+
                 if raw_text.strip().lower() in {"quit", "exit"}:
                     break
                 await self._run_manual_input(raw_text)
