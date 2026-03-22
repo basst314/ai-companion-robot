@@ -39,6 +39,7 @@ class RuntimeConfig:
     whisper_binary_path: Path | None = None
     audio_record_command: tuple[str, ...] = ()
     speech_silence_seconds: float = 1.2
+    max_recording_seconds: float = 15.0
     wake_word_enabled: bool = False
     wake_word_phrase: str = ""
     wake_window_seconds: float = 1.5
@@ -133,6 +134,10 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.speech_silence_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
         default=runtime.speech_silence_seconds,
+    )
+    runtime.max_recording_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}MAX_RECORDING_SECONDS"),
+        default=runtime.max_recording_seconds,
     )
     runtime.wake_word_enabled = _parse_bool(
         env.get(f"{ENV_PREFIX}WAKE_WORD_ENABLED"),

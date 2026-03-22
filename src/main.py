@@ -97,6 +97,7 @@ def _build_speech_services(
             binary_path=runtime.whisper_binary_path,
             language_mode=runtime.language_mode,
             speech_silence_seconds=runtime.speech_silence_seconds,
+            max_recording_seconds=runtime.max_recording_seconds,
             utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
             utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
             ring_debug_wake_window_seconds=runtime.wake_window_seconds,

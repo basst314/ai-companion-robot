@@ -757,6 +757,7 @@ class WhisperCppSttService:
     command_extra_args: tuple[str, ...] = ()
     keep_recent_recordings: int = 5
     speech_silence_seconds: float = 1.2
+    max_recording_seconds: float = 15.0
     no_speech_timeout_seconds: float = 8.0
     quiet_abort_seconds: float = 2.5
     poll_interval_seconds: float = 0.35
@@ -942,6 +943,15 @@ class WhisperCppSttService:
 
                 if await self._capture_failed(session):
                     raise RuntimeError("audio capture failed while recording")
+
+                current_duration_seconds = audio_window.duration_seconds if audio_window is not None else elapsed_seconds
+                if self.max_recording_seconds > 0 and current_duration_seconds >= self.max_recording_seconds:
+                    logger.info(
+                        "stt stop_reason=max_recording duration=%.2f limit=%.2f",
+                        current_duration_seconds,
+                        self.max_recording_seconds,
+                    )
+                    break
 
                 if (
                     not speech_started
@@ -1147,6 +1157,10 @@ class WhisperCppSttService:
 
                 if await self._capture_failed(session):
                     raise RuntimeError("audio capture failed while recording")
+
+                current_duration_seconds = audio_window.duration_seconds if audio_window is not None else elapsed_seconds
+                if self.max_recording_seconds > 0 and current_duration_seconds >= self.max_recording_seconds:
+                    break
 
                 if (
                     not speech_started

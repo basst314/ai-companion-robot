@@ -252,6 +252,7 @@ To wire this into the app, configure:
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED=true`
 - `AI_COMPANION_WAKE_WORD_PHRASE=Hello`
 
@@ -296,9 +297,12 @@ Equivalent `.env.local` example:
 
 ```env
 AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}
+AI_COMPANION_MAX_RECORDING_SECONDS=15
 ```
 
 The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, keep a bounded wake-word ring buffer in memory, create WAV snapshots for `whisper.cpp`, and end the utterance after confirmed silence. Custom recorder commands therefore need to support writing raw PCM to standard output.
+
+`AI_COMPANION_MAX_RECORDING_SECONDS` adds a simple hard stop for each utterance so the recorder cannot run forever when background noise prevents the current silence-based end-of-utterance logic from settling.
 
 When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
 

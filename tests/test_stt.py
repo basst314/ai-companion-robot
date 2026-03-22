@@ -629,6 +629,39 @@ def test_whisper_cpp_stt_service_skips_partials_for_low_energy_quiet_audio(tmp_p
     assert service.captured_is_final == [True]
 
 
+def test_whisper_cpp_stt_service_stops_at_max_recording_length(tmp_path: Path) -> None:
+    """A hard recording cap should end streaming even when silence never arrives."""
+
+    wav_path = tmp_path / "ai-companion-recording-max.wav"
+    wav_path.write_bytes(b"fake")
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(wav_path, duration_seconds=1.0, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=2.1, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.3, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.3, trailing_silence_seconds=0.0, has_speech=True),
+        ],
+        transcript_texts=["still listening"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=999.0,
+        minimum_utterance_seconds=99.0,
+        max_recording_seconds=3.0,
+        speech_silence_seconds=1.2,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["still listening"]
+    assert transcripts[0].is_final is True
+    assert audio_capture.session is not None
+    assert audio_capture.session.stop_requested is True
+    assert service.captured_is_final == [True]
+
+
 def test_strip_wake_phrase_removes_detected_phrase_case_insensitively() -> None:
     assert strip_wake_phrase("Oreo open your eyes", "oreo") == "open your eyes"
     assert strip_wake_phrase("please Oreo look at me", "oreo") == "look at me"
@@ -805,6 +838,39 @@ def test_shared_live_mode_persists_unique_wav_per_utterance(tmp_path: Path) -> N
     assert first_path != second_path
     assert first_path.exists()
     assert second_path.exists()
+
+
+def test_shared_live_mode_stops_at_max_recording_length(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-max.wav"
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    shared_state = SharedLiveSpeechState(
+        audio_capture=audio_capture,
+        wake_buffer_seconds=2.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+    shared_state.start_utterance()
+    shared_state._handle_chunk(b"\xff\x7f" * int(16000 * 3.2))
+
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        transcript_texts=["shared cutoff"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=999.0,
+        minimum_utterance_seconds=99.0,
+        max_recording_seconds=3.0,
+        shared_live_state=shared_state,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["shared cutoff"]
+    assert transcripts[0].is_final is True
+    assert shared_state.utterance_active is False
+    assert service.captured_is_final == [True]
 
 
 def test_speech_mode_runtime_uses_stt_transcript_for_full_turn() -> None:

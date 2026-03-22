@@ -23,6 +23,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.en.bin",
                 "AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}",
                 "AI_COMPANION_SPEECH_SILENCE_SECONDS=1.8",
+                "AI_COMPANION_MAX_RECORDING_SECONDS=11.5",
                 "AI_COMPANION_WAKE_WORD_ENABLED=true",
                 "AI_COMPANION_WAKE_WORD_PHRASE=Oreo",
                 "AI_COMPANION_WAKE_WINDOW_SECONDS=2.0",
@@ -43,6 +44,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.whisper_model_path == Path("/opt/whisper/models/ggml-base.en.bin")
     assert config.runtime.audio_record_command[:4] == ("rec", "-q", "-c", "1")
     assert config.runtime.speech_silence_seconds == 1.8
+    assert config.runtime.max_recording_seconds == 11.5
     assert config.runtime.wake_word_enabled is True
     assert config.runtime.wake_word_phrase == "Oreo"
     assert config.runtime.wake_window_seconds == 2.0
