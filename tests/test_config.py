@@ -21,8 +21,14 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_STT_BACKEND=whisper_cpp",
                 "AI_COMPANION_WHISPER_BINARY_PATH=/opt/whisper/whisper-cli",
                 "AI_COMPANION_WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.en.bin",
-                "AI_COMPANION_AUDIO_RECORD_COMMAND=ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 -f s16le {output_path}",
+                "AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}",
                 "AI_COMPANION_SPEECH_SILENCE_SECONDS=1.8",
+                "AI_COMPANION_WAKE_WORD_ENABLED=true",
+                "AI_COMPANION_WAKE_WORD_PHRASE=Oreo",
+                "AI_COMPANION_WAKE_WINDOW_SECONDS=2.0",
+                "AI_COMPANION_WAKE_STRIDE_SECONDS=0.8",
+                "AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.9",
+                "AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=3",
                 "AI_COMPANION_LANGUAGE_MODE=de",
             ]
         )
@@ -35,8 +41,14 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.stt_backend == "whisper_cpp"
     assert config.runtime.whisper_binary_path == Path("/opt/whisper/whisper-cli")
     assert config.runtime.whisper_model_path == Path("/opt/whisper/models/ggml-base.en.bin")
-    assert config.runtime.audio_record_command[:4] == ("ffmpeg", "-y", "-f", "avfoundation")
+    assert config.runtime.audio_record_command[:4] == ("rec", "-q", "-c", "1")
     assert config.runtime.speech_silence_seconds == 1.8
+    assert config.runtime.wake_word_enabled is True
+    assert config.runtime.wake_word_phrase == "Oreo"
+    assert config.runtime.wake_window_seconds == 2.0
+    assert config.runtime.wake_stride_seconds == 0.8
+    assert config.runtime.utterance_finalize_timeout_seconds == 0.9
+    assert config.runtime.utterance_tail_stable_polls == 3
     assert config.runtime.language_mode == "de"
 
 

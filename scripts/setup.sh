@@ -150,7 +150,7 @@ install_system_packages() {
   if [[ "${PLATFORM}" == "macos" ]]; then
     require_command brew
     log "installing macOS system dependencies with Homebrew"
-    brew install python@3.11 cmake ffmpeg git
+    brew install python@3.11 cmake sox git
     return 0
   fi
 
@@ -221,65 +221,6 @@ choose_language_mode() {
   printf '%s' "$(prompt_with_default "Runtime language mode (auto, en, de, id)" "${default_language}")"
 }
 
-list_macos_audio_devices() {
-  require_command ffmpeg
-  ffmpeg -f avfoundation -list_devices true -i "" 2>&1 || true
-}
-
-detect_macos_audio_device_index() {
-  local device_output
-  device_output="$(list_macos_audio_devices)"
-
-  if [[ -n "${device_output}" ]]; then
-    printf '%s\n' "${device_output}" >&2
-  fi
-
-  local preferred_index
-  preferred_index="$(
-    printf '%s\n' "${device_output}" \
-      | awk '
-        /AVFoundation audio devices:/ { audio=1; next }
-        audio && /^\[/ {
-          line=$0
-          lower=tolower(line)
-          if (lower ~ /macbook .*microphone/ || lower ~ /built-in microphone/) {
-            if (match(line, /\[[0-9]+\]/)) {
-              print substr(line, RSTART + 1, RLENGTH - 2)
-              exit
-            }
-          }
-        }
-      '
-  )"
-  if [[ -n "${preferred_index}" ]]; then
-    printf '[setup] selected macOS built-in microphone device index %s\n' "${preferred_index}" >&2
-    printf '%s' "${preferred_index}"
-    return 0
-  fi
-
-  local first_index
-  first_index="$(
-    printf '%s\n' "${device_output}" \
-      | awk '
-        /AVFoundation audio devices:/ { audio=1; next }
-        audio && /^\[/ {
-          if (match($0, /\[[0-9]+\]/)) {
-            print substr($0, RSTART + 1, RLENGTH - 2)
-            exit
-          }
-        }
-      '
-  )"
-  if [[ -n "${first_index}" ]]; then
-    printf '[setup] falling back to first detected macOS audio device index %s\n' "${first_index}" >&2
-    printf '%s' "${first_index}"
-    return 0
-  fi
-
-  printf '[setup] unable to auto-detect a macOS microphone device; falling back to audio index 0\n' >&2
-  printf '%s' "0"
-}
-
 create_virtualenv() {
   local python_cmd="$1"
   if [[ -x "${REPO_DIR}/.venv/bin/python" ]] && [[ "${FORCE}" -eq 0 ]]; then
@@ -348,9 +289,7 @@ write_env_file() {
   local audio_command
 
   if [[ "${PLATFORM}" == "macos" ]]; then
-    local audio_device_index
-    audio_device_index="$(detect_macos_audio_device_index)"
-    audio_command="ffmpeg -y -fflags nobuffer -flush_packets 1 -f avfoundation -i :${audio_device_index} -ar 16000 -ac 1 -f s16le {output_path}"
+    audio_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
   fi
@@ -371,6 +310,12 @@ AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
 AI_COMPANION_SPEECH_SILENCE_SECONDS=1.2
+AI_COMPANION_WAKE_WORD_ENABLED=true
+AI_COMPANION_WAKE_WORD_PHRASE=Oreo
+AI_COMPANION_WAKE_WINDOW_SECONDS=1.5
+AI_COMPANION_WAKE_STRIDE_SECONDS=0.5
+AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.6
+AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=2
 AI_COMPANION_LANGUAGE_MODE=${selected_language_mode}
 EOF
 }
@@ -426,8 +371,8 @@ Whisper model: ${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin
 
 Next steps:
   1. Run the app with: .venv/bin/python src/main.py
-  2. Press Enter at the speech prompt to start speaking
-  3. Edit ${ENV_FILE} if you want to adjust model, language mode, silence timeout, or recorder settings
+  2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or enable the wake word and say it
+  3. Edit ${ENV_FILE} if you want to adjust model, language mode, silence timeout, wake-word settings, or recorder settings
 EOF
 }
 

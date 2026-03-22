@@ -113,6 +113,21 @@ class TerminalDebugSink(Protocol):
     def update_whisper_status(self, status: str | None) -> None:
         """Update the whisper status indicator in the sticky header."""
 
+    def update_wake_status(self, status: str, detail: str | None = None) -> None:
+        """Update the wake-word indicator in the sticky header."""
+
+    def update_ring_buffer(
+        self,
+        *,
+        capacity_seconds: float | None = None,
+        filled_seconds: float | None = None,
+        wake_window_seconds: float | None = None,
+        stride_seconds: float | None = None,
+        utterance_start_seconds: float | None = None,
+        write_head_seconds: float | None = None,
+    ) -> None:
+        """Update the shared wake/utterance ring buffer indicator."""
+
 
 @dataclass(slots=True)
 class TerminalDebugState:
@@ -133,9 +148,17 @@ class TerminalDebugState:
     partial_pending: bool = False
     stt_running: bool = False
     last_stt_duration: str | None = None
+    wake_status: str = "off"
+    wake_detail: str | None = None
     turn_started_at: datetime | None = None
     held_peak_energy: float | None = None
     held_peak_at: datetime | None = None
+    ring_capacity_seconds: float | None = None
+    ring_filled_seconds: float | None = None
+    ring_wake_window_seconds: float | None = None
+    ring_stride_seconds: float | None = None
+    ring_utterance_start_seconds: float | None = None
+    ring_write_head_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -144,7 +167,7 @@ class TerminalDebugScreen(TerminalDebugSink):
 
     stream: TextIO = field(default_factory=lambda: sys.stdout)
     state: TerminalDebugState = field(default_factory=TerminalDebugState)
-    header_height: int = 3
+    header_height: int = 4
     active: bool = False
     control_enabled: bool = False
     _last_terminal_size: os.terminal_size = field(
@@ -162,6 +185,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         self.active = True
         self._refresh_terminal_size()
         if self.control_enabled:
+            self.stream.write("\033[?1049h")
             self.stream.write("\033[2J\033[H")
             self._set_scroll_region()
             self.stream.write(f"\033[{self.header_height + 1};1H")
@@ -177,6 +201,7 @@ class TerminalDebugScreen(TerminalDebugSink):
             rows = self._refresh_terminal_size().lines
             self.stream.write("\033[r")
             self.stream.write(f"\033[{rows};1H\n")
+            self.stream.write("\033[?1049l")
             self.stream.flush()
         self.active = False
         self._last_fallback_transcript = None
@@ -280,6 +305,33 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.last_stt_duration = status
         self.render()
 
+    def update_wake_status(self, status: str, detail: str | None = None) -> None:
+        self.state.wake_status = status
+        self.state.wake_detail = detail
+        self.render()
+
+    def update_ring_buffer(
+        self,
+        *,
+        capacity_seconds: float | None = None,
+        filled_seconds: float | None = None,
+        wake_window_seconds: float | None = None,
+        stride_seconds: float | None = None,
+        utterance_start_seconds: float | None = None,
+        write_head_seconds: float | None = None,
+    ) -> None:
+        if capacity_seconds is not None:
+            self.state.ring_capacity_seconds = capacity_seconds
+        if filled_seconds is not None:
+            self.state.ring_filled_seconds = filled_seconds
+        if wake_window_seconds is not None:
+            self.state.ring_wake_window_seconds = wake_window_seconds
+        if stride_seconds is not None:
+            self.state.ring_stride_seconds = stride_seconds
+        self.state.ring_utterance_start_seconds = utterance_start_seconds
+        self.state.ring_write_head_seconds = write_head_seconds
+        self.render()
+
     def emit_log(self, styled_text: str, *, plain_text: str, end: str, flush: bool) -> None:
         """Write a scrolling log message while preserving the sticky header."""
 
@@ -339,11 +391,12 @@ class TerminalDebugScreen(TerminalDebugSink):
         rows = max(self._last_terminal_size.lines, self.header_height + 2)
         self.stream.write(f"\033[{self.header_height + 1};{rows}r")
 
-    def _render_header_rows(self, *, width: int) -> tuple[str, str, str]:
+    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str]:
         status_row = self._status_row(width)
         audio_row = self._audio_row(width)
+        ring_row = self._ring_row(width)
         transcript_row = self._transcript_row(width)
-        return (status_row, audio_row, transcript_row)
+        return (status_row, audio_row, ring_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
         current_time = datetime.now().strftime("%H:%M:%S")
@@ -386,6 +439,7 @@ class TerminalDebugScreen(TerminalDebugSink):
                 "yes" if self.state.speech_started else "no",
                 value_style=self.success_value if self.state.speech_started else self.subtle_value,
             ),
+            self._wake_badge(),
         ]
         parts.append(self._stt_badge())
         return self._pad_row("  ".join(parts), width)
@@ -398,6 +452,44 @@ class TerminalDebugScreen(TerminalDebugSink):
         available = max(0, width - len(_strip_ansi(prefix)))
         clipped = self.transcript(self._clip_transcript_tail(transcript, available))
         return self._pad_row(prefix + clipped, width)
+
+    def _ring_row(self, width: int) -> str:
+        capacity = self.state.ring_capacity_seconds
+        filled = self.state.ring_filled_seconds
+        wake_window = self.state.ring_wake_window_seconds
+        stride_seconds = self.state.ring_stride_seconds
+        utterance_start = self.state.ring_utterance_start_seconds
+        write_head = self.state.ring_write_head_seconds
+        if capacity is None or filled is None or wake_window is None or capacity <= 0:
+            return self._pad_row(
+                f"{self.label('[BUF]')} {self.subtle_value('ring buffer unavailable')}",
+                width,
+            )
+
+        timeline_width = max(12, min(32, width // 5))
+        timeline = self._build_ring_timeline(
+            width=timeline_width,
+            capacity_seconds=capacity,
+            filled_seconds=filled,
+            wake_window_seconds=wake_window,
+            utterance_start_seconds=utterance_start,
+            write_head_seconds=write_head,
+        )
+        parts = [
+            self.label("[BUF]"),
+            timeline,
+            self.badge("fill", f"{filled:0.1f}/{capacity:0.1f}s", value_style=self.value),
+            self.badge("wake", f"{min(wake_window, filled):0.1f}s", value_style=self.whisper),
+        ]
+        if stride_seconds is None:
+            parts.append(self.badge("stride", "--", value_style=self.subtle_value))
+        else:
+            parts.append(self.badge("stride", f"{stride_seconds:0.1f}s", value_style=self.value))
+        if utterance_start is None:
+            parts.append(self.badge("start", "--", value_style=self.subtle_value))
+        else:
+            parts.append(self.badge("start", f"{utterance_start:0.1f}s", value_style=self.success_value))
+        return self._pad_row("  ".join(parts), width)
 
     def _build_meter(self, *, current_noise: float, peak_energy: float, width: int) -> str:
         current_index = self._meter_index(current_noise, width)
@@ -412,6 +504,80 @@ class TerminalDebugScreen(TerminalDebugSink):
                 chunks.append(self.subtle_value("-"))
         chunks.append(self.label("]"))
         return "".join(chunks)
+
+    def _build_ring_timeline(
+        self,
+        *,
+        width: int,
+        capacity_seconds: float,
+        filled_seconds: float,
+        wake_window_seconds: float,
+        utterance_start_seconds: float | None,
+        write_head_seconds: float | None,
+    ) -> str:
+        if width <= 0 or capacity_seconds <= 0:
+            return ""
+        if write_head_seconds is None:
+            write_head_seconds = min(capacity_seconds, filled_seconds)
+        write_head_seconds = write_head_seconds % capacity_seconds
+        slot_seconds = capacity_seconds / max(1, width)
+        data_start_seconds = (write_head_seconds - min(filled_seconds, capacity_seconds)) % capacity_seconds
+        wake_start_seconds = (write_head_seconds - min(wake_window_seconds, filled_seconds, capacity_seconds)) % capacity_seconds
+        write_head_index = min(
+            width - 1,
+            max(0, int(write_head_seconds / max(slot_seconds, 1e-9))),
+        )
+        utterance_index = None
+        if utterance_start_seconds is not None:
+            utterance_index = min(
+                width - 1,
+                max(0, int((utterance_start_seconds % capacity_seconds) / max(slot_seconds, 1e-9))),
+            )
+
+        chunks = [self.label("[")]
+        for index in range(width):
+            slot_start = index * slot_seconds
+            if index == write_head_index:
+                chunks.append(self.peak_value(">"))
+            elif utterance_index is not None and index == utterance_index:
+                chunks.append(self.success_value("^"))
+            elif not self._ring_interval_contains(
+                slot_start,
+                start_seconds=data_start_seconds,
+                end_seconds=write_head_seconds,
+                capacity_seconds=capacity_seconds,
+                filled_seconds=filled_seconds,
+            ):
+                chunks.append(self.subtle_value("·"))
+            elif self._ring_interval_contains(
+                slot_start,
+                start_seconds=wake_start_seconds,
+                end_seconds=write_head_seconds,
+                capacity_seconds=capacity_seconds,
+                filled_seconds=min(wake_window_seconds, filled_seconds),
+            ):
+                chunks.append(self.whisper("="))
+            else:
+                chunks.append(self.value("-"))
+        chunks.append(self.label("]"))
+        return "".join(chunks)
+
+    def _ring_interval_contains(
+        self,
+        slot_seconds: float,
+        *,
+        start_seconds: float,
+        end_seconds: float,
+        capacity_seconds: float,
+        filled_seconds: float,
+    ) -> bool:
+        if filled_seconds <= 0.0:
+            return False
+        if filled_seconds >= capacity_seconds:
+            return True
+        if start_seconds <= end_seconds:
+            return start_seconds <= slot_seconds < end_seconds
+        return slot_seconds >= start_seconds or slot_seconds < end_seconds
 
     def _meter_index(self, value: float, width: int) -> int:
         if width <= 0:
@@ -431,6 +597,22 @@ class TerminalDebugScreen(TerminalDebugSink):
             f"{self.label('[stt')} "
             f"{status_style(status)} "
             f"{self.value(duration)}"
+            f"{self.label(']')}"
+        )
+
+    def _wake_badge(self) -> str:
+        status = self.state.wake_status
+        detail = self.state.wake_detail or "--"
+        if status == "awake":
+            status_style = self.success_value
+        elif status == "listening":
+            status_style = self.whisper
+        else:
+            status_style = self.subtle_value
+        return (
+            f"{self.label('[wake')} "
+            f"{status_style(status)} "
+            f"{self.value(detail)}"
             f"{self.label(']')}"
         )
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ai.cloud import MockCloudAiService
 from main import build_application, main
@@ -17,6 +19,7 @@ from shared.models import (
     RouteKind,
     Transcript,
 )
+from stt.service import AudioWindow, WakeDetectionResult
 from tts.service import MockTtsService
 from vision.service import MockVisionService
 
@@ -54,6 +57,43 @@ class StreamingInteractiveSttService:
             started_at=datetime.now(UTC),
             ended_at=datetime.now(UTC),
         )
+
+
+class MidSentenceWakeWordSttService:
+    """Emit a transcript containing the wake phrase mid-sentence."""
+
+    async def listen_once(self):  # type: ignore[no-untyped-def]
+        raise AssertionError("interactive speech loop should use stream_transcripts")
+
+    async def stream_transcripts(self):  # type: ignore[no-untyped-def]
+        yield Transcript(
+            text="one two three hello wow are you",
+            language=Language.ENGLISH,
+            confidence=1.0,
+            is_final=True,
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
+        )
+
+
+class FakeWakeWordService:
+    """Return a deterministic wake hit for speech-loop tests."""
+
+    def __init__(self, result: WakeDetectionResult) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def wait_for_wake_word(self) -> WakeDetectionResult:
+        self.calls += 1
+        return self.result
+
+
+class BlockingWakeWordService:
+    """Never detect a wake phrase within the test timeout."""
+
+    async def wait_for_wake_word(self) -> WakeDetectionResult:
+        await asyncio.sleep(60)
+        return WakeDetectionResult(detected=False)
 
 
 def test_main_returns_success_code() -> None:
@@ -112,12 +152,156 @@ def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, ca
     asyncio.run(service.run())
 
     captured = capsys.readouterr().out
+    assert captured.count("[CTRL]") >= 2
     assert "Listening [en]:" in captured
     assert "Final transcript [en]:" in captured
     assert "open your eyes" in captured
     assert "[UI] lifecycle=" not in captured
     assert "[ROUTE]" in captured
     assert service.state.current_response == "Opening my eyes now."
+
+
+def test_interactive_speech_console_accepts_wake_word_without_enter(monkeypatch) -> None:
+    """Interactive speech mode should allow wake-word activation while input is still pending."""
+
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.interactive_console = True
+    service = build_application(config)
+    service.stt = StreamingInteractiveSttService()
+
+    class OneShotWakeWordService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def wait_for_wake_word(self) -> WakeDetectionResult:
+            self.calls += 1
+            if self.calls == 1:
+                return WakeDetectionResult(detected=True)
+            await asyncio.sleep(60)
+            return WakeDetectionResult(detected=False)
+
+    service.wake_word = OneShotWakeWordService()
+
+    responses = iter(["exit"])
+
+    def delayed_input(_prompt: str) -> str:
+        time.sleep(0.05)
+        return next(responses, "exit")
+
+    monkeypatch.setattr("builtins.input", delayed_input)
+
+    asyncio.run(service.run())
+
+    assert service.state.current_response == "Opening my eyes now."
+    assert service.wake_word.calls >= 1
+
+
+def test_enter_started_turn_does_not_strip_mid_sentence_wake_word(monkeypatch) -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.interactive_console = True
+    service = build_application(config)
+    service.config.runtime.wake_word_enabled = True
+    service.config.runtime.wake_word_phrase = "Hello"
+    service.stt = MidSentenceWakeWordSttService()
+    service.wake_word = BlockingWakeWordService()
+
+    entries = iter(["", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(entries))
+
+    asyncio.run(service.run())
+
+    assert service.state.current_transcript is not None
+    assert service.state.current_transcript.text == "one two three hello wow are you"
+
+
+def test_speech_mode_waits_for_wake_word_before_processing() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    service = build_application(config)
+    service.config.runtime.wake_word_enabled = True
+    service.config.runtime.wake_word_phrase = "Oreo"
+    service.wake_word = BlockingWakeWordService()
+
+    try:
+        asyncio.run(asyncio.wait_for(service.run(), timeout=0.01))
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("expected wake-word gated speech loop to remain idle while waiting for wake")
+
+    assert service.state.lifecycle is LifecycleStage.IDLE
+    assert service.memory.records == []
+
+
+def test_speech_mode_strips_wake_word_before_routing_and_memory() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.manual_inputs = ("Oreo open your eyes",)
+    service = build_application(config)
+    service.config.runtime.wake_word_enabled = True
+    service.config.runtime.wake_word_phrase = "Oreo"
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+
+    asyncio.run(service.run())
+
+    assert service.state.current_transcript is not None
+    assert service.state.current_transcript.text == "open your eyes"
+    assert service.memory.records[-1].user_text == "open your eyes"
+    assert service.state.current_response == "Opening my eyes now."
+
+
+def test_speech_mode_preserves_words_after_wake_boundary() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.manual_inputs = ("Oreo look at me and tell me a joke",)
+    service = build_application(config)
+    service.config.runtime.wake_word_enabled = True
+    service.config.runtime.wake_word_phrase = "Oreo"
+    service.wake_word = FakeWakeWordService(
+        WakeDetectionResult(
+            detected=True,
+            audio_window=AudioWindow(
+                source_path=Path("/tmp/wake.wav"),
+                channels=1,
+                sample_width=2,
+                sample_rate=16000,
+                pcm_data=b"\x00\x00" * 16000,
+                duration_seconds=0.5,
+                trailing_silence_seconds=0.0,
+                has_speech=True,
+                current_energy=120.0,
+                peak_energy=200.0,
+            ),
+        )
+    )
+
+    asyncio.run(service.run())
+
+    assert service.state.current_transcript is not None
+    assert service.state.current_transcript.text == "look at me and tell me a joke"
+    assert service.memory.records[-1].user_text == "look at me and tell me a joke"
+
+
+def test_speech_mode_strips_only_first_wake_phrase_when_repeated() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.manual_inputs = ("Hello one two Hello wow are you",)
+    service = build_application(config)
+    service.config.runtime.wake_word_enabled = True
+    service.config.runtime.wake_word_phrase = "Hello"
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+
+    asyncio.run(service.run())
+
+    assert service.state.current_transcript is not None
+    assert service.state.current_transcript.text == "one two Hello wow are you"
+    assert service.memory.records[-1].user_text == "one two Hello wow are you"
 
 
 def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:

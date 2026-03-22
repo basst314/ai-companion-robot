@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import contextlib
 import logging
+import os
+import select
+import sys
+import termios
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -29,7 +35,7 @@ from shared.models import (
     RouteKind,
     Transcript,
 )
-from stt.service import SttService
+from stt.service import SttService, WakeWordService, strip_wake_phrase
 from tts.service import TtsService
 from ui.service import UiService
 from vision.service import VisionService
@@ -52,8 +58,10 @@ class OrchestratorService:
     cloud_ai: CloudAiService
     stt: SttService | None
     tts: TtsService
+    wake_word: WakeWordService | None = None
     terminal_debug: TerminalDebugSink | None = None
     event_history: list[Event] = field(default_factory=list)
+    _active_speech_trigger: str | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
         """Prepare startup state for the local runtime."""
@@ -67,6 +75,10 @@ class OrchestratorService:
         """Prepare shutdown wiring for the local runtime."""
 
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+        if self.stt is not None and hasattr(self.stt, "shutdown"):
+            await self.stt.shutdown()
+        elif self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
+            await self.wake_word.shutdown()
         if self.terminal_debug is not None:
             self.terminal_debug.close()
             configure_terminal_debug_screen(None)
@@ -109,28 +121,121 @@ class OrchestratorService:
             raise RuntimeError("speech input mode requires an STT service")
 
         if self.config.runtime.interactive_console:
-            while True:
-                try:
-                    command = await asyncio.to_thread(
-                        input,
-                        "Press Enter to start listening, type a phrase to use it directly, or type 'exit' to quit> ",
-                    )
-                except (EOFError, KeyboardInterrupt):
-                    logger.info("interactive speech console closed; stopping orchestrator loop")
-                    break
-
-                text = command.strip()
-                if text.lower() in {"quit", "exit"}:
-                    break
-                if text:
-                    await self._run_manual_input(text)
-                    continue
-                await self._run_stt_turn()
+            await self._run_interactive_speech_loop()
             return
 
         utterance_count = max(1, len(self.config.runtime.manual_inputs))
         for _ in range(utterance_count):
+            await self._await_wake_word()
             await self._run_stt_turn()
+
+    async def _run_interactive_speech_loop(self) -> None:
+        """Allow keyboard input and wake-word activation to coexist in interactive mode."""
+
+        self._show_interactive_speech_hint()
+
+        isatty = getattr(sys.stdin, "isatty", None)
+        if not isatty or not isatty():
+            await self._run_interactive_speech_loop_non_tty()
+            return
+
+        wake_task: asyncio.Task[None] | None = None
+        input_buffer = ""
+        with _stdin_cbreak_mode():
+            while True:
+                if not input_buffer and wake_task is None and self.wake_word is not None:
+                    wake_task = asyncio.create_task(self._await_wake_word())
+
+                char = await asyncio.to_thread(_read_console_char_ready, 0.1)
+                if char is not None:
+                    if wake_task is not None and not wake_task.done():
+                        wake_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await wake_task
+                        wake_task = None
+
+                    if char in {"\r", "\n"}:
+                        text = input_buffer.strip()
+                        input_buffer = ""
+                        self._clear_typed_input_preview()
+                        if text.lower() in {"quit", "exit"}:
+                            break
+                        if text:
+                            await self._run_manual_input(text)
+                        else:
+                            self._clear_wake_handoff()
+                            self._begin_manual_utterance()
+                            self._mark_manual_listening_awake()
+                            await self._run_stt_turn()
+                        self._show_interactive_speech_hint()
+                        continue
+
+                    if char in {"\x7f", "\b"}:
+                        input_buffer = input_buffer[:-1]
+                    elif char == "\x03":
+                        raise KeyboardInterrupt()
+                    elif char.isprintable():
+                        input_buffer += char
+                    self._show_typed_input_preview(input_buffer)
+                    continue
+
+                if wake_task is not None and wake_task.done():
+                    await wake_task
+                    wake_task = None
+                    await self._run_stt_turn()
+                    self._show_interactive_speech_hint()
+
+    async def _run_interactive_speech_loop_non_tty(self) -> None:
+        """Preserve test and redirected-stdin behavior without TTY polling."""
+
+        while True:
+            input_task = asyncio.create_task(asyncio.to_thread(_read_console_line_ready, 0.1))
+            tasks: set[asyncio.Task[object]] = {input_task}
+            wake_task: asyncio.Task[None] | None = None
+            if self.wake_word is not None:
+                wake_task = asyncio.create_task(self._await_wake_word())
+                tasks.add(wake_task)
+
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            if input_task in done:
+                if wake_task is not None and not wake_task.done():
+                    wake_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await wake_task
+                command = input_task.result()
+                text = command.strip() if command is not None else ""
+                if text.lower() in {"quit", "exit"}:
+                    break
+                if text:
+                    await self._run_manual_input(text)
+                else:
+                    self._clear_wake_handoff()
+                    self._begin_manual_utterance()
+                    self._mark_manual_listening_awake()
+                    await self._run_stt_turn()
+                self._show_interactive_speech_hint()
+                continue
+
+            if wake_task is not None and wake_task in done:
+                await wake_task
+                input_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await input_task
+                await self._run_stt_turn()
+                self._show_interactive_speech_hint()
+
+    async def _await_wake_word(self) -> None:
+        """Wait for the configured wake word before starting a speech turn."""
+
+        if self.wake_word is None:
+            return
+        detection = await self.wake_word.wait_for_wake_word()
+        if not detection.detected:
+            return
+        self._active_speech_trigger = "wake"
+        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
+            self.stt.begin_utterance(trigger="wake", detection=detection)
 
     async def _run_stt_turn(self) -> None:
         """Capture, transcribe, and execute one speech turn."""
@@ -140,9 +245,12 @@ class OrchestratorService:
 
         self.state.last_error = None
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
+        strip_wake_phrase_from_turn = self._active_speech_trigger == "wake"
         try:
             final_transcript: Transcript | None = None
             async for transcript in self.stt.stream_transcripts():
+                if strip_wake_phrase_from_turn:
+                    transcript = self._strip_wake_phrase_from_transcript(transcript)
                 if transcript.is_final:
                     final_transcript = transcript
                     self._show_transcript_update(transcript, is_final=True)
@@ -164,6 +272,8 @@ class OrchestratorService:
             await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
             return
+        finally:
+            self._active_speech_trigger = None
 
         transcript = final_transcript
         if not transcript.text.strip():
@@ -570,3 +680,107 @@ class OrchestratorService:
             ),
             plain_text=plain,
         )
+
+    def _strip_wake_phrase_from_transcript(self, transcript: Transcript) -> Transcript:
+        if not self.config.runtime.wake_word_enabled or not self.config.runtime.wake_word_phrase.strip():
+            return transcript
+        stripped_text = strip_wake_phrase(transcript.text, self.config.runtime.wake_word_phrase)
+        if stripped_text is None:
+            return transcript
+        return Transcript(
+            text=stripped_text,
+            language=transcript.language,
+            confidence=transcript.confidence,
+            is_final=transcript.is_final,
+            started_at=transcript.started_at,
+            ended_at=transcript.ended_at,
+        )
+
+    def _show_interactive_speech_hint(self) -> None:
+        formatter = ConsoleFormatter()
+        if self.terminal_debug is not None and self.wake_word is not None:
+            self.terminal_debug.update_wake_status(
+                "listening",
+                self.config.runtime.wake_word_phrase.strip() or "--",
+            )
+        plain = (
+            "[CTRL] Type a phrase and press Enter, press Enter on an empty line to listen now, "
+            "say the wake word, or type exit to quit."
+        )
+        formatter.emit(
+            formatter.stamp(f"{formatter.label('[CTRL]')} {plain.removeprefix('[CTRL] ')}"),
+            plain_text=formatter.stamp(plain),
+        )
+
+    def _clear_wake_handoff(self) -> None:
+        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
+            return
+        if self.stt is not None and hasattr(self.stt, "prime_wake_audio"):
+            self.stt.prime_wake_audio(None)
+
+    def _mark_manual_listening_awake(self) -> None:
+        if self.terminal_debug is None or self.wake_word is None:
+            return
+        self.terminal_debug.update_wake_status(
+            "awake",
+            self.config.runtime.wake_word_phrase.strip() or "--",
+        )
+
+    def _begin_manual_utterance(self) -> None:
+        self._active_speech_trigger = "manual"
+        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
+            self.stt.begin_utterance(trigger="manual")
+
+    def _show_typed_input_preview(self, text: str) -> None:
+        if self.terminal_debug is None:
+            return
+        preview = "Type a phrase, press Enter to listen now, or say the wake word." if not text else f"input> {text}"
+        self.terminal_debug.update_transcript(preview, language=self.state.active_language.value, is_final=False)
+
+    def _clear_typed_input_preview(self) -> None:
+        if self.terminal_debug is None:
+            return
+        self.terminal_debug.update_transcript("", language=self.state.active_language.value, is_final=False)
+
+
+def _read_console_line_ready(timeout_seconds: float) -> str | None:
+    """Return a completed stdin line when available without blocking indefinitely."""
+
+    isatty = getattr(sys.stdin, "isatty", None)
+    if not isatty or not isatty():
+        return builtins.input("")
+
+    ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+    if not ready:
+        return None
+    line = sys.stdin.readline()
+    if line == "":
+        raise EOFError()
+    return line.rstrip("\n")
+
+
+def _read_console_char_ready(timeout_seconds: float) -> str | None:
+    """Return one stdin character when available without blocking indefinitely."""
+
+    ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+    if not ready:
+        return None
+    data = os.read(sys.stdin.fileno(), 1)
+    if not data:
+        raise EOFError()
+    return data.decode(errors="ignore")
+
+
+@contextlib.contextmanager
+def _stdin_cbreak_mode():
+    """Temporarily disable canonical input and echo for interactive key handling."""
+
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    modified = termios.tcgetattr(fd)
+    modified[3] &= ~(termios.ICANON | termios.ECHO)
+    try:
+        termios.tcsetattr(fd, termios.TCSADRAIN, modified)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)

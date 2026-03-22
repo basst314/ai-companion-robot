@@ -12,7 +12,17 @@ from shared.config import AppConfig
 from shared.console import TerminalDebugSink
 from shared.events import EventName
 from shared.models import Language, Transcript
-from stt.service import AudioWindow, CommandResult, WhisperCppSttService
+from stt.service import (
+    AudioWindow,
+    CommandResult,
+    SharedLiveSpeechState,
+    WhisperSegment,
+    WhisperCppSttService,
+    WhisperCppWakeWordService,
+    _default_run_command,
+    _slice_audio_window,
+    strip_wake_phrase,
+)
 
 
 @dataclass(slots=True)
@@ -111,11 +121,55 @@ class ScriptedStreamingWhisperService(WhisperCppSttService):
 
 
 @dataclass(slots=True)
+class ScriptedWakeWordService(WhisperCppWakeWordService):
+    segment_windows: list[AudioWindow | None] = field(default_factory=list)
+    transcript_texts: list[str] = field(default_factory=list)
+    _segment_index: int = 0
+    _transcript_index: int = 0
+    _detection_window: AudioWindow | None = None
+
+    async def _capture_bounded_window(self, duration_seconds: float) -> AudioWindow | None:
+        if self._segment_index >= len(self.segment_windows):
+            window = self.segment_windows[-1] if self.segment_windows else None
+            self._publish_wake_audio(window, duration_seconds)
+            self._detection_window = self._select_detection_window(self._detection_window, window)
+            return self._detection_window
+        window = self.segment_windows[self._segment_index]
+        self._segment_index += 1
+        self._publish_wake_audio(window, duration_seconds)
+        self._detection_window = self._select_detection_window(self._detection_window, window)
+        return self._detection_window
+
+    async def _transcribe_snapshot_with_segments(  # type: ignore[override]
+        self,
+        audio_window: AudioWindow,
+        started_at,
+        *,
+        is_final: bool,
+    ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
+        text = self.transcript_texts[min(self._transcript_index, len(self.transcript_texts) - 1)]
+        self._transcript_index += 1
+        return (
+            Transcript(
+                text=text,
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=is_final,
+                started_at=started_at,
+                ended_at=None,
+            ),
+            (),
+        )
+
+
+@dataclass(slots=True)
 class RecordingTerminalDebugSink(TerminalDebugSink):
     runtime_updates: list[dict[str, object]] = field(default_factory=list)
     audio_updates: list[dict[str, object]] = field(default_factory=list)
     transcript_updates: list[dict[str, object]] = field(default_factory=list)
     whisper_updates: list[str | None] = field(default_factory=list)
+    wake_updates: list[dict[str, str | None]] = field(default_factory=list)
+    ring_updates: list[dict[str, float | None]] = field(default_factory=list)
 
     def activate(self) -> None:
         return
@@ -172,6 +226,30 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
 
     def update_whisper_status(self, status: str | None) -> None:
         self.whisper_updates.append(status)
+
+    def update_wake_status(self, status: str, detail: str | None = None) -> None:
+        self.wake_updates.append({"status": status, "detail": detail})
+
+    def update_ring_buffer(
+        self,
+        *,
+        capacity_seconds: float | None = None,
+        filled_seconds: float | None = None,
+        wake_window_seconds: float | None = None,
+        stride_seconds: float | None = None,
+        utterance_start_seconds: float | None = None,
+        write_head_seconds: float | None = None,
+    ) -> None:
+        self.ring_updates.append(
+            {
+                "capacity_seconds": capacity_seconds,
+                "filled_seconds": filled_seconds,
+                "wake_window_seconds": wake_window_seconds,
+                "stride_seconds": stride_seconds,
+                "utterance_start_seconds": utterance_start_seconds,
+                "write_head_seconds": write_head_seconds,
+            }
+        )
 
 
 def _audio_window(
@@ -233,6 +311,22 @@ def test_whisper_cpp_stt_service_parses_json_output() -> None:
     assert transcript.language is Language.GERMAN
     assert transcript.is_final is True
     assert transcript.confidence == 1.0
+
+
+def test_default_run_command_tolerates_non_utf8_output(tmp_path: Path) -> None:
+    script = tmp_path / "emit_non_utf8.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'prefix' + bytes([0xFF, 0xFE]))\n"
+        "sys.stderr.buffer.write(b'warn' + bytes([0xFF]))\n"
+    )
+
+    result = asyncio.run(_default_run_command(("python3", str(script))))
+
+    assert result.returncode == 0
+    assert "prefix" in result.stdout
+    assert "\ufffd" in result.stdout
+    assert "warn" in result.stderr
 
 
 def test_whisper_cpp_stt_service_surfaces_subprocess_failures() -> None:
@@ -533,6 +627,184 @@ def test_whisper_cpp_stt_service_skips_partials_for_low_energy_quiet_audio(tmp_p
     assert [transcript.is_final for transcript in transcripts] == [True]
     assert transcripts[0].text == ""
     assert service.captured_is_final == [True]
+
+
+def test_strip_wake_phrase_removes_detected_phrase_case_insensitively() -> None:
+    assert strip_wake_phrase("Oreo open your eyes", "oreo") == "open your eyes"
+    assert strip_wake_phrase("please Oreo look at me", "oreo") == "look at me"
+    assert strip_wake_phrase("Oreo, open your eyes", "oreo") == "open your eyes"
+    assert strip_wake_phrase("hello there", "oreo") is None
+
+
+def test_whisper_cpp_wake_word_service_uses_overlap_to_detect_boundary_phrase(tmp_path: Path) -> None:
+    wav_path = tmp_path / "wake-overlap.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedWakeWordService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        wake_phrase="Oreo",
+        wake_window_seconds=1.5,
+        wake_stride_seconds=0.5,
+        segment_windows=[
+            _audio_window(wav_path, duration_seconds=1.5, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=0.5, trailing_silence_seconds=0.0, has_speech=True),
+        ],
+        transcript_texts=["Ore", "Oreo open your eyes"],
+    )
+
+    detection = asyncio.run(service.wait_for_wake_word())
+
+    assert detection.detected is True
+    assert detection.prefilled_command_text == "open your eyes"
+    assert detection.audio_window is not None
+    assert detection.audio_window.duration_seconds >= 1.5
+
+
+def test_whisper_cpp_wake_word_service_trims_detection_window_to_wake_duration(tmp_path: Path) -> None:
+    wav_path = tmp_path / "wake-trim.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedWakeWordService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        wake_phrase="Hello",
+        wake_window_seconds=1.5,
+        wake_stride_seconds=0.5,
+    )
+
+    trimmed = service._recent_audio_window(
+        _audio_window(wav_path, duration_seconds=4.0, trailing_silence_seconds=0.0, has_speech=True),
+        1.5,
+    )
+
+    assert trimmed is not None
+    assert trimmed.duration_seconds <= 1.6
+
+
+def test_whisper_cpp_wake_word_service_emits_debug_updates(tmp_path: Path) -> None:
+    wav_path = tmp_path / "wake-debug.wav"
+    wav_path.write_bytes(b"fake")
+    terminal_debug = RecordingTerminalDebugSink()
+    service = ScriptedWakeWordService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        terminal_debug=terminal_debug,
+        wake_phrase="Oreo",
+        wake_window_seconds=1.5,
+        wake_stride_seconds=0.5,
+        segment_windows=[_audio_window(wav_path, duration_seconds=1.5, trailing_silence_seconds=0.0, has_speech=True)],
+        transcript_texts=["Oreo look at me"],
+    )
+
+    detection = asyncio.run(service.wait_for_wake_word())
+
+    assert detection.prefilled_command_text == "look at me"
+    assert terminal_debug.wake_updates[0] == {"status": "listening", "detail": "Oreo"}
+    assert terminal_debug.wake_updates[-1]["status"] == "awake"
+    assert any(update["status"] == "listening" for update in terminal_debug.wake_updates)
+    assert terminal_debug.audio_updates
+    assert any(update["current_noise"] is not None for update in terminal_debug.audio_updates)
+    assert terminal_debug.transcript_updates
+    assert terminal_debug.transcript_updates[-1] == {
+        "text": "Oreo look at me",
+        "language": "en",
+        "is_final": False,
+    }
+
+
+def test_shared_live_speech_state_keeps_idle_wake_buffer_bounded(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-wake.wav"
+    shared_state = SharedLiveSpeechState(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        wake_buffer_seconds=1.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+
+    shared_state._handle_chunk(b"\x00\x00" * int(16000 * 3.0))
+    wake_window = shared_state.current_wake_window(duration_seconds=1.0, threshold=60, source_path=wav_path)
+
+    assert wake_window is not None
+    assert 0.9 <= wake_window.duration_seconds <= 1.1
+
+
+def test_shared_live_speech_state_hands_wake_slice_into_active_utterance(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-utterance.wav"
+    shared_state = SharedLiveSpeechState(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        wake_buffer_seconds=2.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+    wake_window = _audio_window(wav_path, duration_seconds=1.5, trailing_silence_seconds=0.0, has_speech=True)
+    initial_window = _slice_audio_window(wake_window, 0.5, threshold=60)
+
+    shared_state.start_utterance(initial_window=initial_window)
+    shared_state._handle_chunk(b"\x00\x00" * int(16000 * 0.5))
+    utterance_window = shared_state.current_utterance_window(threshold=60, source_path=wav_path)
+
+    assert utterance_window is not None
+    assert 1.4 <= utterance_window.duration_seconds <= 1.6
+
+
+def test_shared_live_speech_state_uses_stream_offset_for_handoff_growth(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-offset.wav"
+    shared_state = SharedLiveSpeechState(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        wake_buffer_seconds=3.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+    first_second = b"\x00\x00" * 16000
+    second_second = b"\x01\x00" * 16000
+    half_second = b"\x02\x00" * 8000
+
+    shared_state._handle_chunk(first_second)
+    shared_state._handle_chunk(second_second)
+
+    wake_window = shared_state.current_wake_window(duration_seconds=1.5, threshold=60, source_path=wav_path)
+    assert wake_window is not None
+
+    handoff_offset = wake_window.stream_start_offset + len(wake_window.pcm_data) // 2
+    shared_state._handle_chunk(half_second)
+    shared_state.start_utterance(stream_start_offset=handoff_offset)
+
+    utterance_window = shared_state.current_utterance_window(threshold=60, source_path=wav_path)
+
+    assert utterance_window is not None
+    assert 1.2 <= utterance_window.duration_seconds <= 1.3
+
+
+def test_shared_live_mode_persists_unique_wav_per_utterance(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-session.wav"
+    service = WhisperCppSttService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        shared_live_state=SharedLiveSpeechState(
+            audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+            wake_buffer_seconds=2.0,
+            sample_rate=16000,
+            channels=1,
+            sample_width=2,
+        ),
+    )
+
+    first_path = service._persist_final_audio(
+        _audio_window(wav_path, duration_seconds=1.0, trailing_silence_seconds=0.2, has_speech=True)
+    )
+    second_path = service._persist_final_audio(
+        _audio_window(wav_path, duration_seconds=1.0, trailing_silence_seconds=0.2, has_speech=True)
+    )
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
 
 
 def test_speech_mode_runtime_uses_stt_transcript_for_full_turn() -> None:

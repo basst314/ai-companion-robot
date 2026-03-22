@@ -28,6 +28,12 @@ Current supported variables:
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
+- `AI_COMPANION_WAKE_WORD_ENABLED`
+- `AI_COMPANION_WAKE_WORD_PHRASE`
+- `AI_COMPANION_WAKE_WINDOW_SECONDS`
+- `AI_COMPANION_WAKE_STRIDE_SECONDS`
+- `AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS`
+- `AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS`
 - `AI_COMPANION_LANGUAGE_MODE`
 
 You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
@@ -42,8 +48,8 @@ Raspberry Pi:
 
 macOS:
 - package manager: `brew`
-- recorder command: `ffmpeg -y -fflags nobuffer -flush_packets 1 -f avfoundation -i :<audio_index> -ar 16000 -ac 1 -f s16le {output_path}` (`{output_path}` becomes `-` at runtime)
-- the setup script attempts to detect the built-in Mac microphone and prefer it over linked iPhone microphones
+- recorder command: `rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}` (`{output_path}` becomes `-` at runtime)
+- this uses `sox`/`rec`, which has been more reliable than `ffmpeg`/`avfoundation` for clean mic capture on some Macs
 - remember to grant microphone permissions to Terminal/iTerm
 
 ## Non-Interactive Examples
@@ -66,4 +72,4 @@ If the script cannot support your environment yet, install manually:
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
 6. Run `.venv/bin/pytest -q`.
-7. Launch `.venv/bin/python src/main.py` and press Enter to start speaking; the transcript updates live and the turn ends after a short pause.
+7. Launch `.venv/bin/python src/main.py` and then either type a phrase, press Enter on an empty line to start listening immediately, or say the configured wake word.

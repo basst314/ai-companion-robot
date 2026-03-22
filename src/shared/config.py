@@ -39,6 +39,12 @@ class RuntimeConfig:
     whisper_binary_path: Path | None = None
     audio_record_command: tuple[str, ...] = ()
     speech_silence_seconds: float = 1.2
+    wake_word_enabled: bool = False
+    wake_word_phrase: str = ""
+    wake_window_seconds: float = 1.5
+    wake_stride_seconds: float = 0.5
+    utterance_finalize_timeout_seconds: float = 0.6
+    utterance_tail_stable_polls: int = 2
     language_mode: Literal["auto", "en", "de", "id"] = "auto"
     use_mock_tts: bool = True
     use_mock_ai: bool = True
@@ -128,6 +134,29 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
         default=runtime.speech_silence_seconds,
     )
+    runtime.wake_word_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}WAKE_WORD_ENABLED"),
+        default=runtime.wake_word_enabled,
+    )
+    runtime.wake_word_phrase = env.get(f"{ENV_PREFIX}WAKE_WORD_PHRASE", runtime.wake_word_phrase).strip()
+    runtime.wake_window_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}WAKE_WINDOW_SECONDS"),
+        default=runtime.wake_window_seconds,
+    )
+    runtime.wake_stride_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}WAKE_STRIDE_SECONDS"),
+        default=runtime.wake_stride_seconds,
+    )
+    runtime.utterance_finalize_timeout_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}UTTERANCE_FINALIZE_TIMEOUT_SECONDS"),
+        default=runtime.utterance_finalize_timeout_seconds,
+    )
+    runtime.utterance_tail_stable_polls = _parse_int(
+        env.get(f"{ENV_PREFIX}UTTERANCE_TAIL_STABLE_POLLS"),
+        default=runtime.utterance_tail_stable_polls,
+    )
+    if runtime.wake_window_seconds <= runtime.wake_stride_seconds:
+        runtime.wake_window_seconds = max(runtime.wake_stride_seconds + 0.1, runtime.wake_window_seconds)
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
         default=runtime.language_mode,

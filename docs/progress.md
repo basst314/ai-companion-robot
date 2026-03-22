@@ -190,20 +190,23 @@ Current limitations:
 
 ### STT
 
-Status: first real integration available
+Status: working local speech prototype
 
 Available now:
 - typed incremental transcript model with partial/final support
 - `MockSttService` that can emit partial and final transcripts
 - orchestrator method for partial transcript handling
 - `WhisperCppSttService` for one-shot local transcription through `whisper.cpp`
-- shell-based audio capture adapter for microphone-to-WAV recording
-- speech-mode runtime that can replace manual text input with push-to-talk STT
+- shell-based audio capture adapter for live microphone PCM streaming
+- wake-word-gated speech mode with a bounded rolling buffer while idle
+- shared live-stream handoff from wake detection into the active utterance without restarting capture
+- end-of-utterance finalization that keeps the last spoken words more reliably
+- sticky terminal debug rows for mic state, ring-buffer state, wake status, and transcript preview
+- speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
 
 Current limitations:
 - no partial transcript support from the real STT path yet
-- no always-listening mode or endpoint detection yet
-- recording depends on a configured external command such as `arecord` or `ffmpeg`
+- recording still depends on a configured external command such as `rec` or `arecord`
 - microphone setup is scripted for supported platforms, but device-specific debugging may still be manual
 
 ### Setup

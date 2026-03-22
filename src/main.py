@@ -16,7 +16,15 @@ from orchestrator.state import OrchestratorState
 from shared.console import TerminalDebugScreen, configure_console_log, configure_terminal_debug_screen
 from shared.config import AppConfig, load_app_config
 from shared.models import UserIdentity, VisionDetection
-from stt.service import MockSttService, ShellAudioCaptureService, SttService, WhisperCppSttService
+from stt.service import (
+    MockSttService,
+    SharedLiveSpeechState,
+    ShellAudioCaptureService,
+    SttService,
+    WakeWordService,
+    WhisperCppSttService,
+    WhisperCppWakeWordService,
+)
 from tts.service import MockTtsService
 from ui.service import MockUiService
 from vision.service import MockVisionService
@@ -41,7 +49,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         ]
     )
     terminal_debug = TerminalDebugScreen() if app_config.runtime.interactive_console else None
-    stt = _build_stt_service(app_config, terminal_debug=terminal_debug)
+    stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
     return OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
@@ -56,12 +64,17 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         local_ai=MockLocalAiService(),
         cloud_ai=MockCloudAiService(),
         stt=stt,
+        wake_word=wake_word,
         tts=MockTtsService(),
         terminal_debug=terminal_debug,
     )
 
 
-def _build_stt_service(config: AppConfig, *, terminal_debug: TerminalDebugScreen | None = None) -> SttService:
+def _build_speech_services(
+    config: AppConfig,
+    *,
+    terminal_debug: TerminalDebugScreen | None = None,
+) -> tuple[SttService, WakeWordService | None]:
     runtime = config.runtime
     if runtime.stt_backend == "whisper_cpp":
         if runtime.whisper_model_path is None:
@@ -71,16 +84,72 @@ def _build_stt_service(config: AppConfig, *, terminal_debug: TerminalDebugScreen
             command_template=runtime.audio_record_command,
             output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
         )
-        return WhisperCppSttService(
+        shared_live_state = SharedLiveSpeechState(
+            audio_capture=audio_capture,
+            wake_buffer_seconds=max(runtime.wake_window_seconds * 2.0, runtime.wake_window_seconds + runtime.wake_stride_seconds),
+            sample_rate=audio_capture.sample_rate,
+            channels=audio_capture.channels,
+            sample_width=audio_capture.sample_width,
+        )
+        stt = WhisperCppSttService(
             audio_capture=audio_capture,
             model_path=runtime.whisper_model_path,
             binary_path=runtime.whisper_binary_path,
             language_mode=runtime.language_mode,
             speech_silence_seconds=runtime.speech_silence_seconds,
+            utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
+            utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
+            ring_debug_wake_window_seconds=runtime.wake_window_seconds,
+            ring_debug_stride_seconds=runtime.wake_stride_seconds,
             terminal_debug=terminal_debug,
+            shared_live_state=shared_live_state,
         )
+        wake_word = _build_wake_word_service(
+            config,
+            terminal_debug=terminal_debug,
+            audio_capture=audio_capture,
+            shared_live_state=shared_live_state,
+        )
+        return stt, wake_word
 
-    return MockSttService(utterances=runtime.manual_inputs)
+    return MockSttService(utterances=runtime.manual_inputs), _build_wake_word_service(
+        config,
+        terminal_debug=terminal_debug,
+    )
+
+
+def _build_wake_word_service(
+    config: AppConfig,
+    *,
+    terminal_debug: TerminalDebugScreen | None = None,
+    audio_capture: ShellAudioCaptureService | None = None,
+    shared_live_state: SharedLiveSpeechState | None = None,
+) -> WakeWordService | None:
+    runtime = config.runtime
+    if not runtime.wake_word_enabled or not runtime.wake_word_phrase.strip():
+        if terminal_debug is not None:
+            terminal_debug.update_wake_status("off", "--")
+        return None
+    if runtime.stt_backend != "whisper_cpp" or runtime.whisper_model_path is None:
+        raise RuntimeError("wake word support requires whisper_cpp STT and a configured model path")
+
+    capture_service = audio_capture or ShellAudioCaptureService(
+        command_template=runtime.audio_record_command,
+        output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
+    )
+    if terminal_debug is not None:
+        terminal_debug.update_wake_status("listening", runtime.wake_word_phrase)
+    return WhisperCppWakeWordService(
+        audio_capture=capture_service,
+        model_path=runtime.whisper_model_path,
+        binary_path=runtime.whisper_binary_path,
+        language_mode=runtime.language_mode,
+        wake_phrase=runtime.wake_word_phrase,
+        wake_window_seconds=runtime.wake_window_seconds,
+        wake_stride_seconds=runtime.wake_stride_seconds,
+        terminal_debug=terminal_debug,
+        shared_live_state=shared_live_state,
+    )
 
 
 def _configure_runtime_logging(log_path: Path) -> None:
