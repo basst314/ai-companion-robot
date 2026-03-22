@@ -9,6 +9,7 @@ from pathlib import Path
 
 from main import build_application
 from shared.config import AppConfig
+from shared.console import TerminalDebugSink
 from shared.events import EventName
 from shared.models import Language, Transcript
 from stt.service import AudioWindow, CommandResult, WhisperCppSttService
@@ -109,12 +110,77 @@ class ScriptedStreamingWhisperService(WhisperCppSttService):
         )
 
 
+@dataclass(slots=True)
+class RecordingTerminalDebugSink(TerminalDebugSink):
+    runtime_updates: list[dict[str, object]] = field(default_factory=list)
+    audio_updates: list[dict[str, object]] = field(default_factory=list)
+    transcript_updates: list[dict[str, object]] = field(default_factory=list)
+    whisper_updates: list[str | None] = field(default_factory=list)
+
+    def activate(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+    def update_runtime(
+        self,
+        *,
+        lifecycle: str,
+        emotion: str,
+        language: str | None = None,
+        route_summary: str | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        self.runtime_updates.append(
+            {
+                "lifecycle": lifecycle,
+                "emotion": emotion,
+                "language": language,
+                "route_summary": route_summary,
+                "last_error": last_error,
+            }
+        )
+
+    def update_audio(
+        self,
+        *,
+        current_noise: float | None = None,
+        peak_energy: float | None = None,
+        trailing_silence_seconds: float | None = None,
+        speech_started: bool | None = None,
+        partial_pending: bool | None = None,
+    ) -> None:
+        self.audio_updates.append(
+            {
+                "current_noise": current_noise,
+                "peak_energy": peak_energy,
+                "trailing_silence_seconds": trailing_silence_seconds,
+                "speech_started": speech_started,
+                "partial_pending": partial_pending,
+            }
+        )
+
+    def update_transcript(
+        self,
+        text: str,
+        *,
+        language: str | None = None,
+        is_final: bool = False,
+    ) -> None:
+        self.transcript_updates.append({"text": text, "language": language, "is_final": is_final})
+
+    def update_whisper_status(self, status: str | None) -> None:
+        self.whisper_updates.append(status)
+
+
 def _audio_window(
     wav_path: Path,
     *,
     duration_seconds: float,
     trailing_silence_seconds: float,
     has_speech: bool,
+    current_energy: float = 120.0,
     peak_energy: float = 200.0,
 ) -> AudioWindow:
     return AudioWindow(
@@ -126,6 +192,7 @@ def _audio_window(
         duration_seconds=duration_seconds,
         trailing_silence_seconds=trailing_silence_seconds,
         has_speech=has_speech,
+        current_energy=current_energy,
         peak_energy=peak_energy,
     )
 
@@ -404,6 +471,40 @@ def test_whisper_cpp_stt_service_returns_empty_final_transcript_when_user_never_
     assert len(transcripts) == 1
     assert transcripts[0].text == ""
     assert transcripts[0].is_final is True
+
+
+def test_whisper_cpp_stt_service_publishes_initial_silence_progress(tmp_path: Path) -> None:
+    """Terminal debug should show silence growing even before speech starts."""
+
+    wav_path = tmp_path / "ai-companion-recording-initial-silence.wav"
+    wav_path.write_bytes(b"fake")
+    terminal_debug = RecordingTerminalDebugSink()
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        terminal_debug=terminal_debug,
+        windows=[
+            _audio_window(wav_path, duration_seconds=0.2, trailing_silence_seconds=0.0, has_speech=False, peak_energy=0.0),
+            _audio_window(wav_path, duration_seconds=0.4, trailing_silence_seconds=0.0, has_speech=False, peak_energy=0.0),
+            _audio_window(wav_path, duration_seconds=0.6, trailing_silence_seconds=0.0, has_speech=False, peak_energy=0.0),
+        ],
+        transcript_texts=[""],
+        poll_interval_seconds=0.02,
+        quiet_abort_seconds=99.0,
+        no_speech_timeout_seconds=0.05,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert transcripts[-1].is_final is True
+    silence_updates = [
+        update["trailing_silence_seconds"]
+        for update in terminal_debug.audio_updates
+        if update["trailing_silence_seconds"] is not None
+    ]
+    assert silence_updates
+    assert max(float(value) for value in silence_updates) > 0.0
 
 
 def test_whisper_cpp_stt_service_skips_partials_for_low_energy_quiet_audio(tmp_path: Path) -> None:

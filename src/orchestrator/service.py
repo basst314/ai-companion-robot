@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -15,7 +14,7 @@ from memory.service import MemoryService
 from orchestrator.router import IntentRouter
 from orchestrator.state import LifecycleStage, OrchestratorState
 from shared.config import AppConfig
-from shared.console import ConsoleFormatter
+from shared.console import ConsoleFormatter, TerminalDebugSink, configure_terminal_debug_screen
 from shared.events import Event, EventName
 from shared.models import (
     ActionRequest,
@@ -53,47 +52,55 @@ class OrchestratorService:
     cloud_ai: CloudAiService
     stt: SttService | None
     tts: TtsService
+    terminal_debug: TerminalDebugSink | None = None
     event_history: list[Event] = field(default_factory=list)
 
     async def start(self) -> None:
         """Prepare startup state for the local runtime."""
 
+        if self.terminal_debug is not None:
+            configure_terminal_debug_screen(self.terminal_debug)
+            self.terminal_debug.activate()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
 
     async def stop(self) -> None:
         """Prepare shutdown wiring for the local runtime."""
 
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+        if self.terminal_debug is not None:
+            self.terminal_debug.close()
+            configure_terminal_debug_screen(None)
 
     async def run(self) -> None:
         """Run the manual or speech-driven end-to-end interaction loop."""
 
         await self.start()
-        await self.handle_event(
-            Event(
-                name=EventName.LISTENING_STARTED,
-                source=ComponentName.ORCHESTRATOR,
+        try:
+            await self.handle_event(
+                Event(
+                    name=EventName.LISTENING_STARTED,
+                    source=ComponentName.ORCHESTRATOR,
+                )
             )
-        )
 
-        if self.config.runtime.input_mode == "speech":
-            await self._run_speech_loop()
-        elif self.config.runtime.interactive_console:
-            while True:
-                try:
-                    raw_text = await asyncio.to_thread(input, "You> ")
-                except (EOFError, KeyboardInterrupt):
-                    logger.info("interactive console closed; stopping orchestrator loop")
-                    break
+            if self.config.runtime.input_mode == "speech":
+                await self._run_speech_loop()
+            elif self.config.runtime.interactive_console:
+                while True:
+                    try:
+                        raw_text = await asyncio.to_thread(input, "You> ")
+                    except (EOFError, KeyboardInterrupt):
+                        logger.info("interactive console closed; stopping orchestrator loop")
+                        break
 
-                if raw_text.strip().lower() in {"quit", "exit"}:
-                    break
-                await self._run_manual_input(raw_text)
-        else:
-            for raw_text in self.config.runtime.manual_inputs:
-                await self._run_manual_input(raw_text)
-
-        await self.stop()
+                    if raw_text.strip().lower() in {"quit", "exit"}:
+                        break
+                    await self._run_manual_input(raw_text)
+            else:
+                for raw_text in self.config.runtime.manual_inputs:
+                    await self._run_manual_input(raw_text)
+        finally:
+            await self.stop()
 
     async def _run_speech_loop(self) -> None:
         """Capture one utterance at a time through the configured STT service."""
@@ -131,16 +138,17 @@ class OrchestratorService:
         if self.stt is None:
             raise RuntimeError("speech input mode requires an STT service")
 
+        self.state.last_error = None
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
         try:
             final_transcript: Transcript | None = None
             async for transcript in self.stt.stream_transcripts():
                 if transcript.is_final:
                     final_transcript = transcript
-                    self._print_transcript_preview(transcript, is_final=True)
+                    self._show_transcript_update(transcript, is_final=True)
                     break
                 await self.handle_partial_transcript(transcript)
-                self._print_transcript_preview(transcript, is_final=False)
+                self._show_transcript_update(transcript, is_final=False)
             if final_transcript is None:
                 raise RuntimeError("STT stream completed without a final transcript")
         except Exception as exc:
@@ -174,6 +182,7 @@ class OrchestratorService:
         self.state.active_language = transcript.language
         preview_text = None if self.config.runtime.interactive_console else transcript.text
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, preview_text)
+        self._update_terminal_debug_transcript(transcript, is_final=False)
         await self.handle_event(
             Event(
                 name=EventName.TRANSCRIPT_PARTIAL,
@@ -186,9 +195,11 @@ class OrchestratorService:
         """Process a final transcript through routing, execution, and response."""
 
         self._debug_transcript(transcript, kind="final")
+        self.state.last_error = None
         self.state.interaction_id += 1
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
+        self._update_terminal_debug_transcript(transcript, is_final=True)
         await self._set_lifecycle(LifecycleStage.PROCESSING, EmotionState.THINKING, transcript.text)
         await self.handle_event(
             Event(
@@ -201,6 +212,15 @@ class OrchestratorService:
         context = await self._build_context()
         decision = await self.router.route(transcript, context)
         self.state.last_route = decision
+        self._log_route_selection(decision)
+        if self.terminal_debug is not None:
+            self.terminal_debug.update_runtime(
+                lifecycle=self.state.lifecycle.value,
+                emotion=self.state.emotion.value,
+                language=self.state.active_language.value,
+                route_summary=self._route_summary(decision.kind),
+                last_error=self.state.last_error,
+            )
         await self.handle_event(
             Event(
                 name=EventName.ROUTE_SELECTED,
@@ -271,6 +291,15 @@ class OrchestratorService:
             )
 
         self.state.current_response = response.text
+        if self.terminal_debug is not None:
+            route_summary = self._route_summary(decision.kind)
+            self.terminal_debug.update_runtime(
+                lifecycle=self.state.lifecycle.value,
+                emotion=self.state.emotion.value,
+                language=self.state.active_language.value,
+                route_summary=route_summary,
+                last_error=self.state.last_error,
+            )
         await self.handle_event(
             Event(
                 name=EventName.RESPONSE_READY,
@@ -451,6 +480,14 @@ class OrchestratorService:
         self.state.lifecycle = lifecycle
         self.state.emotion = emotion
         await self.ui.render_state(lifecycle.value, emotion.value, preview_text)
+        if self.terminal_debug is not None:
+            self.terminal_debug.update_runtime(
+                lifecycle=lifecycle.value,
+                emotion=emotion.value,
+                language=self.state.active_language.value,
+                route_summary=self._route_summary(self.state.last_route.kind) if self.state.last_route else None,
+                last_error=self.state.last_error,
+            )
 
     def _apply_state_changes(self, state_changes: dict[str, object]) -> None:
         if "eyes_open" in state_changes:
@@ -477,8 +514,12 @@ class OrchestratorService:
             plain_text=formatter.stamp(line),
         )
 
-    def _print_transcript_preview(self, transcript: Transcript, *, is_final: bool) -> None:
+    def _show_transcript_update(self, transcript: Transcript, *, is_final: bool) -> None:
         if not self.config.runtime.interactive_console:
+            return
+
+        if self.terminal_debug is not None:
+            self._update_terminal_debug_transcript(transcript, is_final=is_final)
             return
 
         formatter = ConsoleFormatter()
@@ -500,4 +541,32 @@ class OrchestratorService:
             plain_text=plain_message,
             end="",
             flush=True,
+        )
+
+    def _update_terminal_debug_transcript(self, transcript: Transcript, *, is_final: bool) -> None:
+        if self.terminal_debug is None:
+            return
+        self.terminal_debug.update_transcript(
+            transcript.text,
+            language=transcript.language.value,
+            is_final=is_final,
+        )
+
+    def _route_summary(self, route_kind: RouteKind) -> str:
+        return route_kind.value.replace("_", " ")
+
+    def _log_route_selection(self, decision: RouteDecision) -> None:
+        formatter = ConsoleFormatter()
+        rationale = f" rationale={decision.rationale}" if decision.rationale else ""
+        plain = formatter.stamp(
+            f"[ROUTE] kind={decision.kind.value} confidence={decision.confidence:.2f}{rationale}"
+        )
+        formatter.emit(
+            formatter.stamp(
+                f"{formatter.route_label('[ROUTE]')} "
+                f"{formatter.response(decision.kind.value)} "
+                f"confidence={decision.confidence:.2f}"
+                f"{formatter.label(' rationale=') + decision.rationale if decision.rationale else ''}"
+            ),
+            plain_text=plain,
         )

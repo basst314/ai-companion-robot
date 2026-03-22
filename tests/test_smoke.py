@@ -115,6 +115,8 @@ def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, ca
     assert "Listening [en]:" in captured
     assert "Final transcript [en]:" in captured
     assert "open your eyes" in captured
+    assert "[UI] lifecycle=" not in captured
+    assert "[ROUTE]" in captured
     assert service.state.current_response == "Opening my eyes now."
 
 

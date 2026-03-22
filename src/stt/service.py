@@ -18,15 +18,18 @@ from typing import Protocol
 from shared.models import Language, Transcript
 
 import logging
-from shared.console import ConsoleFormatter
+from shared.console import ConsoleFormatter, TerminalDebugSink
 
 
 logger = logging.getLogger(__name__)
 
 
-def _emit_whisper_terminal_status(message: str) -> None:
+def _emit_whisper_terminal_status(message: str, terminal_debug: TerminalDebugSink | None = None) -> None:
     """Show concise terminal-only Whisper status without polluting tests."""
 
+    if terminal_debug is not None:
+        terminal_debug.update_whisper_status(message)
+        return
     formatter = ConsoleFormatter()
     if not formatter.enabled:
         return
@@ -370,6 +373,7 @@ class AudioWindow:
     duration_seconds: float
     trailing_silence_seconds: float
     has_speech: bool
+    current_energy: float
     peak_energy: float
 
 
@@ -394,6 +398,7 @@ class WhisperCppSttService:
     silence_confirmation_polls: int = 1
     speech_energy_threshold: int = 60
     speech_start_energy_threshold: int = 120
+    terminal_debug: TerminalDebugSink | None = None
 
     async def listen_once(self) -> Transcript:
         async for transcript in self.stream_transcripts():
@@ -418,6 +423,7 @@ class WhisperCppSttService:
         try:
             while True:
                 await asyncio.sleep(self.poll_interval_seconds)
+                elapsed_seconds = (datetime.now(UTC) - started_at).total_seconds()
                 partial_task, partial_transcript = await self._collect_partial_task(partial_task, last_partial_text)
                 if partial_transcript is not None:
                     last_partial_text = partial_transcript.text
@@ -453,6 +459,15 @@ class WhisperCppSttService:
                             self._transcribe_snapshot(audio_window, started_at, is_final=False)
                         )
                         last_partial_request_at = (datetime.now(UTC) - started_at).total_seconds()
+                        self._publish_audio_status(
+                            current_noise=audio_window.current_energy,
+                            peak_energy=audio_window.peak_energy,
+                            trailing_silence_seconds=(
+                                audio_window.trailing_silence_seconds if speech_started else elapsed_seconds
+                            ),
+                            speech_started=speech_started,
+                            partial_pending=True,
+                        )
 
                     if (
                         speech_started
@@ -483,13 +498,27 @@ class WhisperCppSttService:
                         silence_poll_count,
                         partial_task is not None,
                     )
+                    self._publish_audio_status(
+                        current_noise=audio_window.current_energy,
+                        peak_energy=audio_window.peak_energy,
+                        trailing_silence_seconds=(
+                            audio_window.trailing_silence_seconds if speech_started else elapsed_seconds
+                        ),
+                        speech_started=speech_started,
+                        partial_pending=partial_task is not None,
+                    )
                 else:
                     logger.info("stt poll bytes=0 unreadable=true speech_started=%s", speech_started)
+                    self._publish_audio_status(
+                        current_noise=0.0,
+                        trailing_silence_seconds=elapsed_seconds if not speech_started else None,
+                        speech_started=speech_started,
+                        partial_pending=partial_task is not None,
+                    )
 
                 if await self._capture_failed(session):
                     raise RuntimeError("audio capture failed while recording")
 
-                elapsed_seconds = (datetime.now(UTC) - started_at).total_seconds()
                 if (
                     not speech_started
                     and audio_window is not None
@@ -518,6 +547,13 @@ class WhisperCppSttService:
             ended_at = datetime.now(UTC)
             if final_audio_window is None or not final_audio_window.pcm_data:
                 logger.info("stt final_audio empty=true")
+                self._publish_audio_status(
+                    current_noise=0.0,
+                    peak_energy=0.0,
+                    trailing_silence_seconds=0.0,
+                    speech_started=speech_started,
+                    partial_pending=False,
+                )
                 yield Transcript(
                     text="",
                     language=Language.ENGLISH,
@@ -536,6 +572,13 @@ class WhisperCppSttService:
                 final_audio_window.peak_energy,
                 final_audio_window.trailing_silence_seconds,
                 final_audio_path,
+            )
+            self._publish_audio_status(
+                current_noise=final_audio_window.current_energy,
+                peak_energy=final_audio_window.peak_energy,
+                trailing_silence_seconds=final_audio_window.trailing_silence_seconds,
+                speech_started=speech_started,
+                partial_pending=False,
             )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
             self._prune_recording_artifacts(final_audio_path)
@@ -559,6 +602,14 @@ class WhisperCppSttService:
                 live_audio_path = getattr(session, "pcm_path", None)
                 if live_audio_path is not None:
                     live_audio_path.unlink()
+            self._publish_audio_status(
+                current_noise=0.0,
+                peak_energy=0.0,
+                trailing_silence_seconds=0.0,
+                speech_started=False,
+                partial_pending=False,
+            )
+            self._publish_whisper_status(None)
 
     async def _transcribe_one_shot(self) -> Transcript:
         audio_path = await self.audio_capture.capture_wav()
@@ -610,18 +661,49 @@ class WhisperCppSttService:
         output_path = audio_path.with_suffix("")
         command = self._build_command(audio_path, output_path)
         logger.info("stt whisper_start is_final=%s path=%s", is_final, audio_path)
-        if is_final:
-            _emit_whisper_terminal_status("starting...")
-        result = await self.runner(command)
-        ended_at = datetime.now(UTC)
-        if result.returncode != 0:
-            error_text = result.stderr.strip() or result.stdout.strip() or "whisper.cpp transcription failed"
-            raise RuntimeError(error_text)
-        logger.info("stt whisper_done is_final=%s stdout_len=%s", is_final, len(result.stdout))
-        if is_final:
-            _emit_whisper_terminal_status("done")
+        whisper_started_at = datetime.now(UTC)
+        self._publish_whisper_status("running")
+        try:
+            result = await self.runner(command)
+            ended_at = datetime.now(UTC)
+            if result.returncode != 0:
+                error_text = result.stderr.strip() or result.stdout.strip() or "whisper.cpp transcription failed"
+                raise RuntimeError(error_text)
+            logger.info("stt whisper_done is_final=%s stdout_len=%s", is_final, len(result.stdout))
+            elapsed_seconds = max(0.0, (ended_at - whisper_started_at).total_seconds())
+            self._publish_whisper_status(f"{elapsed_seconds:0.2f}s")
+        except Exception:
+            self._publish_whisper_status(None)
+            raise
         transcript_json = self._load_transcript_json(output_path, result.stdout)
         return self._parse_transcript(transcript_json, started_at, ended_at, is_final=is_final)
+
+    def _publish_audio_status(
+        self,
+        *,
+        current_noise: float | None = None,
+        peak_energy: float | None = None,
+        trailing_silence_seconds: float | None = None,
+        speech_started: bool | None = None,
+        partial_pending: bool | None = None,
+    ) -> None:
+        if self.terminal_debug is None:
+            return
+        self.terminal_debug.update_audio(
+            current_noise=current_noise,
+            peak_energy=peak_energy,
+            trailing_silence_seconds=trailing_silence_seconds,
+            speech_started=speech_started,
+            partial_pending=partial_pending,
+        )
+
+    def _publish_whisper_status(self, status: str | None) -> None:
+        if self.terminal_debug is not None:
+            self.terminal_debug.update_whisper_status(status)
+            return
+        if status is None:
+            return
+        _emit_whisper_terminal_status(status)
 
     def _build_command(self, audio_path: Path, output_path: Path) -> tuple[str, ...]:
         if self.binary_path is None:
@@ -722,7 +804,7 @@ class WhisperCppSttService:
 
         frame_count = len(pcm_header.pcm_data) // bytes_per_frame
         duration_seconds = frame_count / pcm_header.sample_rate if pcm_header.sample_rate else 0.0
-        trailing_silence_seconds, peak_energy = _measure_trailing_silence_seconds(
+        trailing_silence_seconds, current_energy, peak_energy = _measure_trailing_silence_seconds(
             pcm_header.pcm_data,
             sample_width=pcm_header.sample_width,
             channels=pcm_header.channels,
@@ -739,6 +821,7 @@ class WhisperCppSttService:
             duration_seconds=duration_seconds,
             trailing_silence_seconds=trailing_silence_seconds,
             has_speech=has_speech,
+            current_energy=current_energy,
             peak_energy=peak_energy,
         )
 
@@ -872,10 +955,10 @@ def _measure_trailing_silence_seconds(
     channels: int,
     sample_rate: int,
     threshold: int,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     bytes_per_frame = sample_width * channels
     if bytes_per_frame <= 0 or sample_rate <= 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
     window_frames = max(1, int(sample_rate * 0.1))
     window_bytes = window_frames * bytes_per_frame
@@ -888,8 +971,9 @@ def _measure_trailing_silence_seconds(
         energies.append(_window_energy(window, sample_width=sample_width))
 
     if not energies:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
+    current_energy = energies[-1]
     peak_energy = max(energies)
     adaptive_threshold = max(12.0, min(float(threshold), peak_energy * 0.35))
     silence_windows = 0
@@ -899,7 +983,7 @@ def _measure_trailing_silence_seconds(
             break
         silence_windows += 1
 
-    return silence_windows * 0.1, peak_energy
+    return silence_windows * 0.1, current_energy, peak_energy
 
 
 def _window_energy(window: bytes, *, sample_width: int) -> float:

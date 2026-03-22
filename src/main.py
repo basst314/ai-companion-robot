@@ -13,7 +13,7 @@ from memory.service import InMemoryMemoryService
 from orchestrator.router import RuleBasedIntentRouter
 from orchestrator.service import OrchestratorService
 from orchestrator.state import OrchestratorState
-from shared.console import configure_console_log
+from shared.console import TerminalDebugScreen, configure_console_log, configure_terminal_debug_screen
 from shared.config import AppConfig, load_app_config
 from shared.models import UserIdentity, VisionDetection
 from stt.service import MockSttService, ShellAudioCaptureService, SttService, WhisperCppSttService
@@ -40,23 +40,28 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
             for name in app_config.mocks.visible_people
         ]
     )
-    stt = _build_stt_service(app_config)
+    terminal_debug = TerminalDebugScreen() if app_config.runtime.interactive_console else None
+    stt = _build_stt_service(app_config, terminal_debug=terminal_debug)
     return OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
         router=RuleBasedIntentRouter(),
         memory=memory,
         vision=vision,
-        ui=MockUiService(),
+        ui=MockUiService(
+            echo_state_to_console=terminal_debug is None,
+            echo_text_to_console=True,
+        ),
         hardware=MockHardwareService(),
         local_ai=MockLocalAiService(),
         cloud_ai=MockCloudAiService(),
         stt=stt,
         tts=MockTtsService(),
+        terminal_debug=terminal_debug,
     )
 
 
-def _build_stt_service(config: AppConfig) -> SttService:
+def _build_stt_service(config: AppConfig, *, terminal_debug: TerminalDebugScreen | None = None) -> SttService:
     runtime = config.runtime
     if runtime.stt_backend == "whisper_cpp":
         if runtime.whisper_model_path is None:
@@ -72,6 +77,7 @@ def _build_stt_service(config: AppConfig) -> SttService:
             binary_path=runtime.whisper_binary_path,
             language_mode=runtime.language_mode,
             speech_silence_seconds=runtime.speech_silence_seconds,
+            terminal_debug=terminal_debug,
         )
 
     return MockSttService(utterances=runtime.manual_inputs)
@@ -110,7 +116,11 @@ def main(config: AppConfig | None = None) -> int:
         log_path = _resolve_runtime_path(app_config.paths.logs_dir / "interactive-console.log")
         configure_console_log(log_path)
         _configure_runtime_logging(log_path)
-        asyncio.run(service.run())
+        try:
+            configure_terminal_debug_screen(service.terminal_debug)
+            asyncio.run(service.run())
+        finally:
+            configure_terminal_debug_screen(None)
     return 0
 
 
