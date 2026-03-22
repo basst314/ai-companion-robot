@@ -102,13 +102,20 @@ class OrchestratorService:
         if self.config.runtime.interactive_console:
             while True:
                 try:
-                    command = await asyncio.to_thread(input, "Press Enter to record, or type 'exit' to quit> ")
+                    command = await asyncio.to_thread(
+                        input,
+                        "Press Enter to record, type a phrase to use it directly, or type 'exit' to quit> ",
+                    )
                 except (EOFError, KeyboardInterrupt):
                     logger.info("interactive speech console closed; stopping orchestrator loop")
                     break
 
-                if command.strip().lower() in {"quit", "exit"}:
+                text = command.strip()
+                if text.lower() in {"quit", "exit"}:
                     break
+                if text:
+                    await self._run_manual_input(text)
+                    continue
                 await self._run_stt_turn()
             return
 
@@ -136,6 +143,12 @@ class OrchestratorService:
                 )
             )
             await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
+            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+            return
+
+        if not transcript.text.strip():
+            self.state.current_transcript = transcript
+            self.state.active_language = transcript.language
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
             return
 

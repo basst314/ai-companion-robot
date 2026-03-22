@@ -21,6 +21,17 @@ from tts.service import MockTtsService
 from vision.service import MockVisionService
 
 
+class FailingInteractiveSttService:
+    """Raise if the interactive console incorrectly falls back to STT."""
+
+    async def listen_once(self):  # type: ignore[no-untyped-def]
+        raise AssertionError("STT should not run when a typed utterance is provided")
+
+    async def stream_transcripts(self):  # type: ignore[no-untyped-def]
+        if False:
+            yield None
+
+
 def test_main_returns_success_code() -> None:
     """The entry point should construct the mock runtime successfully."""
 
@@ -40,6 +51,26 @@ def test_interactive_console_handles_eof_cleanly(monkeypatch) -> None:
 
     assert service.state.lifecycle is LifecycleStage.IDLE
     assert service.state.last_error is None
+
+
+def test_interactive_speech_console_accepts_typed_phrase(monkeypatch) -> None:
+    """Interactive speech mode should accept a typed utterance without recording audio."""
+
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.interactive_console = True
+    service = build_application(config)
+
+    entries = iter(["open your eyes", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(entries))
+    service.stt = FailingInteractiveSttService()
+
+    asyncio.run(service.run())
+
+    assert service.state.lifecycle is LifecycleStage.IDLE
+    assert service.state.eyes_open is True
+    assert service.state.current_response == "Opening my eyes now."
+    assert any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
 
 
 def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:

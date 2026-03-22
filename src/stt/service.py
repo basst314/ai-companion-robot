@@ -199,8 +199,6 @@ class WhisperCppSttService:
             raise RuntimeError(error_text)
         transcript_json = self._load_transcript_json(output_path, result.stdout)
         transcript = self._parse_transcript(transcript_json, started_at, ended_at)
-        if not transcript.text.strip():
-            raise RuntimeError("whisper.cpp returned an empty transcript")
         self._prune_recording_artifacts(audio_path)
         return transcript
 
@@ -331,6 +329,7 @@ def _extract_transcript_text(data: dict[str, object]) -> str:
                         pieces.append(segment_text.strip())
             if pieces:
                 return " ".join(piece for piece in pieces if piece).strip()
+            return ""
 
     transcription = data.get("transcription")
     if isinstance(transcription, str):
@@ -344,6 +343,7 @@ def _extract_transcript_text(data: dict[str, object]) -> str:
                     pieces.append(item_text.strip())
         if pieces:
             return " ".join(piece for piece in pieces if piece).strip()
+        return ""
 
     raise RuntimeError("whisper.cpp JSON output did not include transcript text")
 
