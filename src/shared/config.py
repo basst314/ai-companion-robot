@@ -38,7 +38,7 @@ class RuntimeConfig:
     whisper_model_path: Path | None = None
     whisper_binary_path: Path | None = None
     audio_record_command: tuple[str, ...] = ()
-    record_seconds: int = 5
+    speech_silence_seconds: float = 1.2
     language_mode: Literal["auto", "en", "de", "id"] = "auto"
     use_mock_tts: bool = True
     use_mock_ai: bool = True
@@ -124,9 +124,9 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}AUDIO_RECORD_COMMAND"),
         default=runtime.audio_record_command,
     )
-    runtime.record_seconds = _parse_int(
-        env.get(f"{ENV_PREFIX}RECORD_SECONDS"),
-        default=runtime.record_seconds,
+    runtime.speech_silence_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
+        default=runtime.speech_silence_seconds,
     )
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
@@ -194,6 +194,12 @@ def _parse_int(value: str | None, default: int) -> int:
     if value is None:
         return default
     return int(value.strip())
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    return float(value.strip())
 
 
 def _parse_csv_tuple(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:

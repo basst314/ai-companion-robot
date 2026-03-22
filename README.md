@@ -246,7 +246,8 @@ cmake --build build -j --config Release
 Example one-shot transcription experiment:
 
 ```bash
-arecord -d 5 -f S16_LE -r 16000 -c 1 /tmp/robot-test.wav
+arecord -t raw -f S16_LE -r 16000 -c 1 /tmp/robot-test.pcm
+ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/robot-test.pcm /tmp/robot-test.wav
 ./build/bin/whisper-cli -m models/ggml-base.bin -f /tmp/robot-test.wav --output-json
 ```
 
@@ -262,8 +263,8 @@ Example Linux/Raspberry Pi recording command template:
 ```python
 config.runtime.audio_record_command = (
     "arecord",
-    "-d",
-    "{duration_seconds}",
+    "-t",
+    "raw",
     "-f",
     "S16_LE",
     "-r",
@@ -280,26 +281,30 @@ Example macOS recording command template using `ffmpeg`:
 config.runtime.audio_record_command = (
     "ffmpeg",
     "-y",
+    "-fflags",
+    "nobuffer",
+    "-flush_packets",
+    "1",
     "-f",
     "avfoundation",
     "-i",
     ":<audio_index>",
-    "-t",
-    "{duration_seconds}",
     "-ar",
     "16000",
     "-ac",
     "1",
+    "-f",
+    "s16le",
     "{output_path}",
 )
 ```
 
-The `{duration_seconds}` and `{output_path}` placeholders are expected and are filled in by the runtime when recording starts.
+The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, create WAV snapshots for `whisper.cpp`, and stop when it detects that the speaker has paused. Custom recorder commands therefore need to support writing raw PCM to standard output.
 
 When `interactive_console` is enabled in speech mode, the runtime shows:
 
 ```text
-Press Enter to record, or type 'exit' to quit>
+Press Enter to start listening, or type 'exit' to quit>
 ```
 
 ### Updating / Re-running Setup

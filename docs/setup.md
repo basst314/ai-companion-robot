@@ -27,22 +27,22 @@ Current supported variables:
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
-- `AI_COMPANION_RECORD_SECONDS`
+- `AI_COMPANION_SPEECH_SILENCE_SECONDS`
 - `AI_COMPANION_LANGUAGE_MODE`
 
 You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
-The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains `{duration_seconds}` and `{output_path}` placeholders that are expanded by the runtime when a recording starts.
+The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after it detects trailing silence. Custom recorder commands therefore need to support raw PCM output to standard output.
 
 ## Platform-Specific Defaults
 
 Raspberry Pi:
 - package manager: `apt`
-- recorder command: `arecord -d {duration_seconds} -f S16_LE -r 16000 -c 1 {output_path}`
+- recorder command: `arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}` (`{output_path}` becomes `-` at runtime)
 - intended target: Raspberry Pi OS or another Debian-family Raspberry Pi image
 
 macOS:
 - package manager: `brew`
-- recorder command: `ffmpeg -y -f avfoundation -i :<audio_index> -t {duration_seconds} -ar 16000 -ac 1 {output_path}`
+- recorder command: `ffmpeg -y -fflags nobuffer -flush_packets 1 -f avfoundation -i :<audio_index> -ar 16000 -ac 1 -f s16le {output_path}` (`{output_path}` becomes `-` at runtime)
 - the setup script attempts to detect the built-in Mac microphone and prefer it over linked iPhone microphones
 - remember to grant microphone permissions to Terminal/iTerm
 
@@ -66,4 +66,4 @@ If the script cannot support your environment yet, install manually:
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
 6. Run `.venv/bin/pytest -q`.
-7. Launch `.venv/bin/python src/main.py`.
+7. Launch `.venv/bin/python src/main.py` and press Enter to start speaking; the transcript updates live and the turn ends after a short pause.

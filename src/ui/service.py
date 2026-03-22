@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from shared.console import ConsoleFormatter
+
 
 class UiService(Protocol):
     """Interface for rendering robot state and text."""
@@ -25,8 +27,20 @@ class MockUiService:
 
     async def render_state(self, lifecycle: str, emotion: str, preview_text: str | None = None) -> None:
         self.rendered_states.append((lifecycle, emotion, preview_text))
-        print(f"[UI] lifecycle={lifecycle} emotion={emotion} preview={preview_text or ''}")
+        formatter = ConsoleFormatter()
+        plain = f"[UI] lifecycle={lifecycle} emotion={emotion} preview={preview_text or ''}"
+        formatter.emit(
+            formatter.stamp(
+                f"{formatter.ui_label('[UI]')} lifecycle={lifecycle} emotion={emotion} preview={preview_text or ''}"
+            ),
+            plain_text=formatter.stamp(plain),
+        )
 
     async def show_text(self, text: str) -> None:
         self.visible_text.append(text)
-        print(f"[UI] text={text}")
+        formatter = ConsoleFormatter()
+        plain = formatter.stamp(f"[UI] text={text}")
+        formatter.emit(
+            formatter.stamp(f"{formatter.ui_label('[UI]')} text={formatter.response(text)}"),
+            plain_text=plain,
+        )

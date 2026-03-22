@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from shared.console import ConsoleFormatter
 from shared.models import SpeechOutput
 
 
@@ -27,5 +28,9 @@ class MockTtsService:
             raise RuntimeError("mock tts failure")
 
         self.spoken_texts.append(text)
-        print(f"[TTS] {text}")
+        formatter = ConsoleFormatter()
+        formatter.emit(
+            formatter.stamp(f"{formatter.tts_label('[TTS]')} {formatter.response(text)}"),
+            plain_text=formatter.stamp(f"[TTS] {text}"),
+        )
         return SpeechOutput(text=text, acknowledged=True, duration_ms=len(text) * 10)

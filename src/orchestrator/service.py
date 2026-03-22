@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -14,6 +15,7 @@ from memory.service import MemoryService
 from orchestrator.router import IntentRouter
 from orchestrator.state import LifecycleStage, OrchestratorState
 from shared.config import AppConfig
+from shared.console import ConsoleFormatter
 from shared.events import Event, EventName
 from shared.models import (
     ActionRequest,
@@ -104,7 +106,7 @@ class OrchestratorService:
                 try:
                     command = await asyncio.to_thread(
                         input,
-                        "Press Enter to record, type a phrase to use it directly, or type 'exit' to quit> ",
+                        "Press Enter to start listening, type a phrase to use it directly, or type 'exit' to quit> ",
                     )
                 except (EOFError, KeyboardInterrupt):
                     logger.info("interactive speech console closed; stopping orchestrator loop")
@@ -131,7 +133,16 @@ class OrchestratorService:
 
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
         try:
-            transcript = await self.stt.listen_once()
+            final_transcript: Transcript | None = None
+            async for transcript in self.stt.stream_transcripts():
+                if transcript.is_final:
+                    final_transcript = transcript
+                    self._print_transcript_preview(transcript, is_final=True)
+                    break
+                await self.handle_partial_transcript(transcript)
+                self._print_transcript_preview(transcript, is_final=False)
+            if final_transcript is None:
+                raise RuntimeError("STT stream completed without a final transcript")
         except Exception as exc:
             logger.exception("stt failed")
             self.state.last_error = str(exc)
@@ -146,6 +157,7 @@ class OrchestratorService:
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
             return
 
+        transcript = final_transcript
         if not transcript.text.strip():
             self.state.current_transcript = transcript
             self.state.active_language = transcript.language
@@ -160,7 +172,8 @@ class OrchestratorService:
         self._debug_transcript(transcript, kind="partial")
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
-        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, transcript.text)
+        preview_text = None if self.config.runtime.interactive_console else transcript.text
+        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, preview_text)
         await self.handle_event(
             Event(
                 name=EventName.TRANSCRIPT_PARTIAL,
@@ -448,10 +461,43 @@ class OrchestratorService:
     def _debug_transcript(self, transcript: Transcript, kind: str) -> None:
         """Print a concise transcript debug line for local development."""
 
-        print(
+        if self.config.runtime.interactive_console:
+            return
+
+        formatter = ConsoleFormatter()
+        line = (
             "[STT] "
             f"{kind} "
             f"language={transcript.language.value} "
             f"confidence={transcript.confidence:.2f} "
             f"text={transcript.text!r}"
+        )
+        formatter.emit(
+            formatter.stamp(f"{formatter.stt_label('[STT]')} {formatter.transcript(line.removeprefix('[STT] '))}"),
+            plain_text=formatter.stamp(line),
+        )
+
+    def _print_transcript_preview(self, transcript: Transcript, *, is_final: bool) -> None:
+        if not self.config.runtime.interactive_console:
+            return
+
+        formatter = ConsoleFormatter()
+        label = "Final transcript" if is_final else "Listening"
+        language = transcript.language.value
+        plain_message = formatter.stamp(f"{label} [{language}]: {transcript.text or '...'}")
+        message = formatter.stamp(
+            f"{formatter.label(f'{label} [{language}]:')} {formatter.transcript(transcript.text or '...')}"
+        )
+        if is_final:
+            formatter.emit(
+                f"\r{message}".ljust(120),
+                plain_text=plain_message,
+            )
+            return
+
+        formatter.emit(
+            f"\r{message}".ljust(120),
+            plain_text=plain_message,
+            end="",
+            flush=True,
         )

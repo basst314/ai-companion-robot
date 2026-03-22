@@ -32,6 +32,30 @@ class FailingInteractiveSttService:
             yield None
 
 
+class StreamingInteractiveSttService:
+    """Emit partial and final transcript updates for console tests."""
+
+    async def listen_once(self):  # type: ignore[no-untyped-def]
+        raise AssertionError("interactive speech loop should use stream_transcripts")
+
+    async def stream_transcripts(self):  # type: ignore[no-untyped-def]
+        yield Transcript(
+            text="open your",
+            language=Language.ENGLISH,
+            confidence=0.9,
+            is_final=False,
+            started_at=datetime.now(UTC),
+        )
+        yield Transcript(
+            text="open your eyes",
+            language=Language.ENGLISH,
+            confidence=1.0,
+            is_final=True,
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
+        )
+
+
 def test_main_returns_success_code() -> None:
     """The entry point should construct the mock runtime successfully."""
 
@@ -71,6 +95,27 @@ def test_interactive_speech_console_accepts_typed_phrase(monkeypatch) -> None:
     assert service.state.eyes_open is True
     assert service.state.current_response == "Opening my eyes now."
     assert any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
+
+
+def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, capsys) -> None:
+    """Speech mode should show growing transcript text before routing the final turn."""
+
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.interactive_console = True
+    service = build_application(config)
+
+    entries = iter(["", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(entries))
+    service.stt = StreamingInteractiveSttService()
+
+    asyncio.run(service.run())
+
+    captured = capsys.readouterr().out
+    assert "Listening [en]:" in captured
+    assert "Final transcript [en]:" in captured
+    assert "open your eyes" in captured
+    assert service.state.current_response == "Opening my eyes now."
 
 
 def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 from ai.cloud import MockCloudAiService
@@ -12,6 +13,7 @@ from memory.service import InMemoryMemoryService
 from orchestrator.router import RuleBasedIntentRouter
 from orchestrator.service import OrchestratorService
 from orchestrator.state import OrchestratorState
+from shared.console import configure_console_log
 from shared.config import AppConfig, load_app_config
 from shared.models import UserIdentity, VisionDetection
 from stt.service import MockSttService, ShellAudioCaptureService, SttService, WhisperCppSttService
@@ -62,7 +64,6 @@ def _build_stt_service(config: AppConfig) -> SttService:
 
         audio_capture = ShellAudioCaptureService(
             command_template=runtime.audio_record_command,
-            record_seconds=runtime.record_seconds,
             output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
         )
         return WhisperCppSttService(
@@ -70,9 +71,28 @@ def _build_stt_service(config: AppConfig) -> SttService:
             model_path=runtime.whisper_model_path,
             binary_path=runtime.whisper_binary_path,
             language_mode=runtime.language_mode,
+            speech_silence_seconds=runtime.speech_silence_seconds,
         )
 
     return MockSttService(utterances=runtime.manual_inputs)
+
+
+def _configure_runtime_logging(log_path: Path) -> None:
+    """Mirror runtime logs to a file for manual debugging sessions."""
+
+    root_logger = logging.getLogger()
+    if any(
+        isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path
+        for handler in root_logger.handlers
+    ):
+        return
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    root_logger.addHandler(file_handler)
+    root_logger.setLevel(logging.INFO)
 
 
 def _resolve_runtime_path(path: Path) -> Path:
@@ -87,6 +107,9 @@ def main(config: AppConfig | None = None) -> int:
     app_config = config or load_app_config()
     service = build_application(app_config)
     if app_config.runtime.auto_run:
+        log_path = _resolve_runtime_path(app_config.paths.logs_dir / "interactive-console.log")
+        configure_console_log(log_path)
+        _configure_runtime_logging(log_path)
         asyncio.run(service.run())
     return 0
 

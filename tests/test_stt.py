@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from main import build_application
 from shared.config import AppConfig
 from shared.events import EventName
-from shared.models import Language
-from stt.service import CommandResult, WhisperCppSttService
+from shared.models import Language, Transcript
+from stt.service import AudioWindow, CommandResult, WhisperCppSttService
 
 
 @dataclass(slots=True)
@@ -24,6 +25,41 @@ class FakeAudioCaptureService:
 
 
 @dataclass(slots=True)
+class FakeRecordingSession:
+    """In-memory recording session for streaming tests."""
+
+    output_path: Path
+    returncode: int | None = None
+    stop_requested: bool = False
+
+    def mark_stop_requested(self) -> None:
+        self.stop_requested = True
+
+    async def stop(self) -> None:
+        self.stop_requested = True
+        self.returncode = 0
+
+    async def wait(self) -> int:
+        self.returncode = 0 if self.returncode is None else self.returncode
+        return self.returncode
+
+
+@dataclass(slots=True)
+class FakeStreamingAudioCaptureService:
+    """Provide a stable recording session without launching a subprocess."""
+
+    output_path: Path
+    session: FakeRecordingSession | None = None
+
+    async def start_capture(self) -> FakeRecordingSession:
+        self.session = FakeRecordingSession(output_path=self.output_path)
+        return self.session
+
+    async def capture_wav(self) -> Path:
+        return self.output_path
+
+
+@dataclass(slots=True)
 class FailingSttService:
     """Raise a deterministic failure for speech-loop tests."""
 
@@ -31,8 +67,67 @@ class FailingSttService:
         raise RuntimeError("mock stt failure")
 
     async def stream_transcripts(self):  # type: ignore[no-untyped-def]
+        raise RuntimeError("mock stt failure")
         if False:
             yield None
+
+
+@dataclass(slots=True)
+class ScriptedStreamingWhisperService(WhisperCppSttService):
+    """Whisper service with deterministic audio windows and transcript text."""
+
+    windows: list[AudioWindow | None] = field(default_factory=list)
+    transcript_texts: list[str] = field(default_factory=list)
+    _window_index: int = 0
+    _transcript_index: int = 0
+    captured_is_final: list[bool] = field(default_factory=list)
+
+    def _read_audio_window(self, audio_path: Path) -> AudioWindow | None:
+        if self._window_index >= len(self.windows):
+            return self.windows[-1] if self.windows else None
+        window = self.windows[self._window_index]
+        self._window_index += 1
+        return window
+
+    async def _transcribe_snapshot(  # type: ignore[override]
+        self,
+        audio_window: AudioWindow,
+        started_at,
+        *,
+        is_final: bool,
+    ) -> Transcript:
+        text = self.transcript_texts[min(self._transcript_index, len(self.transcript_texts) - 1)]
+        self._transcript_index += 1
+        self.captured_is_final.append(is_final)
+        return Transcript(
+            text=text,
+            language=Language.ENGLISH,
+            confidence=1.0,
+            is_final=is_final,
+            started_at=started_at,
+            ended_at=None,
+        )
+
+
+def _audio_window(
+    wav_path: Path,
+    *,
+    duration_seconds: float,
+    trailing_silence_seconds: float,
+    has_speech: bool,
+    peak_energy: float = 200.0,
+) -> AudioWindow:
+    return AudioWindow(
+        source_path=wav_path,
+        channels=1,
+        sample_width=2,
+        sample_rate=16000,
+        pcm_data=b"\x00\x00" * max(1, int(16000 * duration_seconds)),
+        duration_seconds=duration_seconds,
+        trailing_silence_seconds=trailing_silence_seconds,
+        has_speech=has_speech,
+        peak_energy=peak_energy,
+    )
 
 
 def test_whisper_cpp_stt_service_parses_json_output() -> None:
@@ -218,6 +313,127 @@ def test_whisper_cpp_stt_service_keeps_last_five_recordings(tmp_path: Path) -> N
     ]
 
 
+def test_whisper_cpp_stt_service_streams_partials_then_final(tmp_path: Path) -> None:
+    """Streaming mode should emit incremental transcript updates before the final result."""
+
+    wav_path = tmp_path / "ai-companion-recording-stream.wav"
+    wav_path.write_bytes(b"fake")
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(wav_path, duration_seconds=0.6, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=1.1, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=1.8, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=2.2, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=2.6, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.0, trailing_silence_seconds=1.3, has_speech=True),
+        ],
+        transcript_texts=["hello", "hello there", "hello there friend"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=0.0,
+        speech_silence_seconds=1.2,
+        minimum_utterance_seconds=2.0,
+        silence_confirmation_polls=1,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts[:-1]] == [
+        "hello",
+        "hello there",
+    ]
+    assert transcripts[-1].text == "hello there friend"
+    assert [transcript.is_final for transcript in transcripts[:-1]] == [False, False]
+    assert transcripts[-1].is_final is True
+    assert audio_capture.session is not None
+    assert audio_capture.session.stop_requested is True
+
+
+def test_whisper_cpp_stt_service_requires_confirmed_silence_before_stopping(tmp_path: Path) -> None:
+    """A single silence-like poll should not end the recording immediately."""
+
+    wav_path = tmp_path / "ai-companion-recording-confirmed.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(wav_path, duration_seconds=1.0, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=2.1, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=2.4, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.0, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.4, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.8, trailing_silence_seconds=1.3, has_speech=True),
+            _audio_window(wav_path, duration_seconds=3.8, trailing_silence_seconds=1.3, has_speech=True),
+        ],
+        transcript_texts=["hello", "hello there", "hello there friend"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=0.0,
+        speech_silence_seconds=1.2,
+        minimum_utterance_seconds=2.0,
+        silence_confirmation_polls=3,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert transcripts[-1].is_final is True
+    assert transcripts[-1].text == "hello there friend"
+
+
+def test_whisper_cpp_stt_service_returns_empty_final_transcript_when_user_never_speaks(tmp_path: Path) -> None:
+    """The streaming adapter should stop after a guard timeout when no speech starts."""
+
+    wav_path = tmp_path / "ai-companion-recording-silent.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[None, None, None],
+        transcript_texts=[""],
+        poll_interval_seconds=0.0,
+        no_speech_timeout_seconds=0.0,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert len(transcripts) == 1
+    assert transcripts[0].text == ""
+    assert transcripts[0].is_final is True
+
+
+def test_whisper_cpp_stt_service_skips_partials_for_low_energy_quiet_audio(tmp_path: Path) -> None:
+    """Quiet input should not trigger partial Whisper calls before aborting."""
+
+    wav_path = tmp_path / "ai-companion-recording-quiet.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(wav_path, duration_seconds=0.8, trailing_silence_seconds=0.0, has_speech=False, peak_energy=20.0),
+            _audio_window(wav_path, duration_seconds=1.6, trailing_silence_seconds=0.0, has_speech=False, peak_energy=22.0),
+            _audio_window(wav_path, duration_seconds=2.6, trailing_silence_seconds=0.0, has_speech=False, peak_energy=24.0),
+            _audio_window(wav_path, duration_seconds=2.6, trailing_silence_seconds=0.0, has_speech=False, peak_energy=24.0),
+        ],
+        transcript_texts=[""],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=0.0,
+        quiet_abort_seconds=0.0,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.is_final for transcript in transcripts] == [True]
+    assert transcripts[0].text == ""
+    assert service.captured_is_final == [True]
+
+
 def test_speech_mode_runtime_uses_stt_transcript_for_full_turn() -> None:
     """Speech mode should transcribe one utterance and execute a normal turn."""
 
@@ -262,11 +478,14 @@ def test_speech_mode_silent_transcript_returns_to_idle_without_error() -> None:
         audio_capture=FakeAudioCaptureService(Path("/tmp/input.wav")),
         model_path=Path("/models/ggml-base.bin"),
         binary_path=Path("/usr/local/bin/whisper-cli"),
-        runner=lambda command: asyncio.sleep(0, result=CommandResult(
-            args=command,
-            returncode=0,
-            stdout='{"result":{"language":"en"},"transcription":[]}',
-        )),
+        runner=lambda command: asyncio.sleep(
+            0,
+            result=CommandResult(
+                args=command,
+                returncode=0,
+                stdout='{"result":{"language":"en"},"transcription":[]}',
+            ),
+        ),
     )
 
     asyncio.run(service.run())
@@ -277,3 +496,7 @@ def test_speech_mode_silent_transcript_returns_to_idle_without_error() -> None:
     assert service.state.current_transcript.text == ""
     assert not any(event.name is EventName.ERROR_OCCURRED for event in service.event_history)
     assert not any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
+
+
+async def _collect_transcripts(stream: AsyncIterator[Transcript]) -> list[Transcript]:
+    return [transcript async for transcript in stream]
