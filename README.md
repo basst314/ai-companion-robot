@@ -73,7 +73,90 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 ## Setup
 
-Use these steps on a fresh machine (for example, a Raspberry Pi) or in another development environment.
+Use the automated bootstrap on a fresh machine such as a Raspberry Pi or your local MacBook.
+
+### Quick Start
+
+```bash
+./scripts/setup.sh
+```
+
+The script:
+- detects macOS or Raspberry Pi
+- installs system dependencies with `brew` or `apt`
+- creates `.venv`
+- installs Python project dependencies
+- clones and builds `whisper.cpp`
+- downloads a default Whisper model
+- generates `.env.local` with the local STT runtime settings
+- runs the test suite
+
+After setup finishes:
+
+```bash
+.venv/bin/python src/main.py
+```
+
+The runtime will read `.env.local` automatically if it exists.
+
+### Automated Setup
+
+The bootstrap script is interactive by default and uses sensible defaults. You can also override key choices:
+
+```bash
+./scripts/setup.sh --platform macos --model base --language-mode auto
+```
+
+Supported flags:
+- `--platform <macos|rpi>`
+- `--model <tiny|base|small>`
+- `--language-mode <auto|en|de|id>`
+- `--yes`
+- `--force`
+- `--skip-system-packages`
+
+The generated `.env.local` file is user-editable and contains:
+- `AI_COMPANION_INPUT_MODE`
+- `AI_COMPANION_STT_BACKEND`
+- `AI_COMPANION_WHISPER_BINARY_PATH`
+- `AI_COMPANION_WHISPER_MODEL_PATH`
+- `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_RECORD_SECONDS`
+- `AI_COMPANION_LANGUAGE_MODE`
+
+### What The Script Installs
+
+On Raspberry Pi:
+- `python3`, `python3-venv`, `python3-pip`
+- build tools for `whisper.cpp`
+- `alsa-utils` for `arecord`
+
+On macOS:
+- `python@3.11`
+- `cmake`
+- `ffmpeg`
+- `git`
+
+Project-local artifacts:
+- `.venv/`
+- `artifacts/whisper.cpp/`
+- `.env.local`
+
+### Platform Notes
+
+Raspberry Pi:
+- the script expects a Debian-family Raspberry Pi environment
+- audio capture defaults to `arecord`
+
+macOS:
+- the script uses Homebrew for dependencies
+- audio capture uses `ffmpeg` with the `avfoundation` input device
+- the setup script tries to detect and prefer `MacBook Pro Microphone` or `Built-in Microphone` over linked iPhone microphones
+- you may need to grant microphone access to Terminal or your shell app
+
+### Manual Fallback
+
+If you prefer to install everything yourself, you can still use the manual path below.
 
 ### 1. Create a virtual environment
 
@@ -105,14 +188,14 @@ python -m pip install -e ".[dev]"
 Expected result right now:
 
 ```text
-8 passed
+19 passed
 ```
 
 ---
 
 ## Run
 
-Start the current interactive mock app with:
+Start the app with:
 
 ```bash
 .venv/bin/python src/main.py
@@ -124,7 +207,7 @@ If the virtual environment is already activated, you can also run:
 python src/main.py
 ```
 
-Then type messages at the `You>` prompt.
+If `.env.local` is not present, the app falls back to the default manual text-mode prompt and you can type messages at `You>`.
 
 Examples:
 - `open your eyes`
@@ -141,6 +224,99 @@ Exit with:
 exit
 ```
 
+### Speech Input Prototype
+
+The bootstrap script configures the first real STT milestone automatically: local `whisper.cpp` in push-to-talk mode.
+
+You need:
+- a built `whisper.cpp` binary such as `whisper-cli`
+- a Whisper model file in ggml format
+- a local recording command that writes a 16 kHz mono WAV file
+
+Example `whisper.cpp` setup:
+
+```bash
+git clone https://github.com/ggml-org/whisper.cpp.git
+cd whisper.cpp
+cmake -B build
+cmake --build build -j --config Release
+./models/download-ggml-model.sh base
+```
+
+Example one-shot transcription experiment:
+
+```bash
+arecord -d 5 -f S16_LE -r 16000 -c 1 /tmp/robot-test.wav
+./build/bin/whisper-cli -m models/ggml-base.bin -f /tmp/robot-test.wav --output-json
+```
+
+To wire this into the app, configure:
+- `runtime.input_mode = "speech"`
+- `runtime.stt_backend = "whisper_cpp"`
+- `runtime.whisper_binary_path`
+- `runtime.whisper_model_path`
+- `runtime.audio_record_command`
+
+Example Linux/Raspberry Pi recording command template:
+
+```python
+config.runtime.audio_record_command = (
+    "arecord",
+    "-d",
+    "{duration_seconds}",
+    "-f",
+    "S16_LE",
+    "-r",
+    "16000",
+    "-c",
+    "1",
+    "{output_path}",
+)
+```
+
+Example macOS recording command template using `ffmpeg`:
+
+```python
+config.runtime.audio_record_command = (
+    "ffmpeg",
+    "-y",
+    "-f",
+    "avfoundation",
+    "-i",
+    ":<audio_index>",
+    "-t",
+    "{duration_seconds}",
+    "-ar",
+    "16000",
+    "-ac",
+    "1",
+    "{output_path}",
+)
+```
+
+The `{duration_seconds}` and `{output_path}` placeholders are expected and are filled in by the runtime when recording starts.
+
+When `interactive_console` is enabled in speech mode, the runtime shows:
+
+```text
+Press Enter to record, or type 'exit' to quit>
+```
+
+### Updating / Re-running Setup
+
+Re-run the bootstrap script whenever you want to refresh the environment:
+
+```bash
+./scripts/setup.sh
+```
+
+Helpful variants:
+- `./scripts/setup.sh --yes` to accept defaults without prompts
+- `./scripts/setup.sh --force` to rebuild `whisper.cpp` and rewrite `.env.local`
+- `./scripts/setup.sh --skip-system-packages` if your machine already has the required OS-level tools
+
+For more detailed setup notes and troubleshooting, see `docs/setup.md`.
+
 ---
 
 ## Notes
@@ -154,4 +330,4 @@ exit
 
 ## Status
 
-Early working prototype with mocked end-to-end orchestration
+Early working prototype with real one-shot STT integration available for experimentation

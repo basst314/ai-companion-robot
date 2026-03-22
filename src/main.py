@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from ai.cloud import MockCloudAiService
 from ai.local import MockLocalAiService
@@ -11,8 +12,9 @@ from memory.service import InMemoryMemoryService
 from orchestrator.router import RuleBasedIntentRouter
 from orchestrator.service import OrchestratorService
 from orchestrator.state import OrchestratorState
-from shared.config import AppConfig
+from shared.config import AppConfig, load_app_config
 from shared.models import UserIdentity, VisionDetection
+from stt.service import MockSttService, ShellAudioCaptureService, SttService, WhisperCppSttService
 from tts.service import MockTtsService
 from ui.service import MockUiService
 from vision.service import MockVisionService
@@ -21,7 +23,7 @@ from vision.service import MockVisionService
 def build_application(config: AppConfig | None = None) -> OrchestratorService:
     """Assemble the default mock runtime used during early development."""
 
-    app_config = config or AppConfig()
+    app_config = config or load_app_config()
     memory = InMemoryMemoryService(
         active_user=UserIdentity(
             user_id=app_config.mocks.active_user_id,
@@ -36,6 +38,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
             for name in app_config.mocks.visible_people
         ]
     )
+    stt = _build_stt_service(app_config)
     return OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
@@ -46,14 +49,42 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         hardware=MockHardwareService(),
         local_ai=MockLocalAiService(),
         cloud_ai=MockCloudAiService(),
+        stt=stt,
         tts=MockTtsService(),
     )
+
+
+def _build_stt_service(config: AppConfig) -> SttService:
+    runtime = config.runtime
+    if runtime.stt_backend == "whisper_cpp":
+        if runtime.whisper_model_path is None:
+            raise RuntimeError("runtime.whisper_model_path must be configured for whisper.cpp STT")
+
+        audio_capture = ShellAudioCaptureService(
+            command_template=runtime.audio_record_command,
+            record_seconds=runtime.record_seconds,
+            output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
+        )
+        return WhisperCppSttService(
+            audio_capture=audio_capture,
+            model_path=runtime.whisper_model_path,
+            binary_path=runtime.whisper_binary_path,
+            language_mode=runtime.language_mode,
+        )
+
+    return MockSttService(utterances=runtime.manual_inputs)
+
+
+def _resolve_runtime_path(path: Path) -> Path:
+    """Resolve app-relative paths from the current working directory."""
+
+    return path if path.is_absolute() else Path.cwd() / path
 
 
 def main(config: AppConfig | None = None) -> int:
     """Create the application and optionally run the async manual loop."""
 
-    app_config = config or AppConfig()
+    app_config = config or load_app_config()
     service = build_application(app_config)
     if app_config.runtime.auto_run:
         asyncio.run(service.run())
@@ -61,7 +92,7 @@ def main(config: AppConfig | None = None) -> int:
 
 
 if __name__ == "__main__":
-    runtime_config = AppConfig()
+    runtime_config = load_app_config()
     runtime_config.runtime.auto_run = True
     runtime_config.runtime.interactive_console = True
     raise SystemExit(main(runtime_config))

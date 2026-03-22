@@ -18,6 +18,7 @@ Current milestone:
 - the orchestrator can route manual text input to local actions, local queries, local AI, or cloud AI
 - responses can be shown in the UI mock and acknowledged by the TTS mock
 - interaction history is stored in memory
+- a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
 
 What this means today:
 - the architecture is no longer just scaffolded
@@ -189,17 +190,36 @@ Current limitations:
 
 ### STT
 
-Status: interface-ready, partially implemented mock
+Status: first real integration available
 
 Available now:
 - typed incremental transcript model with partial/final support
 - `MockSttService` that can emit partial and final transcripts
 - orchestrator method for partial transcript handling
+- `WhisperCppSttService` for one-shot local transcription through `whisper.cpp`
+- shell-based audio capture adapter for microphone-to-WAV recording
+- speech-mode runtime that can replace manual text input with push-to-talk STT
 
 Current limitations:
-- not yet wired into the main runtime loop
-- no microphone input
-- no real streaming or endpoint detection
+- no partial transcript support from the real STT path yet
+- no always-listening mode or endpoint detection yet
+- recording depends on a configured external command such as `arecord` or `ffmpeg`
+- microphone setup is scripted for supported platforms, but device-specific debugging may still be manual
+
+### Setup
+
+Status: first automated bootstrap available
+
+Available now:
+- `scripts/setup.sh` for macOS and Raspberry Pi bootstrap
+- automatic `.venv` creation and Python dependency install
+- `whisper.cpp` clone/build plus default model download
+- generated `.env.local` runtime configuration
+
+Current limitations:
+- only macOS and Raspberry Pi are first-class setup targets
+- no Piper/TTS automation yet
+- no hardware, vision, or cloud credential setup yet
 
 ---
 
@@ -217,7 +237,6 @@ Current limitations:
 
 ### Mocked subsystems
 
-- STT
 - TTS
 - UI rendering
 - memory persistence
@@ -228,8 +247,7 @@ Current limitations:
 
 ### Not built yet
 
-- real microphone/audio capture
-- real STT provider integration
+- streaming STT integration
 - real TTS provider integration
 - real camera/vision pipeline
 - real hardware drivers
@@ -258,6 +276,13 @@ See `README.md` for current setup and run commands.
 Mock STT partial transcript
 -> orchestrator listening state update
 -> no execution until final transcript
+
+### New experimental flow
+
+Push-to-talk speech input
+-> external recorder command creates WAV
+-> `whisper.cpp` produces final transcript
+-> orchestrator route selection and response flow
 
 ### Not yet available
 

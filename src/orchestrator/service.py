@@ -28,6 +28,7 @@ from shared.models import (
     RouteKind,
     Transcript,
 )
+from stt.service import SttService
 from tts.service import TtsService
 from ui.service import UiService
 from vision.service import VisionService
@@ -48,6 +49,7 @@ class OrchestratorService:
     hardware: HardwareService
     local_ai: LocalAiService
     cloud_ai: CloudAiService
+    stt: SttService | None
     tts: TtsService
     event_history: list[Event] = field(default_factory=list)
 
@@ -62,7 +64,7 @@ class OrchestratorService:
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
 
     async def run(self) -> None:
-        """Run the manual end-to-end interaction loop."""
+        """Run the manual or speech-driven end-to-end interaction loop."""
 
         await self.start()
         await self.handle_event(
@@ -72,7 +74,9 @@ class OrchestratorService:
             )
         )
 
-        if self.config.runtime.interactive_console:
+        if self.config.runtime.input_mode == "speech":
+            await self._run_speech_loop()
+        elif self.config.runtime.interactive_console:
             while True:
                 try:
                     raw_text = await asyncio.to_thread(input, "You> ")
@@ -89,9 +93,58 @@ class OrchestratorService:
 
         await self.stop()
 
+    async def _run_speech_loop(self) -> None:
+        """Capture one utterance at a time through the configured STT service."""
+
+        if self.stt is None:
+            raise RuntimeError("speech input mode requires an STT service")
+
+        if self.config.runtime.interactive_console:
+            while True:
+                try:
+                    command = await asyncio.to_thread(input, "Press Enter to record, or type 'exit' to quit> ")
+                except (EOFError, KeyboardInterrupt):
+                    logger.info("interactive speech console closed; stopping orchestrator loop")
+                    break
+
+                if command.strip().lower() in {"quit", "exit"}:
+                    break
+                await self._run_stt_turn()
+            return
+
+        utterance_count = max(1, len(self.config.runtime.manual_inputs))
+        for _ in range(utterance_count):
+            await self._run_stt_turn()
+
+    async def _run_stt_turn(self) -> None:
+        """Capture, transcribe, and execute one speech turn."""
+
+        if self.stt is None:
+            raise RuntimeError("speech input mode requires an STT service")
+
+        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
+        try:
+            transcript = await self.stt.listen_once()
+        except Exception as exc:
+            logger.exception("stt failed")
+            self.state.last_error = str(exc)
+            await self.handle_event(
+                Event(
+                    name=EventName.ERROR_OCCURRED,
+                    source=ComponentName.STT,
+                    payload={"error": str(exc)},
+                )
+            )
+            await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
+            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+            return
+
+        await self.run_turn(transcript)
+
     async def handle_partial_transcript(self, transcript: Transcript) -> None:
         """Accept a partial transcript and update listening state only."""
 
+        self._debug_transcript(transcript, kind="partial")
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, transcript.text)
@@ -106,6 +159,7 @@ class OrchestratorService:
     async def run_turn(self, transcript: Transcript) -> None:
         """Process a final transcript through routing, execution, and response."""
 
+        self._debug_transcript(transcript, kind="final")
         self.state.interaction_id += 1
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
@@ -377,3 +431,14 @@ class OrchestratorService:
             self.state.eyes_open = bool(state_changes["eyes_open"])
         if "head_direction" in state_changes:
             self.state.head_direction = str(state_changes["head_direction"])
+
+    def _debug_transcript(self, transcript: Transcript, kind: str) -> None:
+        """Print a concise transcript debug line for local development."""
+
+        print(
+            "[STT] "
+            f"{kind} "
+            f"language={transcript.language.value} "
+            f"confidence={transcript.confidence:.2f} "
+            f"text={transcript.text!r}"
+        )
