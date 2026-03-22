@@ -1445,7 +1445,7 @@ class WhisperCppSttService:
         pattern = "ai-companion-recording-*.wav"
         audio_paths = sorted(
             latest_audio_path.parent.glob(pattern),
-            key=lambda path: path.stat().st_mtime,
+            key=self._recording_recency_key,
             reverse=True,
         )
         for stale_audio_path in audio_paths[self.keep_recent_recordings :]:
@@ -1455,6 +1455,24 @@ class WhisperCppSttService:
             for json_path in self._recording_json_paths(stale_audio_path):
                 with contextlib.suppress(OSError):
                     json_path.unlink()
+
+    def _recording_recency_key(self, audio_path: Path) -> tuple[int, float, float, str]:
+        """Build a stable ordering key for rolling recording artifact cleanup."""
+
+        match = re.search(r"ai-companion-recording-(.+)\.wav$", audio_path.name)
+        identifier = match.group(1) if match else ""
+        parsed_identifier: float | None = None
+        with contextlib.suppress(ValueError):
+            parsed_identifier = float(identifier)
+
+        with contextlib.suppress(OSError):
+            mtime = audio_path.stat().st_mtime
+            if parsed_identifier is not None:
+                return (1, parsed_identifier, mtime, audio_path.name)
+            return (0, mtime, mtime, audio_path.name)
+        if parsed_identifier is not None:
+            return (1, parsed_identifier, 0.0, audio_path.name)
+        return (0, 0.0, 0.0, audio_path.name)
 
     def _recording_json_paths(self, audio_path: Path) -> tuple[Path, ...]:
         """Return all JSON sidecar path variants that may exist for a WAV recording."""
