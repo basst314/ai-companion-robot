@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/basst314/ai-companion-robot/actions/workflows/ci.yml/badge.svg)](https://github.com/basst314/ai-companion-robot/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/basst314/ai-companion-robot/branch/main/graph/badge.svg)](https://codecov.io/gh/basst314/ai-companion-robot)
-[![Lines of code](https://img.shields.io/tokei/lines/github/basst314/ai-companion-robot)](https://github.com/basst314/ai-companion-robot)
 
 
 A desktop AI companion robot built on a Raspberry Pi, designed to be conversational, expressive, and personality-driven.
