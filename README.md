@@ -117,11 +117,18 @@ Supported flags:
 
 The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_INPUT_MODE`
+- `AI_COMPANION_INTERACTIVE_CONSOLE`
 - `AI_COMPANION_STT_BACKEND`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
-- `AI_COMPANION_RECORD_SECONDS`
+- `AI_COMPANION_SPEECH_SILENCE_SECONDS`
+- `AI_COMPANION_WAKE_WORD_ENABLED`
+- `AI_COMPANION_WAKE_WORD_PHRASE`
+- `AI_COMPANION_WAKE_WINDOW_SECONDS`
+- `AI_COMPANION_WAKE_STRIDE_SECONDS`
+- `AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS`
+- `AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS`
 - `AI_COMPANION_LANGUAGE_MODE`
 
 ### What The Script Installs
@@ -134,7 +141,7 @@ On Raspberry Pi:
 On macOS:
 - `python@3.11`
 - `cmake`
-- `ffmpeg`
+- `sox`
 - `git`
 
 Project-local artifacts:
@@ -150,8 +157,7 @@ Raspberry Pi:
 
 macOS:
 - the script uses Homebrew for dependencies
-- audio capture uses `ffmpeg` with the `avfoundation` input device
-- the setup script tries to detect and prefer `MacBook Pro Microphone` or `Built-in Microphone` over linked iPhone microphones
+- audio capture defaults to `rec`, which has been more reliable than `ffmpeg`/`avfoundation` on some Macs
 - you may need to grant microphone access to Terminal or your shell app
 
 ### Manual Fallback
@@ -188,7 +194,7 @@ python -m pip install -e ".[dev]"
 Expected result right now:
 
 ```text
-19 passed
+all tests pass
 ```
 
 ---
@@ -207,31 +213,16 @@ If the virtual environment is already activated, you can also run:
 python src/main.py
 ```
 
-If `.env.local` is not present, the app falls back to the default manual text-mode prompt and you can type messages at `You>`.
-
-Examples:
-- `open your eyes`
-- `look at me`
-- `turn your head left`
-- `who do you see`
-- `what do you know about me`
-- `tell me a joke`
-- `please use your local brain`
-
-Exit with:
-
-```text
-exit
-```
+With the generated speech config in place, the interactive console supports typed phrases, Enter-to-talk, and wake-word activation in the same session. Without `.env.local`, the app falls back to the default manual text prompt at `You>`.
 
 ### Speech Input Prototype
 
-The bootstrap script configures the first real STT milestone automatically: local `whisper.cpp` in push-to-talk mode.
+The bootstrap script now configures the current local speech path automatically: `whisper.cpp` with wake-word gated listening, shared live-stream handoff, and typed/Enter/manual fallback in the interactive console.
 
 You need:
 - a built `whisper.cpp` binary such as `whisper-cli`
 - a Whisper model file in ggml format
-- a local recording command that writes a 16 kHz mono WAV file
+- a local recording command that writes 16 kHz mono raw PCM to `stdout`
 
 Example `whisper.cpp` setup:
 
@@ -243,7 +234,7 @@ cmake --build build -j --config Release
 ./models/download-ggml-model.sh base
 ```
 
-Example one-shot transcription experiment:
+Example one-shot transcription experiment on Raspberry Pi or Linux:
 
 ```bash
 arecord -t raw -f S16_LE -r 16000 -c 1 /tmp/robot-test.pcm
@@ -252,11 +243,13 @@ ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/robot-test.pcm /tmp/robot-test.wav
 ```
 
 To wire this into the app, configure:
-- `runtime.input_mode = "speech"`
-- `runtime.stt_backend = "whisper_cpp"`
-- `runtime.whisper_binary_path`
-- `runtime.whisper_model_path`
-- `runtime.audio_record_command`
+- `AI_COMPANION_INPUT_MODE=speech`
+- `AI_COMPANION_STT_BACKEND=whisper_cpp`
+- `AI_COMPANION_WHISPER_BINARY_PATH`
+- `AI_COMPANION_WHISPER_MODEL_PATH`
+- `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_WAKE_WORD_ENABLED=true`
+- `AI_COMPANION_WAKE_WORD_PHRASE=Hello`
 
 Example Linux/Raspberry Pi recording command template:
 
@@ -275,36 +268,62 @@ config.runtime.audio_record_command = (
 )
 ```
 
-Example macOS recording command template using `ffmpeg`:
+Example macOS recording command template using `rec`:
 
 ```python
 config.runtime.audio_record_command = (
-    "ffmpeg",
-    "-y",
-    "-fflags",
-    "nobuffer",
-    "-flush_packets",
+    "rec",
+    "-q",
+    "-c",
     "1",
-    "-f",
-    "avfoundation",
-    "-i",
-    ":<audio_index>",
-    "-ar",
+    "-r",
     "16000",
-    "-ac",
-    "1",
-    "-f",
-    "s16le",
+    "-b",
+    "16",
+    "-e",
+    "signed-integer",
+    "-t",
+    "raw",
     "{output_path}",
 )
 ```
 
-The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, create WAV snapshots for `whisper.cpp`, and stop when it detects that the speaker has paused. Custom recorder commands therefore need to support writing raw PCM to standard output.
+Equivalent `.env.local` example:
 
-When `interactive_console` is enabled in speech mode, the runtime shows:
+```env
+AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}
+```
+
+The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, keep a bounded wake-word ring buffer in memory, create WAV snapshots for `whisper.cpp`, and end the utterance after confirmed silence. Custom recorder commands therefore need to support writing raw PCM to standard output.
+
+When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
+
+- type a phrase and press Enter
+- press Enter on an empty line to start listening immediately
+- say the configured wake word
+- type `exit` to quit
+
+The sticky terminal header also shows:
+- microphone level and silence progress
+- the wake state (`listening` or `awake`)
+- the live transcript preview
+- the wake ring-buffer state for debugging handoff timing
+
+If `.env.local` is not present, the app falls back to the default manual text-mode prompt and you can type messages at `You>`.
+
+Examples:
+- `open your eyes`
+- `look at me`
+- `turn your head left`
+- `who do you see`
+- `what do you know about me`
+- `tell me a joke`
+- `please use your local brain`
+
+Exit with:
 
 ```text
-Press Enter to start listening, or type 'exit' to quit>
+exit
 ```
 
 ### Updating / Re-running Setup
@@ -335,4 +354,4 @@ For more detailed setup notes and troubleshooting, see `docs/setup.md`.
 
 ## Status
 
-Early working prototype with real one-shot STT integration available for experimentation
+Early working prototype with wake-word gated local STT, shared live-stream handoff, and interactive terminal debugging available for experimentation
