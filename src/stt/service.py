@@ -709,24 +709,36 @@ class OpenWakeWordSileroVadModel:
 
     _vad: object = field(init=False, repr=False)
     _numpy: object = field(init=False, repr=False)
+    _fallback_energy_mode: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._numpy = None
         try:
             import numpy as np  # type: ignore[import-not-found]
             from openwakeword.vad import VAD  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(
-                "speech endpoint VAD requires the bundled OpenWakeWord Silero VAD runtime"
-            ) from exc
-        try:
+
+            self._numpy = np
             self._vad = VAD()
         except Exception as exc:
-            raise RuntimeError(f"unable to initialize speech endpoint VAD: {exc}") from exc
-        self._numpy = np
+            self._fallback_energy_mode = True
+            self._vad = object()
+            logger.warning(
+                "stt endpoint VAD model unavailable; falling back to energy-only endpointing (%s)",
+                exc,
+            )
 
     def score_frame(self, pcm_frame: bytes) -> float:
         sample_count = len(pcm_frame) // 2
         if sample_count <= 0:
+            return 0.0
+        if self._fallback_energy_mode:
+            sample_iter = struct.iter_unpack("<h", pcm_frame[: sample_count * 2])
+            squared_sum = 0.0
+            for (sample,) in sample_iter:
+                squared_sum += float(sample * sample)
+            rms = (squared_sum / sample_count) ** 0.5
+            return min(1.0, rms / 2000.0)
+        if self._numpy is None:
             return 0.0
         pcm_samples = self._numpy.frombuffer(pcm_frame, dtype=self._numpy.int16)
         return float(self._vad.predict(pcm_samples, frame_size=sample_count))
