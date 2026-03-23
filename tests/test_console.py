@@ -9,6 +9,7 @@ from pathlib import Path
 from shared.console import (
     ConsoleFormatter,
     TerminalDebugScreen,
+    _strip_ansi,
     configure_console_log,
     configure_terminal_debug_screen,
 )
@@ -60,6 +61,7 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         peak_energy=420.0,
         trailing_silence_seconds=0.35,
         speech_started=True,
+        vad_active=False,
         partial_pending=True,
     )
     screen.update_transcript("open your eyes please", language="en", is_final=False)
@@ -67,7 +69,6 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         capacity_seconds=3.5,
         filled_seconds=2.5,
         wake_window_seconds=1.5,
-        stride_seconds=0.5,
         utterance_start_seconds=0.8,
     )
 
@@ -77,15 +78,12 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[DBG]" in rows[0]
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
-    assert "[silence 0.35s]" in rows[1]
-    assert "[speech yes]" in rows[1]
-    assert "[wake off --]" in rows[1]
+    assert "[vad 0.35s]" in rows[1]
     assert "[stt standby --]" in rows[1]
+    assert rows[1].index("[wake off") < rows[1].index("[stt standby --]") < rows[1].index("[vad 0.35s]")
     assert "[ 180]" in rows[1]
     assert "[BUF]" in rows[2]
     assert "[fill 2.5/3.5s]" in rows[2]
-    assert "[wake 1.5s]" in rows[2]
-    assert "[stride 0.5s]" in rows[2]
     assert "[start 0.8s]" in rows[2]
     assert "^" in rows[2]
     assert ">" in rows[2]
@@ -120,6 +118,80 @@ def test_terminal_debug_screen_holds_peak_and_shows_current_noise() -> None:
     assert "[ 360]" in rows[1]
 
 
+def test_terminal_debug_screen_shows_inactive_vad_badge_before_speech_starts() -> None:
+    screen = TerminalDebugScreen(stream=FakeTty())
+    screen.update_audio(
+        current_noise=20.0,
+        peak_energy=20.0,
+        trailing_silence_seconds=0.50,
+        speech_started=False,
+        vad_active=False,
+        partial_pending=False,
+    )
+
+    rows = screen.snapshot_rows(width=120)
+
+    assert "[vad 0.00s]" in rows[1]
+
+
+def test_terminal_debug_screen_shows_active_vad_badge_when_voice_is_live() -> None:
+    screen = TerminalDebugScreen(stream=FakeTty())
+    screen.update_audio(
+        current_noise=140.0,
+        peak_energy=220.0,
+        trailing_silence_seconds=0.0,
+        speech_started=True,
+        vad_active=True,
+        partial_pending=False,
+    )
+
+    rows = screen.snapshot_rows(width=120)
+
+    assert "[vad 0.00s]" in rows[1]
+
+
+def test_terminal_debug_screen_colors_vad_badge_by_state() -> None:
+    inactive = TerminalDebugScreen(stream=FakeTty())
+    inactive.update_audio(
+        current_noise=20.0,
+        peak_energy=20.0,
+        trailing_silence_seconds=0.50,
+        speech_started=False,
+        vad_active=False,
+        partial_pending=False,
+    )
+    inactive_badge = inactive._vad_badge()
+
+    active = TerminalDebugScreen(stream=FakeTty())
+    active.update_audio(
+        current_noise=140.0,
+        peak_energy=220.0,
+        trailing_silence_seconds=0.0,
+        speech_started=True,
+        vad_active=True,
+        partial_pending=False,
+    )
+    active_badge = active._vad_badge()
+
+    trailing = TerminalDebugScreen(stream=FakeTty())
+    trailing.update_audio(
+        current_noise=80.0,
+        peak_energy=220.0,
+        trailing_silence_seconds=0.35,
+        speech_started=True,
+        vad_active=False,
+        partial_pending=False,
+    )
+    trailing_badge = trailing._vad_badge()
+
+    assert "\033[90mvad" in inactive_badge
+    assert "\033[37m0.00s" in inactive_badge
+    assert "\033[32mvad" in active_badge
+    assert "\033[37m0.00s" in active_badge
+    assert "\033[33mvad" in trailing_badge
+    assert "\033[37m0.35s" in trailing_badge
+
+
 def test_terminal_debug_screen_peak_decays_after_hold_interval() -> None:
     screen = TerminalDebugScreen(stream=FakeTty())
     screen.update_audio(current_noise=360.0, peak_energy=360.0, partial_pending=False)
@@ -152,6 +224,17 @@ def test_terminal_debug_screen_shows_wake_status_badge() -> None:
     assert "[wake listening Oreo]" in rows[1]
 
 
+def test_terminal_debug_screen_keeps_wake_badge_width_stable_across_states() -> None:
+    screen = TerminalDebugScreen(stream=FakeTty())
+    screen.update_wake_status("listening", "Oreo")
+    listening_badge = _strip_ansi(screen._wake_badge())
+
+    screen.update_wake_status("awake", "Oreo")
+    awake_badge = _strip_ansi(screen._wake_badge())
+
+    assert len(listening_badge) == len(awake_badge)
+
+
 def test_terminal_debug_screen_shows_running_status_with_last_duration() -> None:
     screen = TerminalDebugScreen(stream=FakeTty())
     screen.update_whisper_status("0.85s")
@@ -180,7 +263,6 @@ def test_terminal_debug_screen_shows_ring_buffer_when_available() -> None:
         capacity_seconds=3.0,
         filled_seconds=1.5,
         wake_window_seconds=1.0,
-        stride_seconds=0.5,
         utterance_start_seconds=0.4,
     )
 
@@ -188,8 +270,6 @@ def test_terminal_debug_screen_shows_ring_buffer_when_available() -> None:
 
     assert "[BUF]" in rows[2]
     assert "[fill 1.5/3.0s]" in rows[2]
-    assert "[wake 1.0s]" in rows[2]
-    assert "[stride 0.5s]" in rows[2]
     assert "[start 0.4s]" in rows[2]
     assert ">" in rows[2]
 
@@ -209,7 +289,6 @@ def test_terminal_debug_screen_ring_buffer_head_moves_after_wrap() -> None:
         capacity_seconds=3.0,
         filled_seconds=3.0,
         wake_window_seconds=1.0,
-        stride_seconds=0.5,
         utterance_start_seconds=None,
         write_head_seconds=0.2,
     )
@@ -218,7 +297,6 @@ def test_terminal_debug_screen_ring_buffer_head_moves_after_wrap() -> None:
         capacity_seconds=3.0,
         filled_seconds=3.0,
         wake_window_seconds=1.0,
-        stride_seconds=0.5,
         utterance_start_seconds=None,
         write_head_seconds=1.7,
     )

@@ -472,7 +472,11 @@ AI_COMPANION_STT_BACKEND=whisper_cpp
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
-AI_COMPANION_SPEECH_SILENCE_SECONDS=1.2
+AI_COMPANION_SPEECH_SILENCE_SECONDS=0.75
+AI_COMPANION_VAD_THRESHOLD=0.45
+AI_COMPANION_VAD_FRAME_MS=30
+AI_COMPANION_VAD_START_TRIGGER_FRAMES=2
+AI_COMPANION_VAD_END_TRIGGER_FRAMES=5
 AI_COMPANION_MAX_RECORDING_SECONDS=15
 AI_COMPANION_WAKE_WORD_ENABLED=$([[ "${wake_setup}" == "off" ]] && printf '%s' "false" || printf '%s' "true")
 AI_COMPANION_WAKE_WORD_PHRASE=${wake_phrase}
@@ -566,7 +570,7 @@ Whisper model: ${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin
 Next steps:
   1. Run the app with: .venv/bin/python src/main.py
   2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or use the configured wake word
-  3. Edit ${ENV_FILE} if you want to adjust model, language mode, silence timeout, wake-word settings, or recorder settings
+  3. Edit ${ENV_FILE} if you want to adjust model, language mode, VAD endpoint timing, wake-word settings, or recorder settings
 EOF
 }
 

@@ -9,6 +9,27 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-22 — Dedicated VAD Endpointing For STT
+
+### Highlights
+- Replaced the brittle energy-based trailing-silence endpointing in the `whisper.cpp` speech path with bundled Silero VAD endpoint detection from `openwakeword`.
+- Added VAD tuning controls to runtime config and generated `.env.local` setup: threshold, frame size, and start/end trigger smoothing.
+- Updated the interactive terminal debug screen so the mic row now shows VAD tail state instead of the old silence/speech badges.
+- Refreshed setup and speech docs to describe VAD-confirmed trailing non-speech semantics and the new default endpoint timing.
+
+### Why this matters
+This improves end-of-utterance detection in noisy home environments without introducing another speech dependency or disturbing the existing OpenWakeWord wake-word flow. The result is faster and more reliable turn finalization when appliances, TVs, or other steady background noise are present.
+
+### Key decisions & rationale
+- Decision: reuse the Silero VAD already bundled with `openwakeword`.
+  - Why: it keeps the speech stack smaller, matches the existing runtime setup path, and avoids adding another real-time audio dependency.
+- Decision: limit this change to endpointing and keep wake detection unchanged.
+  - Why: OpenWakeWord wake detection was already working well on the shared live stream, so the safest improvement was to swap only the end-of-utterance logic.
+- Decision: limit this change to end-of-utterance detection and leave speech-start/no-speech gating unchanged.
+  - Why: that minimizes regression risk while still fixing the brittle part of the current speech UX.
+
+---
+
 ## 2026-03-22 — OpenWakeWord Wake Detection Migration
 
 ### Highlights
@@ -27,9 +48,6 @@ This is the architectural shift from a brittle transcript-gated wake flow to a d
   - Why: this preserves low-latency handoff and avoids losing pre-roll audio around the wake event.
 - Decision: ship a built-in `Hey Jarvis` starter path first.
   - Why: OpenWakeWord needs a matching model; a known built-in pairing is the safest way to guarantee first-run success before adding a custom `Oreo` model later.
-
-### Notable commits
-- local changes in this working tree — migrate wake detection to OpenWakeWord and harden setup/runtime verification
 
 ---
 

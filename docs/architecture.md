@@ -50,6 +50,7 @@ Input:
 Processing:
 - continuous wake-word detection using OpenWakeWord (local)
 - speech-to-text using whisper.cpp (local)
+- end-of-utterance detection using the Silero VAD bundled with OpenWakeWord
 - shared live audio buffering so wake detection and STT consume the same microphone stream without restarting capture
 
 Output:

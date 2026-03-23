@@ -202,8 +202,9 @@ Available now:
 - wake-word-gated speech mode with a bounded rolling buffer while idle
 - shared live-stream handoff from wake detection into the active utterance without restarting capture
 - configurable built-in or custom wake-word model selection through runtime config
-- end-of-utterance finalization that keeps the last spoken words more reliably
-- sticky terminal debug rows for mic state, ring-buffer state, wake status, and transcript preview
+- bundled Silero VAD endpointing for noisy-room end-of-utterance detection
+- tunable VAD endpoint controls through runtime config
+- sticky terminal debug rows for mic state, VAD tail state, ring-buffer state, wake status, and transcript preview
 - speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
 
 Current limitations:

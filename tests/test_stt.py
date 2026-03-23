@@ -19,6 +19,7 @@ from stt.service import (
     SharedLiveSpeechState,
     StreamingWakeWordDetector,
     WhisperCppSttService,
+    _UtteranceVadTracker,
     _select_openwakeword_inference_framework,
     _default_run_command,
     _slice_audio_window,
@@ -102,6 +103,38 @@ class ScriptedStreamingWhisperService(WhisperCppSttService):
         self._window_index += 1
         return window
 
+    def _apply_endpoint_vad(self, audio_window: AudioWindow, vad_tracker) -> AudioWindow:  # type: ignore[override]
+        del vad_tracker
+        return audio_window
+
+    async def _transcribe_snapshot(  # type: ignore[override]
+        self,
+        audio_window: AudioWindow,
+        started_at,
+        *,
+        is_final: bool,
+    ) -> Transcript:
+        text = self.transcript_texts[min(self._transcript_index, len(self.transcript_texts) - 1)]
+        self._transcript_index += 1
+        self.captured_is_final.append(is_final)
+        return Transcript(
+            text=text,
+            language=Language.ENGLISH,
+            confidence=1.0,
+            is_final=is_final,
+            started_at=started_at,
+            ended_at=None,
+        )
+
+
+@dataclass(slots=True)
+class TrackerBackedStreamingWhisperService(WhisperCppSttService):
+    """Whisper service that uses the real endpoint tracker with scripted transcripts."""
+
+    transcript_texts: list[str] = field(default_factory=list)
+    _transcript_index: int = 0
+    captured_is_final: list[bool] = field(default_factory=list)
+
     async def _transcribe_snapshot(  # type: ignore[override]
         self,
         audio_window: AudioWindow,
@@ -124,6 +157,26 @@ class ScriptedStreamingWhisperService(WhisperCppSttService):
 
 @dataclass(slots=True)
 class FakeWakeWordModel:
+    scores: list[float] = field(default_factory=list)
+    calls: int = 0
+    reset_calls: int = 0
+
+    def score_frame(self, pcm_frame: bytes) -> float:
+        del pcm_frame
+        if self.calls >= len(self.scores):
+            score = self.scores[-1] if self.scores else 0.0
+        else:
+            score = self.scores[self.calls]
+        self.calls += 1
+        return score
+
+    def reset(self) -> None:
+        self.calls = 0
+        self.reset_calls += 1
+
+
+@dataclass(slots=True)
+class FakeEndpointVadModel:
     scores: list[float] = field(default_factory=list)
     calls: int = 0
     reset_calls: int = 0
@@ -183,6 +236,7 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
         peak_energy: float | None = None,
         trailing_silence_seconds: float | None = None,
         speech_started: bool | None = None,
+        vad_active: bool | None = None,
         partial_pending: bool | None = None,
     ) -> None:
         self.audio_updates.append(
@@ -191,6 +245,7 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
                 "peak_energy": peak_energy,
                 "trailing_silence_seconds": trailing_silence_seconds,
                 "speech_started": speech_started,
+                "vad_active": vad_active,
                 "partial_pending": partial_pending,
             }
         )
@@ -216,7 +271,6 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
         capacity_seconds: float | None = None,
         filled_seconds: float | None = None,
         wake_window_seconds: float | None = None,
-        stride_seconds: float | None = None,
         utterance_start_seconds: float | None = None,
         write_head_seconds: float | None = None,
     ) -> None:
@@ -225,7 +279,6 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
                 "capacity_seconds": capacity_seconds,
                 "filled_seconds": filled_seconds,
                 "wake_window_seconds": wake_window_seconds,
-                "stride_seconds": stride_seconds,
                 "utterance_start_seconds": utterance_start_seconds,
                 "write_head_seconds": write_head_seconds,
             }
@@ -240,7 +293,19 @@ def _audio_window(
     has_speech: bool,
     current_energy: float = 120.0,
     peak_energy: float = 200.0,
+    last_vad_speech_offset_seconds: float | None = None,
+    trailing_non_speech_seconds: float | None = None,
+    has_vad_speech: bool | None = None,
+    vad_active: bool | None = None,
 ) -> AudioWindow:
+    if last_vad_speech_offset_seconds is None:
+        last_vad_speech_offset_seconds = max(0.0, duration_seconds - trailing_silence_seconds)
+    if trailing_non_speech_seconds is None:
+        trailing_non_speech_seconds = trailing_silence_seconds
+    if has_vad_speech is None:
+        has_vad_speech = has_speech
+    if vad_active is None:
+        vad_active = bool(has_vad_speech and trailing_non_speech_seconds <= 0.0)
     return AudioWindow(
         source_path=wav_path,
         channels=1,
@@ -252,6 +317,10 @@ def _audio_window(
         has_speech=has_speech,
         current_energy=current_energy,
         peak_energy=peak_energy,
+        last_vad_speech_offset_seconds=last_vad_speech_offset_seconds,
+        trailing_non_speech_seconds=trailing_non_speech_seconds,
+        has_vad_speech=has_vad_speech,
+        vad_active=vad_active,
     )
 
 
@@ -454,6 +523,82 @@ def test_whisper_cpp_stt_service_keeps_last_five_recordings(tmp_path: Path) -> N
     ]
 
 
+def test_utterance_vad_tracker_marks_trailing_non_speech_after_confirmed_tail(tmp_path: Path) -> None:
+    wav_path = tmp_path / "vad-tail.wav"
+    tracker = _UtteranceVadTracker(
+        threshold=0.45,
+        frame_ms=30,
+        start_trigger_frames=2,
+        end_trigger_frames=5,
+        model=FakeEndpointVadModel(scores=[0.1, 0.9, 0.95, 0.92] + [0.1] * 10),
+    )
+
+    audio_window = _audio_window(
+        wav_path,
+        duration_seconds=0.42,
+        trailing_silence_seconds=0.0,
+        trailing_non_speech_seconds=0.0,
+        has_speech=True,
+        has_vad_speech=False,
+    )
+    analyzed = tracker.apply(audio_window)
+
+    assert analyzed.has_vad_speech is True
+    assert 0.11 <= analyzed.last_vad_speech_offset_seconds <= 0.13
+    assert 0.29 <= analyzed.trailing_non_speech_seconds <= 0.31
+
+
+def test_utterance_vad_tracker_ignores_single_tail_noise_blip(tmp_path: Path) -> None:
+    wav_path = tmp_path / "vad-noise.wav"
+    tracker = _UtteranceVadTracker(
+        threshold=0.45,
+        frame_ms=30,
+        start_trigger_frames=2,
+        end_trigger_frames=5,
+        model=FakeEndpointVadModel(scores=[0.9, 0.95, 0.92] + [0.1] * 6 + [0.8] + [0.1] * 2),
+    )
+
+    audio_window = _audio_window(
+        wav_path,
+        duration_seconds=0.36,
+        trailing_silence_seconds=0.0,
+        trailing_non_speech_seconds=0.0,
+        has_speech=True,
+        has_vad_speech=False,
+    )
+    analyzed = tracker.apply(audio_window)
+
+    assert analyzed.has_vad_speech is True
+    assert 0.08 <= analyzed.last_vad_speech_offset_seconds <= 0.10
+    assert 0.26 <= analyzed.trailing_non_speech_seconds <= 0.28
+
+
+def test_utterance_vad_tracker_requires_confirmed_speech(tmp_path: Path) -> None:
+    wav_path = tmp_path / "vad-nospeech.wav"
+    tracker = _UtteranceVadTracker(
+        threshold=0.45,
+        frame_ms=30,
+        start_trigger_frames=2,
+        end_trigger_frames=5,
+        model=FakeEndpointVadModel(scores=[0.1, 0.2, 0.4, 0.3, 0.2]),
+    )
+
+    audio_window = _audio_window(
+        wav_path,
+        duration_seconds=0.15,
+        trailing_silence_seconds=0.0,
+        trailing_non_speech_seconds=0.0,
+        has_speech=False,
+        has_vad_speech=False,
+        peak_energy=20.0,
+    )
+    analyzed = tracker.apply(audio_window)
+
+    assert analyzed.has_vad_speech is False
+    assert analyzed.last_vad_speech_offset_seconds == 0.0
+    assert analyzed.trailing_non_speech_seconds == 0.0
+
+
 def test_whisper_cpp_stt_service_streams_partials_then_final(tmp_path: Path) -> None:
     """Streaming mode should emit incremental transcript updates before the final result."""
 
@@ -489,6 +634,61 @@ def test_whisper_cpp_stt_service_streams_partials_then_final(tmp_path: Path) -> 
     assert transcripts[-1].text == "hello there friend"
     assert [transcript.is_final for transcript in transcripts[:-1]] == [False, False]
     assert transcripts[-1].is_final is True
+    assert audio_capture.session is not None
+    assert audio_capture.session.stop_requested is True
+
+
+def test_whisper_cpp_stt_service_uses_vad_tail_even_when_energy_stays_high(tmp_path: Path) -> None:
+    wav_path = tmp_path / "ai-companion-recording-vad-tail.wav"
+    wav_path.write_bytes(b"fake")
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(
+                wav_path,
+                duration_seconds=1.0,
+                trailing_silence_seconds=0.0,
+                trailing_non_speech_seconds=0.0,
+                has_speech=True,
+                has_vad_speech=True,
+                peak_energy=220.0,
+            ),
+            _audio_window(
+                wav_path,
+                duration_seconds=2.2,
+                trailing_silence_seconds=0.0,
+                trailing_non_speech_seconds=0.8,
+                last_vad_speech_offset_seconds=1.4,
+                has_speech=True,
+                has_vad_speech=True,
+                peak_energy=220.0,
+            ),
+            _audio_window(
+                wav_path,
+                duration_seconds=2.6,
+                trailing_silence_seconds=0.0,
+                trailing_non_speech_seconds=0.8,
+                last_vad_speech_offset_seconds=1.8,
+                has_speech=True,
+                has_vad_speech=True,
+                peak_energy=220.0,
+            ),
+        ],
+        transcript_texts=["still there"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=999.0,
+        speech_silence_seconds=0.75,
+        minimum_utterance_seconds=2.0,
+        silence_confirmation_polls=1,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["still there"]
+    assert transcripts[0].is_final is True
     assert audio_capture.session is not None
     assert audio_capture.session.stop_requested is True
 
@@ -875,6 +1075,45 @@ def test_shared_live_mode_stops_at_max_recording_length(tmp_path: Path) -> None:
     transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
 
     assert [transcript.text for transcript in transcripts] == ["shared cutoff"]
+    assert transcripts[0].is_final is True
+    assert shared_state.utterance_active is False
+    assert service.captured_is_final == [True]
+
+
+def test_shared_live_mode_uses_vad_boundary_for_finalize(tmp_path: Path) -> None:
+    wav_path = tmp_path / "shared-vad-finalize.wav"
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    shared_state = SharedLiveSpeechState(
+        audio_capture=audio_capture,
+        wake_buffer_seconds=2.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+    shared_state.start_utterance()
+    shared_state._handle_chunk(b"\x01\x00" * (480 * 12))
+
+    service = TrackerBackedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        transcript_texts=["shared vad boundary"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=999.0,
+        minimum_transcribe_seconds=99.0,
+        minimum_utterance_seconds=0.0,
+        speech_silence_seconds=0.12,
+        silence_confirmation_polls=1,
+        utterance_tail_stable_polls=1,
+        shared_live_state=shared_state,
+        endpoint_vad_factory=lambda: FakeEndpointVadModel(
+            scores=[0.9, 0.92, 0.95] + [0.1] * 6 + [0.8] + [0.1] * 2
+        ),
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["shared vad boundary"]
     assert transcripts[0].is_final is True
     assert shared_state.utterance_active is False
     assert service.captured_is_final == [True]

@@ -12,7 +12,7 @@ import struct
 import tempfile
 import wave
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -686,7 +686,161 @@ class AudioWindow:
     has_speech: bool
     current_energy: float
     peak_energy: float
+    last_vad_speech_offset_seconds: float = 0.0
+    trailing_non_speech_seconds: float = 0.0
+    has_vad_speech: bool = False
+    vad_active: bool = False
     stream_start_offset: int = 0
+
+
+class EndpointVadModel(Protocol):
+    """Minimal speech endpoint VAD scoring interface."""
+
+    def score_frame(self, pcm_frame: bytes) -> float:
+        """Return a normalized voice-activity score for one PCM frame."""
+
+    def reset(self) -> None:
+        """Reset any streaming VAD state before a fresh utterance."""
+
+
+@dataclass(slots=True)
+class OpenWakeWordSileroVadModel:
+    """Adapter for the Silero VAD bundled with OpenWakeWord."""
+
+    _vad: object = field(init=False, repr=False)
+    _numpy: object = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+            from openwakeword.vad import VAD  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "speech endpoint VAD requires the bundled OpenWakeWord Silero VAD runtime"
+            ) from exc
+        try:
+            self._vad = VAD()
+        except Exception as exc:
+            raise RuntimeError(f"unable to initialize speech endpoint VAD: {exc}") from exc
+        self._numpy = np
+
+    def score_frame(self, pcm_frame: bytes) -> float:
+        sample_count = len(pcm_frame) // 2
+        if sample_count <= 0:
+            return 0.0
+        pcm_samples = self._numpy.frombuffer(pcm_frame, dtype=self._numpy.int16)
+        return float(self._vad.predict(pcm_samples, frame_size=sample_count))
+
+    def reset(self) -> None:
+        reset_states = getattr(self._vad, "reset_states", None)
+        if callable(reset_states):
+            reset_states()
+        prediction_buffer = getattr(self._vad, "prediction_buffer", None)
+        if hasattr(prediction_buffer, "clear"):
+            prediction_buffer.clear()
+
+
+def _default_endpoint_vad_factory() -> EndpointVadModel:
+    return OpenWakeWordSileroVadModel()
+
+
+@dataclass(slots=True)
+class _UtteranceVadTracker:
+    """Incrementally score a growing utterance buffer for endpointing."""
+
+    threshold: float
+    frame_ms: int
+    start_trigger_frames: int
+    end_trigger_frames: int
+    model: EndpointVadModel
+    _pending_bytes: bytearray = field(default_factory=bytearray, init=False, repr=False)
+    _consumed_input_bytes: int = field(default=0, init=False, repr=False)
+    _processed_audio_bytes: int = field(default=0, init=False, repr=False)
+    _bytes_per_second: float | None = field(default=None, init=False, repr=False)
+    _frame_byte_count: int = field(default=0, init=False, repr=False)
+    _format: tuple[int, int, int] | None = field(default=None, init=False, repr=False)
+    _positive_streak: int = field(default=0, init=False, repr=False)
+    _negative_streak: int = field(default=0, init=False, repr=False)
+    _confirmed_speech_active: bool = field(default=False, init=False, repr=False)
+    _has_vad_speech: bool = field(default=False, init=False, repr=False)
+    _last_vad_speech_offset_seconds: float = field(default=0.0, init=False, repr=False)
+
+    def reset(self) -> None:
+        self.model.reset()
+        self._pending_bytes.clear()
+        self._consumed_input_bytes = 0
+        self._processed_audio_bytes = 0
+        self._bytes_per_second = None
+        self._frame_byte_count = 0
+        self._format = None
+        self._positive_streak = 0
+        self._negative_streak = 0
+        self._confirmed_speech_active = False
+        self._has_vad_speech = False
+        self._last_vad_speech_offset_seconds = 0.0
+
+    def apply(self, audio_window: AudioWindow) -> AudioWindow:
+        audio_format = (audio_window.sample_rate, audio_window.channels, audio_window.sample_width)
+        if self._format is None:
+            self._configure(audio_format)
+        elif self._format != audio_format or len(audio_window.pcm_data) < self._consumed_input_bytes:
+            self.reset()
+            self._configure(audio_format)
+
+        if len(audio_window.pcm_data) > self._consumed_input_bytes:
+            self._pending_bytes.extend(audio_window.pcm_data[self._consumed_input_bytes :])
+            self._consumed_input_bytes = len(audio_window.pcm_data)
+
+        while self._frame_byte_count > 0 and len(self._pending_bytes) >= self._frame_byte_count:
+            frame = bytes(self._pending_bytes[: self._frame_byte_count])
+            del self._pending_bytes[: self._frame_byte_count]
+            self._processed_audio_bytes += self._frame_byte_count
+            frame_end_seconds = self._processed_audio_bytes / max(1.0, self._bytes_per_second or 1.0)
+            is_speech_frame = self.model.score_frame(frame) >= self.threshold
+            if is_speech_frame:
+                self._positive_streak += 1
+                self._negative_streak = 0
+                if not self._confirmed_speech_active and self._positive_streak >= self.start_trigger_frames:
+                    self._confirmed_speech_active = True
+                    self._has_vad_speech = True
+                if self._confirmed_speech_active:
+                    self._last_vad_speech_offset_seconds = frame_end_seconds
+            else:
+                self._negative_streak += 1
+                self._positive_streak = 0
+                if self._confirmed_speech_active and self._negative_streak >= self.end_trigger_frames:
+                    self._confirmed_speech_active = False
+
+        trailing_non_speech_seconds = 0.0
+        if self._has_vad_speech and not self._confirmed_speech_active:
+            trailing_non_speech_seconds = max(
+                0.0,
+                audio_window.duration_seconds - self._last_vad_speech_offset_seconds,
+            )
+
+        return replace(
+            audio_window,
+            last_vad_speech_offset_seconds=min(
+                audio_window.duration_seconds,
+                self._last_vad_speech_offset_seconds,
+            ),
+            trailing_non_speech_seconds=min(audio_window.duration_seconds, trailing_non_speech_seconds),
+            has_vad_speech=self._has_vad_speech,
+            vad_active=self._confirmed_speech_active,
+        )
+
+    def _configure(self, audio_format: tuple[int, int, int]) -> None:
+        sample_rate, channels, sample_width = audio_format
+        if sample_rate != 16000 or channels != 1 or sample_width != 2:
+            raise RuntimeError("speech endpoint VAD requires 16 kHz mono 16-bit PCM input")
+        self._format = audio_format
+        self._bytes_per_second = float(sample_rate * channels * sample_width)
+        self._frame_byte_count = _seconds_to_byte_offset(
+            seconds=self.frame_ms / 1000.0,
+            channels=channels,
+            sample_width=sample_width,
+            sample_rate=sample_rate,
+        )
 
 
 def _audio_window_from_pcm(
@@ -775,6 +929,10 @@ class WhisperCppSttService:
     command_extra_args: tuple[str, ...] = ()
     keep_recent_recordings: int = 5
     speech_silence_seconds: float = 1.2
+    vad_threshold: float = 0.45
+    vad_frame_ms: int = 30
+    vad_start_trigger_frames: int = 2
+    vad_end_trigger_frames: int = 5
     max_recording_seconds: float = 15.0
     no_speech_timeout_seconds: float = 8.0
     quiet_abort_seconds: float = 2.5
@@ -789,10 +947,11 @@ class WhisperCppSttService:
     speech_energy_threshold: int = 60
     speech_start_energy_threshold: int = 120
     ring_debug_wake_window_seconds: float = 0.0
-    ring_debug_stride_seconds: float = 0.0
     terminal_debug: TerminalDebugSink | None = None
     shared_live_state: SharedLiveSpeechState | None = None
+    endpoint_vad_factory: Callable[[], EndpointVadModel] = _default_endpoint_vad_factory
     _primed_audio_window: AudioWindow | None = field(default=None, init=False, repr=False)
+    _endpoint_vad_ready: bool = field(default=False, init=False, repr=False)
 
     def prime_wake_audio(self, audio_window: AudioWindow | None) -> None:
         """Seed the next speech turn with audio already captured during wake detection."""
@@ -839,6 +998,15 @@ class WhisperCppSttService:
         if self.shared_live_state is not None:
             await self.shared_live_state.close()
 
+    def ensure_endpoint_vad_ready(self) -> None:
+        """Fail early if endpoint VAD cannot initialize for streaming speech mode."""
+
+        if self._endpoint_vad_ready or not hasattr(self.audio_capture, "start_capture"):
+            return
+        tracker = self._build_endpoint_vad_tracker()
+        tracker.reset()
+        self._endpoint_vad_ready = True
+
     async def listen_once(self) -> Transcript:
         async for transcript in self.stream_transcripts():
             if transcript.is_final:
@@ -859,6 +1027,7 @@ class WhisperCppSttService:
         session = await self.audio_capture.start_capture()
         primed_audio_window = self._primed_audio_window
         self._primed_audio_window = None
+        vad_tracker = self._build_endpoint_vad_tracker()
         last_partial_text = ""
         speech_started = False
         silence_poll_count = 0
@@ -880,6 +1049,8 @@ class WhisperCppSttService:
                 audio_window = self._read_audio_window(live_audio_path)
                 audio_window = self._merge_audio_windows(primed_audio_window, audio_window)
                 if audio_window is not None:
+                    audio_window = self._apply_endpoint_vad(audio_window, vad_tracker)
+                if audio_window is not None:
                     if audio_window.has_speech and audio_window.peak_energy >= self.speech_start_energy_threshold:
                         speech_started = True
 
@@ -891,16 +1062,16 @@ class WhisperCppSttService:
                         audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
-                        and audio_window.trailing_silence_seconds < self.speech_silence_seconds
+                        and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         and (datetime.now(UTC) - started_at).total_seconds() - last_partial_request_at
                         >= self.partial_update_interval_seconds
                     ):
                         logger.info(
-                            "stt partial_requested bytes=%s duration=%.2f peak=%.1f silence=%.2f",
+                            "stt partial_requested bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f",
                             len(audio_window.pcm_data),
                             audio_window.duration_seconds,
                             audio_window.peak_energy,
-                            audio_window.trailing_silence_seconds,
+                            audio_window.trailing_non_speech_seconds,
                         )
                         partial_task = asyncio.create_task(
                             self._transcribe_snapshot(audio_window, started_at, is_final=False)
@@ -910,16 +1081,20 @@ class WhisperCppSttService:
                             current_noise=audio_window.current_energy,
                             peak_energy=audio_window.peak_energy,
                             trailing_silence_seconds=(
-                                audio_window.trailing_silence_seconds if speech_started else elapsed_seconds
+                                audio_window.trailing_non_speech_seconds
+                                if audio_window.has_vad_speech
+                                else elapsed_seconds
                             ),
-                            speech_started=speech_started,
+                            speech_started=audio_window.has_vad_speech,
+                            vad_active=audio_window.vad_active,
                             partial_pending=True,
                         )
 
                     if (
                         speech_started
                         and audio_window.duration_seconds >= self.minimum_utterance_seconds
-                        and audio_window.trailing_silence_seconds >= self.speech_silence_seconds
+                        and audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
+                        and audio_window.has_vad_speech
                         and duration_progressed
                     ):
                         silence_poll_count += 1
@@ -928,21 +1103,21 @@ class WhisperCppSttService:
 
                     if silence_poll_count >= self.silence_confirmation_polls:
                         logger.info(
-                            "stt stop_reason=confirmed_silence duration=%.2f peak=%.1f silence=%.2f",
+                            "stt stop_reason=confirmed_vad_tail duration=%.2f peak=%.1f vad_tail=%.2f",
                             audio_window.duration_seconds,
                             audio_window.peak_energy,
-                            audio_window.trailing_silence_seconds,
+                            audio_window.trailing_non_speech_seconds,
                         )
                         if self.utterance_end_grace_seconds > 0:
                             await asyncio.sleep(self.utterance_end_grace_seconds)
                         break
 
                     logger.info(
-                        "stt poll bytes=%s duration=%.2f peak=%.1f silence=%.2f speech_started=%s silence_polls=%s partial_pending=%s",
+                        "stt poll bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f speech_started=%s tail_polls=%s partial_pending=%s",
                         len(audio_window.pcm_data),
                         audio_window.duration_seconds,
                         audio_window.peak_energy,
-                        audio_window.trailing_silence_seconds,
+                        audio_window.trailing_non_speech_seconds,
                         speech_started,
                         silence_poll_count,
                         partial_task is not None,
@@ -951,9 +1126,12 @@ class WhisperCppSttService:
                         current_noise=audio_window.current_energy,
                         peak_energy=audio_window.peak_energy,
                         trailing_silence_seconds=(
-                            audio_window.trailing_silence_seconds if speech_started else elapsed_seconds
+                            audio_window.trailing_non_speech_seconds
+                            if audio_window.has_vad_speech
+                            else elapsed_seconds
                         ),
-                        speech_started=speech_started,
+                        speech_started=audio_window.has_vad_speech,
+                        vad_active=audio_window.vad_active,
                         partial_pending=partial_task is not None,
                     )
                 else:
@@ -962,6 +1140,7 @@ class WhisperCppSttService:
                         current_noise=0.0,
                         trailing_silence_seconds=elapsed_seconds if not speech_started else None,
                         speech_started=speech_started,
+                        vad_active=False,
                         partial_pending=partial_task is not None,
                     )
 
@@ -1003,6 +1182,8 @@ class WhisperCppSttService:
             live_audio_path = getattr(session, "pcm_path", session.output_path)
             final_audio_window = self._read_audio_window(live_audio_path)
             final_audio_window = self._merge_audio_windows(primed_audio_window, final_audio_window)
+            if final_audio_window is not None:
+                final_audio_window = self._apply_endpoint_vad(final_audio_window, vad_tracker)
             ended_at = datetime.now(UTC)
             if final_audio_window is None or not final_audio_window.pcm_data:
                 logger.info("stt final_audio empty=true")
@@ -1011,6 +1192,7 @@ class WhisperCppSttService:
                     peak_energy=0.0,
                     trailing_silence_seconds=0.0,
                     speech_started=speech_started,
+                    vad_active=False,
                     partial_pending=False,
                 )
                 yield Transcript(
@@ -1025,18 +1207,19 @@ class WhisperCppSttService:
 
             final_audio_path = self._persist_final_audio(final_audio_window)
             logger.info(
-                "stt final_audio bytes=%s duration=%.2f peak=%.1f silence=%.2f path=%s",
+                "stt final_audio bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f path=%s",
                 len(final_audio_window.pcm_data),
                 final_audio_window.duration_seconds,
                 final_audio_window.peak_energy,
-                final_audio_window.trailing_silence_seconds,
+                final_audio_window.trailing_non_speech_seconds,
                 final_audio_path,
             )
             self._publish_audio_status(
                 current_noise=final_audio_window.current_energy,
                 peak_energy=final_audio_window.peak_energy,
-                trailing_silence_seconds=final_audio_window.trailing_silence_seconds,
-                speech_started=speech_started,
+                trailing_silence_seconds=final_audio_window.trailing_non_speech_seconds,
+                speech_started=final_audio_window.has_vad_speech,
+                vad_active=final_audio_window.vad_active,
                 partial_pending=False,
             )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
@@ -1066,6 +1249,7 @@ class WhisperCppSttService:
                 peak_energy=0.0,
                 trailing_silence_seconds=0.0,
                 speech_started=False,
+                vad_active=False,
                 partial_pending=False,
             )
             self._publish_whisper_status(None)
@@ -1076,10 +1260,11 @@ class WhisperCppSttService:
 
         session = await self.shared_live_state.ensure_session()
         await self.shared_live_state.sync()
-        self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds, self.ring_debug_stride_seconds)
+        self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds)
         if not self.shared_live_state.utterance_active:
             self.shared_live_state.start_utterance()
         started_at = self.shared_live_state.utterance_started_at or datetime.now(UTC)
+        vad_tracker = self._build_endpoint_vad_tracker()
         last_partial_text = ""
         speech_started = False
         silence_poll_count = 0
@@ -1093,7 +1278,7 @@ class WhisperCppSttService:
             while True:
                 await asyncio.sleep(self.poll_interval_seconds)
                 await self.shared_live_state.sync()
-                self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds, self.ring_debug_stride_seconds)
+                self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds)
                 elapsed_seconds = (datetime.now(UTC) - started_at).total_seconds()
                 partial_task, partial_transcript = await self._collect_partial_task(partial_task, last_partial_text)
                 if partial_transcript is not None:
@@ -1106,6 +1291,8 @@ class WhisperCppSttService:
                     source_path=getattr(session, "output_path", Path("shared-live-session.wav")),
                 )
                 if audio_window is not None:
+                    audio_window = self._apply_endpoint_vad(audio_window, vad_tracker)
+                if audio_window is not None:
                     if audio_window.has_speech and audio_window.peak_energy >= self.speech_start_energy_threshold:
                         speech_started = True
 
@@ -1113,7 +1300,7 @@ class WhisperCppSttService:
                         audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
-                        and audio_window.trailing_silence_seconds < self.speech_silence_seconds
+                        and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         and elapsed_seconds - last_partial_request_at >= self.partial_update_interval_seconds
                     ):
                         partial_task = asyncio.create_task(
@@ -1124,22 +1311,20 @@ class WhisperCppSttService:
                     if (
                         speech_started
                         and audio_window.duration_seconds >= self.minimum_utterance_seconds
-                        and audio_window.trailing_silence_seconds >= self.speech_silence_seconds
+                        and audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
+                        and audio_window.has_vad_speech
                     ):
                         silence_poll_count += 1
                     else:
                         silence_poll_count = 0
                         if (
                             finalize_started_at is not None
-                            and audio_window.trailing_silence_seconds < self.speech_silence_seconds
+                            and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         ):
                             finalize_started_at = None
                             stable_tail_polls = 0
 
-                    speech_endpoint_seconds = max(
-                        0.0,
-                        audio_window.duration_seconds - audio_window.trailing_silence_seconds,
-                    )
+                    speech_endpoint_seconds = audio_window.last_vad_speech_offset_seconds
                     if finalize_started_at is None and silence_poll_count >= self.silence_confirmation_polls:
                         finalize_started_at = datetime.now(UTC)
                         stable_tail_polls = 0
@@ -1166,9 +1351,12 @@ class WhisperCppSttService:
                         current_noise=audio_window.current_energy,
                         peak_energy=audio_window.peak_energy,
                         trailing_silence_seconds=(
-                            audio_window.trailing_silence_seconds if speech_started else elapsed_seconds
+                            audio_window.trailing_non_speech_seconds
+                            if audio_window.has_vad_speech
+                            else elapsed_seconds
                         ),
-                        speech_started=speech_started,
+                        speech_started=audio_window.has_vad_speech,
+                        vad_active=audio_window.vad_active,
                         partial_pending=partial_task is not None,
                     )
                 else:
@@ -1176,6 +1364,7 @@ class WhisperCppSttService:
                         current_noise=0.0,
                         trailing_silence_seconds=elapsed_seconds if not speech_started else None,
                         speech_started=speech_started,
+                        vad_active=False,
                         partial_pending=partial_task is not None,
                     )
 
@@ -1202,11 +1391,13 @@ class WhisperCppSttService:
                 speech_started = True
                 yield partial_transcript
             await self.shared_live_state.sync()
-            self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds, self.ring_debug_stride_seconds)
+            self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds)
             final_audio_window = self.shared_live_state.finish_utterance(
                 threshold=self.speech_energy_threshold,
                 source_path=getattr(session, "output_path", Path("shared-live-session.wav")),
             )
+            if final_audio_window is not None:
+                final_audio_window = self._apply_endpoint_vad(final_audio_window, vad_tracker)
             ended_at = datetime.now(UTC)
             if final_audio_window is None or not final_audio_window.pcm_data:
                 self._publish_audio_status(
@@ -1214,6 +1405,7 @@ class WhisperCppSttService:
                     peak_energy=0.0,
                     trailing_silence_seconds=0.0,
                     speech_started=speech_started,
+                    vad_active=False,
                     partial_pending=False,
                 )
                 yield Transcript(
@@ -1230,8 +1422,9 @@ class WhisperCppSttService:
             self._publish_audio_status(
                 current_noise=final_audio_window.current_energy,
                 peak_energy=final_audio_window.peak_energy,
-                trailing_silence_seconds=final_audio_window.trailing_silence_seconds,
-                speech_started=speech_started,
+                trailing_silence_seconds=final_audio_window.trailing_non_speech_seconds,
+                speech_started=final_audio_window.has_vad_speech,
+                vad_active=final_audio_window.vad_active,
                 partial_pending=False,
             )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
@@ -1251,12 +1444,13 @@ class WhisperCppSttService:
                     await partial_task
             if self.shared_live_state is not None and self.shared_live_state.utterance_active:
                 self.shared_live_state.reset_utterance()
-            self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds, self.ring_debug_stride_seconds)
+            self._publish_ring_buffer_state(self.ring_debug_wake_window_seconds)
             self._publish_audio_status(
                 current_noise=0.0,
                 peak_energy=0.0,
                 trailing_silence_seconds=0.0,
                 speech_started=False,
+                vad_active=False,
                 partial_pending=False,
             )
             self._publish_whisper_status(None)
@@ -1267,6 +1461,24 @@ class WhisperCppSttService:
         transcript = await self._transcribe_file(audio_path, started_at, is_final=True)
         self._prune_recording_artifacts(audio_path)
         return transcript
+
+    def _build_endpoint_vad_tracker(self) -> _UtteranceVadTracker:
+        tracker = _UtteranceVadTracker(
+            threshold=self.vad_threshold,
+            frame_ms=self.vad_frame_ms,
+            start_trigger_frames=self.vad_start_trigger_frames,
+            end_trigger_frames=self.vad_end_trigger_frames,
+            model=self.endpoint_vad_factory(),
+        )
+        self._endpoint_vad_ready = True
+        return tracker
+
+    def _apply_endpoint_vad(
+        self,
+        audio_window: AudioWindow,
+        vad_tracker: _UtteranceVadTracker,
+    ) -> AudioWindow:
+        return vad_tracker.apply(audio_window)
 
     async def _capture_failed(self, session: RecordingSession) -> bool:
         return session.returncode not in (None, 0) and not session.stop_requested
@@ -1361,6 +1573,7 @@ class WhisperCppSttService:
         peak_energy: float | None = None,
         trailing_silence_seconds: float | None = None,
         speech_started: bool | None = None,
+        vad_active: bool | None = None,
         partial_pending: bool | None = None,
     ) -> None:
         if self.terminal_debug is None:
@@ -1370,10 +1583,11 @@ class WhisperCppSttService:
             peak_energy=peak_energy,
             trailing_silence_seconds=trailing_silence_seconds,
             speech_started=speech_started,
+            vad_active=vad_active,
             partial_pending=partial_pending,
         )
 
-    def _publish_ring_buffer_state(self, wake_window_seconds: float, stride_seconds: float) -> None:
+    def _publish_ring_buffer_state(self, wake_window_seconds: float) -> None:
         if self.terminal_debug is None or self.shared_live_state is None:
             return
         capacity_seconds, filled_seconds, wake_window, utterance_start, write_head = self.shared_live_state.ring_buffer_debug_state(
@@ -1383,7 +1597,6 @@ class WhisperCppSttService:
             capacity_seconds=capacity_seconds,
             filled_seconds=filled_seconds,
             wake_window_seconds=wake_window,
-            stride_seconds=stride_seconds,
             utterance_start_seconds=utterance_start,
             write_head_seconds=write_head,
         )
@@ -1813,7 +2026,7 @@ class OpenWakeWordWakeWordService:
         self._publish_wake_status("listening", wake_phrase)
         try:
             await self.shared_live_state.ensure_session()
-            self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
+            self._publish_ring_buffer_state(self.wake_lookback_seconds)
             while True:
                 if detection_stream_offset is not None:
                     break
@@ -1823,7 +2036,7 @@ class OpenWakeWordWakeWordService:
                     pass
                 wake_event.clear()
                 await self.shared_live_state.sync()
-                self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
+                self._publish_ring_buffer_state(self.wake_lookback_seconds)
                 self._publish_wake_audio()
 
             lookback_offset = _seconds_to_byte_offset(
@@ -1837,7 +2050,7 @@ class OpenWakeWordWakeWordService:
                 detection_stream_offset - lookback_offset,
             )
             self.shared_live_state.start_utterance(stream_start_offset=utterance_start_stream_offset)
-            self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
+            self._publish_ring_buffer_state(self.wake_lookback_seconds)
             self._publish_wake_status("awake", wake_phrase)
             return WakeDetectionResult(
                 detected=True,
@@ -1858,7 +2071,7 @@ class OpenWakeWordWakeWordService:
             return
         self.terminal_debug.update_wake_status(status, detail)
 
-    def _publish_ring_buffer_state(self, wake_window_seconds: float, stride_seconds: float) -> None:
+    def _publish_ring_buffer_state(self, wake_window_seconds: float) -> None:
         if self.terminal_debug is None or self.shared_live_state is None:
             return
         capacity_seconds, filled_seconds, wake_window, utterance_start, write_head = self.shared_live_state.ring_buffer_debug_state(
@@ -1868,7 +2081,6 @@ class OpenWakeWordWakeWordService:
             capacity_seconds=capacity_seconds,
             filled_seconds=filled_seconds,
             wake_window_seconds=wake_window,
-            stride_seconds=stride_seconds,
             utterance_start_seconds=utterance_start,
             write_head_seconds=write_head,
         )
@@ -1888,6 +2100,7 @@ class OpenWakeWordWakeWordService:
                 peak_energy=0.0,
                 trailing_silence_seconds=self.wake_lookback_seconds,
                 speech_started=False,
+                vad_active=False,
                 partial_pending=False,
             )
             return
@@ -1895,7 +2108,8 @@ class OpenWakeWordWakeWordService:
             current_noise=audio_window.current_energy,
             peak_energy=audio_window.peak_energy,
             trailing_silence_seconds=audio_window.trailing_silence_seconds,
-            speech_started=audio_window.has_speech,
+            speech_started=False,
+            vad_active=False,
             partial_pending=False,
         )
 

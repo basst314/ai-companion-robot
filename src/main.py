@@ -97,14 +97,18 @@ def _build_speech_services(
             binary_path=runtime.whisper_binary_path,
             language_mode=runtime.language_mode,
             speech_silence_seconds=runtime.speech_silence_seconds,
+            vad_threshold=runtime.vad_threshold,
+            vad_frame_ms=runtime.vad_frame_ms,
+            vad_start_trigger_frames=runtime.vad_start_trigger_frames,
+            vad_end_trigger_frames=runtime.vad_end_trigger_frames,
             max_recording_seconds=runtime.max_recording_seconds,
             utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
             utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
             ring_debug_wake_window_seconds=runtime.wake_lookback_seconds,
-            ring_debug_stride_seconds=0.08,
             terminal_debug=terminal_debug,
             shared_live_state=shared_live_state,
         )
+        stt.ensure_endpoint_vad_ready()
         wake_word = _build_wake_word_service(
             config,
             terminal_debug=terminal_debug,

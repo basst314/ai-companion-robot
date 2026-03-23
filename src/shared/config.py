@@ -39,14 +39,16 @@ class RuntimeConfig:
     whisper_binary_path: Path | None = None
     audio_record_command: tuple[str, ...] = ()
     speech_silence_seconds: float = 1.2
+    vad_threshold: float = 0.45
+    vad_frame_ms: int = 30
+    vad_start_trigger_frames: int = 2
+    vad_end_trigger_frames: int = 5
     max_recording_seconds: float = 15.0
     wake_word_enabled: bool = False
     wake_word_phrase: str = ""
     wake_word_model: str = ""
     wake_word_threshold: float = 0.5
     wake_lookback_seconds: float = 0.8
-    wake_window_seconds: float = 1.5
-    wake_stride_seconds: float = 0.5
     utterance_finalize_timeout_seconds: float = 0.6
     utterance_tail_stable_polls: int = 2
     language_mode: Literal["auto", "en", "de", "id"] = "auto"
@@ -138,6 +140,22 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
         default=runtime.speech_silence_seconds,
     )
+    runtime.vad_threshold = _parse_float(
+        env.get(f"{ENV_PREFIX}VAD_THRESHOLD"),
+        default=runtime.vad_threshold,
+    )
+    runtime.vad_frame_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}VAD_FRAME_MS"),
+        default=runtime.vad_frame_ms,
+    )
+    runtime.vad_start_trigger_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}VAD_START_TRIGGER_FRAMES"),
+        default=runtime.vad_start_trigger_frames,
+    )
+    runtime.vad_end_trigger_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}VAD_END_TRIGGER_FRAMES"),
+        default=runtime.vad_end_trigger_frames,
+    )
     runtime.max_recording_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}MAX_RECORDING_SECONDS"),
         default=runtime.max_recording_seconds,
@@ -156,14 +174,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}WAKE_LOOKBACK_SECONDS"),
         default=runtime.wake_lookback_seconds,
     )
-    runtime.wake_window_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}WAKE_WINDOW_SECONDS"),
-        default=runtime.wake_window_seconds,
-    )
-    runtime.wake_stride_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}WAKE_STRIDE_SECONDS"),
-        default=runtime.wake_stride_seconds,
-    )
     runtime.utterance_finalize_timeout_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}UTTERANCE_FINALIZE_TIMEOUT_SECONDS"),
         default=runtime.utterance_finalize_timeout_seconds,
@@ -174,12 +184,18 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     )
     if runtime.wake_lookback_seconds <= 0:
         runtime.wake_lookback_seconds = 0.8
+    if runtime.vad_threshold <= 0:
+        runtime.vad_threshold = 0.45
+    elif runtime.vad_threshold > 1.0:
+        runtime.vad_threshold = 1.0
+    if runtime.vad_frame_ms not in {10, 20, 30}:
+        runtime.vad_frame_ms = 30
+    runtime.vad_start_trigger_frames = max(1, runtime.vad_start_trigger_frames)
+    runtime.vad_end_trigger_frames = max(1, runtime.vad_end_trigger_frames)
     if runtime.wake_word_threshold <= 0:
         runtime.wake_word_threshold = 0.5
     elif runtime.wake_word_threshold > 1.0:
         runtime.wake_word_threshold = 1.0
-    if runtime.wake_window_seconds <= runtime.wake_stride_seconds:
-        runtime.wake_window_seconds = max(runtime.wake_stride_seconds + 0.1, runtime.wake_window_seconds)
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
         default=runtime.language_mode,

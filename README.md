@@ -136,6 +136,10 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
+- `AI_COMPANION_VAD_THRESHOLD`
+- `AI_COMPANION_VAD_FRAME_MS`
+- `AI_COMPANION_VAD_START_TRIGGER_FRAMES`
+- `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
@@ -272,6 +276,8 @@ To wire this into the app, configure:
 
 The interactive setup script will ask whether you want the default built-in `Hey Jarvis` pairing or a custom phrase plus matching OpenWakeWord model. For the default built-in option, setup downloads and verifies the model locally before writing `.env.local`. Custom phrases only work when you provide a model that was trained for that phrase, and setup now verifies that the file exists and can initialize.
 
+For end-of-utterance detection, the runtime now uses the Silero VAD bundled with `openwakeword` instead of relying only on raw energy silence. `AI_COMPANION_SPEECH_SILENCE_SECONDS` is therefore the amount of VAD-confirmed trailing non-speech required before the utterance is finalized.
+
 Example Linux/Raspberry Pi recording command template:
 
 ```python
@@ -313,12 +319,17 @@ Equivalent `.env.local` example:
 
 ```env
 AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}
+AI_COMPANION_SPEECH_SILENCE_SECONDS=0.75
+AI_COMPANION_VAD_THRESHOLD=0.45
+AI_COMPANION_VAD_FRAME_MS=30
+AI_COMPANION_VAD_START_TRIGGER_FRAMES=2
+AI_COMPANION_VAD_END_TRIGGER_FRAMES=5
 AI_COMPANION_MAX_RECORDING_SECONDS=15
 ```
 
-The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, keep a bounded wake-word ring buffer in memory, create WAV snapshots for `whisper.cpp`, and end the utterance after confirmed silence. Custom recorder commands therefore need to support writing raw PCM to standard output.
+The `{output_path}` placeholder is expected and is filled in by the runtime when recording starts. For the built-in streaming STT flow, the runtime substitutes `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect live audio, keep a bounded wake-word ring buffer in memory, create WAV snapshots for `whisper.cpp`, and end the utterance after VAD-confirmed trailing non-speech. Custom recorder commands therefore need to support writing raw PCM to standard output.
 
-`AI_COMPANION_MAX_RECORDING_SECONDS` adds a simple hard stop for each utterance so the recorder cannot run forever when background noise prevents the current silence-based end-of-utterance logic from settling.
+`AI_COMPANION_MAX_RECORDING_SECONDS` adds a simple hard stop for each utterance so the recorder cannot run forever if the endpoint detector never settles.
 
 When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
 
@@ -328,7 +339,7 @@ When `interactive_console` is enabled in speech mode, the runtime supports all o
 - type `exit` to quit
 
 The sticky terminal header also shows:
-- microphone level and silence progress
+- microphone level and VAD tail progress
 - the wake state (`listening` or `awake`)
 - the live transcript preview
 - the wake ring-buffer state for debugging handoff timing

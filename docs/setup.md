@@ -29,6 +29,11 @@ Current supported variables:
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
+- `AI_COMPANION_VAD_THRESHOLD`
+- `AI_COMPANION_VAD_FRAME_MS`
+- `AI_COMPANION_VAD_START_TRIGGER_FRAMES`
+- `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
+- `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
@@ -39,7 +44,8 @@ Current supported variables:
 - `AI_COMPANION_LANGUAGE_MODE`
 
 You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
-The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after it detects trailing silence. Custom recorder commands therefore need to support raw PCM output to standard output.
+The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after the bundled Silero VAD confirms trailing non-speech. Custom recorder commands therefore need to support raw PCM output to standard output.
+`AI_COMPANION_SPEECH_SILENCE_SECONDS` now means the required amount of VAD-confirmed trailing non-speech before the app finalizes an utterance. The `AI_COMPANION_VAD_*` settings control endpoint sensitivity and smoothing.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 
 ## Platform-Specific Defaults

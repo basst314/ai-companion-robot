@@ -97,6 +97,7 @@ class TerminalDebugSink(Protocol):
         peak_energy: float | None = None,
         trailing_silence_seconds: float | None = None,
         speech_started: bool | None = None,
+        vad_active: bool | None = None,
         partial_pending: bool | None = None,
     ) -> None:
         """Update live microphone telemetry shown in the sticky header."""
@@ -122,7 +123,6 @@ class TerminalDebugSink(Protocol):
         capacity_seconds: float | None = None,
         filled_seconds: float | None = None,
         wake_window_seconds: float | None = None,
-        stride_seconds: float | None = None,
         utterance_start_seconds: float | None = None,
         write_head_seconds: float | None = None,
     ) -> None:
@@ -145,6 +145,7 @@ class TerminalDebugState:
     peak_energy: float | None = None
     trailing_silence_seconds: float | None = None
     speech_started: bool = False
+    vad_active: bool = False
     partial_pending: bool = False
     stt_running: bool = False
     last_stt_duration: str | None = None
@@ -156,7 +157,6 @@ class TerminalDebugState:
     ring_capacity_seconds: float | None = None
     ring_filled_seconds: float | None = None
     ring_wake_window_seconds: float | None = None
-    ring_stride_seconds: float | None = None
     ring_utterance_start_seconds: float | None = None
     ring_write_head_seconds: float | None = None
 
@@ -234,6 +234,7 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.held_peak_at = None
             self.state.trailing_silence_seconds = None
             self.state.speech_started = False
+            self.state.vad_active = False
         self.render()
 
     def update_audio(
@@ -243,6 +244,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         peak_energy: float | None = None,
         trailing_silence_seconds: float | None = None,
         speech_started: bool | None = None,
+        vad_active: bool | None = None,
         partial_pending: bool | None = None,
     ) -> None:
         now = datetime.now(UTC)
@@ -264,6 +266,8 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.trailing_silence_seconds = trailing_silence_seconds
         if speech_started is not None:
             self.state.speech_started = speech_started
+        if vad_active is not None:
+            self.state.vad_active = vad_active
         if partial_pending is not None:
             self.state.partial_pending = partial_pending
         self.render()
@@ -316,7 +320,6 @@ class TerminalDebugScreen(TerminalDebugSink):
         capacity_seconds: float | None = None,
         filled_seconds: float | None = None,
         wake_window_seconds: float | None = None,
-        stride_seconds: float | None = None,
         utterance_start_seconds: float | None = None,
         write_head_seconds: float | None = None,
     ) -> None:
@@ -326,8 +329,6 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.ring_filled_seconds = filled_seconds
         if wake_window_seconds is not None:
             self.state.ring_wake_window_seconds = wake_window_seconds
-        if stride_seconds is not None:
-            self.state.ring_stride_seconds = stride_seconds
         self.state.ring_utterance_start_seconds = utterance_start_seconds
         self.state.ring_write_head_seconds = write_head_seconds
         self.render()
@@ -421,7 +422,6 @@ class TerminalDebugScreen(TerminalDebugSink):
     def _audio_row(self, width: int) -> str:
         current_noise = self.state.current_noise or 0.0
         peak_energy = self.state.held_peak_energy or self.state.peak_energy or current_noise
-        silence = self.state.trailing_silence_seconds
         meter_width = max(8, min(24, width // 6))
         meter = self._build_meter(current_noise=current_noise, peak_energy=peak_energy, width=meter_width)
         parts = [
@@ -429,19 +429,10 @@ class TerminalDebugScreen(TerminalDebugSink):
             meter,
             self.metric_value(f"{current_noise:4.0f}"),
             self.peak_value(f"[{peak_energy:4.0f}]"),
-            self.badge(
-                "silence",
-                "--" if silence is None else f"{silence:0.2f}s",
-                value_style=self.subtle_value if silence is None or silence <= 0.0 else self.value,
-            ),
-            self.badge(
-                "speech",
-                "yes" if self.state.speech_started else "no",
-                value_style=self.success_value if self.state.speech_started else self.subtle_value,
-            ),
             self._wake_badge(),
+            self._stt_badge(),
+            self._vad_badge(),
         ]
-        parts.append(self._stt_badge())
         return self._pad_row("  ".join(parts), width)
 
     def _transcript_row(self, width: int) -> str:
@@ -457,7 +448,6 @@ class TerminalDebugScreen(TerminalDebugSink):
         capacity = self.state.ring_capacity_seconds
         filled = self.state.ring_filled_seconds
         wake_window = self.state.ring_wake_window_seconds
-        stride_seconds = self.state.ring_stride_seconds
         utterance_start = self.state.ring_utterance_start_seconds
         write_head = self.state.ring_write_head_seconds
         if capacity is None or filled is None or wake_window is None or capacity <= 0:
@@ -479,12 +469,7 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.label("[BUF]"),
             timeline,
             self.badge("fill", f"{filled:0.1f}/{capacity:0.1f}s", value_style=self.value),
-            self.badge("wake", f"{min(wake_window, filled):0.1f}s", value_style=self.whisper),
         ]
-        if stride_seconds is None:
-            parts.append(self.badge("stride", "--", value_style=self.subtle_value))
-        else:
-            parts.append(self.badge("stride", f"{stride_seconds:0.1f}s", value_style=self.value))
         if utterance_start is None:
             parts.append(self.badge("start", "--", value_style=self.subtle_value))
         else:
@@ -603,6 +588,7 @@ class TerminalDebugScreen(TerminalDebugSink):
     def _wake_badge(self) -> str:
         status = self.state.wake_status
         detail = self.state.wake_detail or "--"
+        padded_status = status.ljust(len("listening"))
         if status == "awake":
             status_style = self.success_value
         elif status == "listening":
@@ -611,8 +597,26 @@ class TerminalDebugScreen(TerminalDebugSink):
             status_style = self.subtle_value
         return (
             f"{self.label('[wake')} "
-            f"{status_style(status)} "
+            f"{status_style(padded_status)} "
             f"{self.value(detail)}"
+            f"{self.label(']')}"
+        )
+
+    def _vad_badge(self) -> str:
+        silence = self.state.trailing_silence_seconds
+        if not self.state.speech_started:
+            vad_value = 0.0
+            label_style = self.subtle_value
+        elif self.state.vad_active:
+            vad_value = 0.0
+            label_style = self.success_value
+        else:
+            vad_value = max(0.0, silence or 0.0)
+            label_style = self.warning_value
+        return (
+            f"{self.label('[')}"
+            f"{label_style('vad')}"
+            f" {self.value(f'{vad_value:0.2f}s')}"
             f"{self.label(']')}"
         )
 
@@ -716,6 +720,9 @@ class TerminalDebugScreen(TerminalDebugSink):
     def success_value(self, text: str) -> str:
         return self.style(text, "32")
 
+    def warning_value(self, text: str) -> str:
+        return self.style(text, "33")
+
     def transcript(self, text: str) -> str:
         return self.style(text, "36")
 
@@ -733,9 +740,11 @@ class TerminalDebugScreen(TerminalDebugSink):
         label: str,
         value: str,
         *,
+        label_style=None,
         value_style,
     ) -> str:
-        return f"{self.label('[' + label)} {value_style(value)}{self.label(']')}"
+        resolved_label_style = self.label if label_style is None else label_style
+        return f"{resolved_label_style('[' + label)} {value_style(value)}{self.label(']')}"
 
 
 @dataclass(slots=True)
