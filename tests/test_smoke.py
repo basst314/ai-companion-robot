@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -161,8 +160,10 @@ def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, ca
     assert service.state.current_response == "Opening my eyes now."
 
 
-def test_interactive_speech_console_accepts_wake_word_without_enter(monkeypatch) -> None:
-    """Interactive speech mode should allow wake-word activation while input is still pending."""
+def test_interactive_speech_console_prioritizes_wake_word_when_input_and_wake_finish_together(
+    monkeypatch,
+) -> None:
+    """Wake-word activation should win ties with pending non-TTY input completion."""
 
     config = AppConfig()
     config.runtime.input_mode = "speech"
@@ -183,13 +184,7 @@ def test_interactive_speech_console_accepts_wake_word_without_enter(monkeypatch)
 
     service.wake_word = OneShotWakeWordService()
 
-    responses = iter(["exit"])
-
-    def delayed_input(_prompt: str) -> str:
-        time.sleep(0.05)
-        return next(responses, "exit")
-
-    monkeypatch.setattr("builtins.input", delayed_input)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "exit")
 
     asyncio.run(service.run())
 

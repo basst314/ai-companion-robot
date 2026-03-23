@@ -198,6 +198,16 @@ class OrchestratorService:
 
             done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
+            if wake_task is not None and wake_task in done:
+                await wake_task
+                if not input_task.done():
+                    input_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await input_task
+                await self._run_stt_turn()
+                self._show_interactive_speech_hint()
+                continue
+
             if input_task in done:
                 if wake_task is not None and not wake_task.done():
                     wake_task.cancel()
@@ -214,15 +224,6 @@ class OrchestratorService:
                     self._begin_manual_utterance()
                     self._mark_manual_listening_awake()
                     await self._run_stt_turn()
-                self._show_interactive_speech_hint()
-                continue
-
-            if wake_task is not None and wake_task in done:
-                await wake_task
-                input_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await input_task
-                await self._run_stt_turn()
                 self._show_interactive_speech_hint()
 
     async def _await_wake_word(self) -> None:
