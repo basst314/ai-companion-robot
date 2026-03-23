@@ -99,7 +99,7 @@ class BlockingWakeWordService:
 def test_main_returns_success_code() -> None:
     """The entry point should construct the mock runtime successfully."""
 
-    assert main() == 0
+    assert main(AppConfig()) == 0
 
 
 def test_interactive_console_handles_eof_cleanly(monkeypatch) -> None:
@@ -332,7 +332,7 @@ def test_router_classifies_local_and_cloud_paths() -> None:
         started_at=datetime.now(UTC),
         ended_at=datetime.now(UTC),
     )
-    context = asyncio.run(build_application()._build_context())
+    context = asyncio.run(build_application(AppConfig())._build_context())
 
     visible = asyncio.run(router.route(transcript, context))
     local_llm = asyncio.run(
@@ -370,7 +370,7 @@ def test_router_classifies_local_and_cloud_paths() -> None:
 def test_partial_transcript_updates_state_without_triggering_route() -> None:
     """Partial transcripts should update listening UI without executing a turn."""
 
-    service = build_application()
+    service = build_application(AppConfig())
     partial = Transcript(
         text="who do you",
         language=Language.ENGLISH,
@@ -390,7 +390,7 @@ def test_partial_transcript_updates_state_without_triggering_route() -> None:
 def test_memory_and_vision_context_are_used_for_local_query() -> None:
     """Local queries should answer from mock vision and memory context."""
 
-    service = build_application()
+    service = build_application(AppConfig())
 
     asyncio.run(
         service.run_turn(
@@ -438,7 +438,7 @@ def test_cloud_failure_falls_back_to_local_message() -> None:
 def test_tts_failure_does_not_break_interaction_persistence() -> None:
     """TTS failures should still preserve the interaction record."""
 
-    service = build_application()
+    service = build_application(AppConfig())
     service.tts = MockTtsService(should_fail=True)
 
     asyncio.run(
@@ -462,7 +462,7 @@ def test_tts_failure_does_not_break_interaction_persistence() -> None:
 def test_vision_failure_does_not_block_voice_flow() -> None:
     """Vision failures should degrade gracefully while the voice path still completes."""
 
-    service = build_application()
+    service = build_application(AppConfig())
     service.vision = MockVisionService(should_fail=True)
 
     asyncio.run(

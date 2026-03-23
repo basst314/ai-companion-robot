@@ -221,11 +221,62 @@ choose_language_mode() {
   printf '%s' "$(prompt_with_default "Runtime language mode (auto, en, de, id)" "${default_language}")"
 }
 
+choose_wake_setup() {
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    printf '%s' "default"
+    return 0
+  fi
+
+  if ! confirm "Enable wake-word detection with OpenWakeWord?"; then
+    printf '%s' "off"
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+
+Wake-word setup options:
+  default - use the built-in Hey Jarvis + hey jarvis model pairing
+  custom  - provide your own spoken phrase and matching model name/path
+EOF
+  printf '%s' "$(prompt_with_default "Wake-word setup (default, custom)" "default")"
+}
+
+choose_custom_wake_phrase() {
+  printf '%s' "$(prompt_with_default "Custom wake phrase" "Oreo")"
+}
+
+choose_custom_wake_model() {
+  printf '%s' "$(prompt_with_default "OpenWakeWord model name or path" "/absolute/path/to/custom_model.tflite")"
+}
+
 create_virtualenv() {
   local python_cmd="$1"
+  local recreate_venv=0
   if [[ -x "${REPO_DIR}/.venv/bin/python" ]] && [[ "${FORCE}" -eq 0 ]]; then
-    log "reusing existing .venv"
+    local existing_version
+    local target_version
+    existing_version="$("${REPO_DIR}/.venv/bin/python" - <<'EOF'
+import sys
+print(f"{sys.version_info[0]}.{sys.version_info[1]}")
+EOF
+)"
+    target_version="$("${python_cmd}" - <<'EOF'
+import sys
+print(f"{sys.version_info[0]}.{sys.version_info[1]}")
+EOF
+)"
+    if [[ "${existing_version}" == "${target_version}" ]]; then
+      log "reusing existing .venv"
+    else
+      log "recreating .venv because it uses Python ${existing_version}, expected ${target_version}"
+      recreate_venv=1
+    fi
   else
+    recreate_venv=1
+  fi
+
+  if [[ "${recreate_venv}" -eq 1 ]]; then
+    rm -rf "${REPO_DIR}/.venv"
     log "creating virtual environment with ${python_cmd}"
     "${python_cmd}" -m venv "${REPO_DIR}/.venv"
   fi
@@ -233,6 +284,115 @@ create_virtualenv() {
   log "installing Python package dependencies"
   "${REPO_DIR}/.venv/bin/python" -m pip install --upgrade pip
   "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev]"
+}
+
+resolve_wake_model() {
+  local wake_setup="$1"
+  local wake_model="$2"
+
+  if [[ "${wake_setup}" == "off" ]]; then
+    printf '%s|%s' "" ""
+    return 0
+  fi
+
+  local resolved
+  local resolved_raw
+  resolved="$("${REPO_DIR}/.venv/bin/python" - "$wake_setup" "$wake_model" 2>&1 <<'EOF'
+import importlib.util
+import os
+import pathlib
+import platform
+import sys
+
+wake_setup, wake_model = sys.argv[1:]
+
+try:
+    import openwakeword
+    import openwakeword.utils
+    from openwakeword.model import Model
+except ImportError as exc:
+    raise SystemExit(f"OpenWakeWord is not installed correctly: {exc}")
+
+
+def select_framework(model_ref: str) -> str:
+    normalized = model_ref.strip().lower()
+    if normalized.endswith(".onnx"):
+        return "onnx"
+    if normalized.endswith(".tflite"):
+        return "tflite"
+    if platform.system() == "Darwin":
+        return "onnx"
+    if importlib.util.find_spec("ai_edge_litert") or importlib.util.find_spec("tflite_runtime"):
+        return "tflite"
+    return "onnx"
+
+
+def ensure_runtime_support_files() -> None:
+    resources_dir = pathlib.Path(openwakeword.__file__).resolve().parent / "resources" / "models"
+    resources_dir.mkdir(parents=True, exist_ok=True)
+    for feature_model in openwakeword.FEATURE_MODELS.values():
+        tflite_path = resources_dir / feature_model["download_url"].split("/")[-1]
+        onnx_path = resources_dir / tflite_path.name.replace(".tflite", ".onnx")
+        if not tflite_path.exists():
+            openwakeword.utils.download_file(feature_model["download_url"], str(resources_dir))
+        if not onnx_path.exists():
+            openwakeword.utils.download_file(feature_model["download_url"].replace(".tflite", ".onnx"), str(resources_dir))
+    for vad_model in openwakeword.VAD_MODELS.values():
+        vad_path = resources_dir / vad_model["download_url"].split("/")[-1]
+        if not vad_path.exists():
+            openwakeword.utils.download_file(vad_model["download_url"], str(resources_dir))
+
+
+def ensure_builtin_model(model_ref: str) -> str:
+    normalized = model_ref.strip().replace(" ", "_").lower()
+    matched_name = None
+    for metadata in openwakeword.MODELS.values():
+        model_path = metadata["model_path"]
+        stem = pathlib.Path(model_path).stem
+        if normalized == stem or normalized in stem:
+            matched_name = stem
+            break
+    if matched_name is None:
+        raise SystemExit(f"Unable to resolve built-in OpenWakeWord model '{model_ref}'")
+    openwakeword.utils.download_models(model_names=[matched_name])
+    return model_ref
+
+
+ensure_runtime_support_files()
+
+
+if wake_setup == "default":
+    framework = select_framework(wake_model)
+    resolved_model = ensure_builtin_model(wake_model)
+elif wake_setup == "custom":
+    candidate = pathlib.Path(wake_model).expanduser()
+    if not candidate.is_absolute():
+        candidate = pathlib.Path.cwd() / candidate
+    if not candidate.exists():
+        raise SystemExit(
+            "Custom wake-word models must already exist on disk. "
+            f"Model path not found: {candidate}"
+        )
+    resolved_model = candidate
+    framework = select_framework(str(candidate))
+else:
+    raise SystemExit(f"Unsupported wake setup '{wake_setup}'")
+
+try:
+    Model(wakeword_models=[str(resolved_model)], inference_framework=framework)
+except Exception as exc:
+    raise SystemExit(
+        "Failed to initialize the selected OpenWakeWord model. "
+        f"Model={resolved_model} framework={framework} error={exc}"
+    )
+
+print(f"{resolved_model}|{framework}")
+EOF
+)" || fail "${resolved}"
+  resolved_raw="${resolved}"
+  resolved="${resolved_raw##*$'\n'}"
+  [[ "${resolved}" == *"|"* ]] || fail "unexpected OpenWakeWord resolver output: ${resolved_raw}"
+  printf '%s' "${resolved}"
 }
 
 prepare_whisper_repo() {
@@ -284,6 +444,9 @@ download_model() {
 write_env_file() {
   local selected_model="$1"
   local selected_language_mode="$2"
+  local wake_setup="$3"
+  local wake_phrase="$4"
+  local wake_model="$5"
   local whisper_binary="${WHISPER_REPO_DIR}/build/bin/whisper-cli"
   local whisper_model="${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin"
   local audio_command
@@ -311,10 +474,11 @@ AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
 AI_COMPANION_SPEECH_SILENCE_SECONDS=1.2
 AI_COMPANION_MAX_RECORDING_SECONDS=15
-AI_COMPANION_WAKE_WORD_ENABLED=true
-AI_COMPANION_WAKE_WORD_PHRASE=Oreo
-AI_COMPANION_WAKE_WINDOW_SECONDS=1.5
-AI_COMPANION_WAKE_STRIDE_SECONDS=0.5
+AI_COMPANION_WAKE_WORD_ENABLED=$([[ "${wake_setup}" == "off" ]] && printf '%s' "false" || printf '%s' "true")
+AI_COMPANION_WAKE_WORD_PHRASE=${wake_phrase}
+AI_COMPANION_WAKE_WORD_MODEL=${wake_model}
+AI_COMPANION_WAKE_WORD_THRESHOLD=0.5
+AI_COMPANION_WAKE_LOOKBACK_SECONDS=0.8
 AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.6
 AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=2
 AI_COMPANION_LANGUAGE_MODE=${selected_language_mode}
@@ -349,6 +513,28 @@ main() {
     *) fail "unsupported language mode '${selected_language_mode}'" ;;
   esac
 
+  local wake_setup
+  wake_setup="$(choose_wake_setup)"
+  case "${wake_setup}" in
+    off|default|custom) ;;
+    *) fail "unsupported wake-word setup '${wake_setup}'" ;;
+  esac
+
+  local wake_phrase=""
+  local wake_model=""
+  case "${wake_setup}" in
+    default)
+      wake_phrase="Hey Jarvis"
+      wake_model="hey jarvis"
+      ;;
+    custom)
+      wake_phrase="$(choose_custom_wake_phrase)"
+      wake_model="$(choose_custom_wake_model)"
+      [[ -n "${wake_phrase}" ]] || fail "custom wake phrase cannot be empty"
+      [[ -n "${wake_model}" ]] || fail "custom wake model cannot be empty"
+      ;;
+  esac
+
   install_system_packages
 
   local python_cmd
@@ -356,10 +542,17 @@ main() {
   log "using Python interpreter: ${python_cmd}"
 
   create_virtualenv "${python_cmd}"
+  if [[ "${wake_setup}" != "off" ]]; then
+    log "resolving OpenWakeWord model '${wake_model}'"
+    local resolved_wake
+    resolved_wake="$(resolve_wake_model "${wake_setup}" "${wake_model}")"
+    wake_model="${resolved_wake%%|*}"
+    log "using OpenWakeWord model reference: ${wake_model}"
+  fi
   prepare_whisper_repo
   build_whisper
   download_model "${selected_model}"
-  write_env_file "${selected_model}" "${selected_language_mode}"
+  write_env_file "${selected_model}" "${selected_language_mode}" "${wake_setup}" "${wake_phrase}" "${wake_model}"
   run_verification
 
   cat <<EOF
@@ -372,7 +565,7 @@ Whisper model: ${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin
 
 Next steps:
   1. Run the app with: .venv/bin/python src/main.py
-  2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or enable the wake word and say it
+  2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or use the configured wake word
   3. Edit ${ENV_FILE} if you want to adjust model, language mode, silence timeout, wake-word settings, or recorder settings
 EOF
 }

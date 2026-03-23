@@ -9,6 +9,30 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-22 — OpenWakeWord Wake Detection Migration
+
+### Highlights
+- Replaced transcript-based wake-word detection with an `OpenWakeWord`-backed detector on the shared live microphone stream.
+- Preserved the existing ring-buffer handoff into `whisper.cpp` STT so the active turn still includes buffered lookback audio plus the wake phrase and following speech.
+- Added model-backed wake-word configuration, with a built-in starter pairing of `Hey Jarvis` and the matching OpenWakeWord model.
+- Hardened `scripts/setup.sh` so a fresh machine rebuilds incompatible virtual environments, provisions the OpenWakeWord runtime assets, validates the selected wake model, and writes a working `.env.local`.
+
+### Why this matters
+This is the architectural shift from a brittle transcript-gated wake flow to a dedicated wake-word detector. It improves resilience, reduces dependence on transcription timing for activation, and makes fresh-machine setup much more predictable for both macOS development and Raspberry Pi deployment.
+
+### Key decisions & rationale
+- Decision: keep `whisper.cpp` for STT and replace only wake detection.
+  - Why: this preserves the existing speech-turn behavior and minimizes regression risk while improving the weakest part of the pipeline.
+- Decision: keep the shared mic stream and ring buffer.
+  - Why: this preserves low-latency handoff and avoids losing pre-roll audio around the wake event.
+- Decision: ship a built-in `Hey Jarvis` starter path first.
+  - Why: OpenWakeWord needs a matching model; a known built-in pairing is the safest way to guarantee first-run success before adding a custom `Oreo` model later.
+
+### Notable commits
+- local changes in this working tree — migrate wake detection to OpenWakeWord and harden setup/runtime verification
+
+---
+
 ## 2026-03-22 — STT Reliability Hardening
 
 ### Highlights

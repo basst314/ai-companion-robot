@@ -18,12 +18,12 @@ from shared.config import AppConfig, load_app_config
 from shared.models import UserIdentity, VisionDetection
 from stt.service import (
     MockSttService,
+    OpenWakeWordWakeWordService,
     SharedLiveSpeechState,
     ShellAudioCaptureService,
     SttService,
     WakeWordService,
     WhisperCppSttService,
-    WhisperCppWakeWordService,
 )
 from tts.service import MockTtsService
 from ui.service import MockUiService
@@ -86,7 +86,7 @@ def _build_speech_services(
         )
         shared_live_state = SharedLiveSpeechState(
             audio_capture=audio_capture,
-            wake_buffer_seconds=max(runtime.wake_window_seconds * 2.0, runtime.wake_window_seconds + runtime.wake_stride_seconds),
+            wake_buffer_seconds=max(2.0, runtime.wake_lookback_seconds * 2.0),
             sample_rate=audio_capture.sample_rate,
             channels=audio_capture.channels,
             sample_width=audio_capture.sample_width,
@@ -100,8 +100,8 @@ def _build_speech_services(
             max_recording_seconds=runtime.max_recording_seconds,
             utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
             utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
-            ring_debug_wake_window_seconds=runtime.wake_window_seconds,
-            ring_debug_stride_seconds=runtime.wake_stride_seconds,
+            ring_debug_wake_window_seconds=runtime.wake_lookback_seconds,
+            ring_debug_stride_seconds=0.08,
             terminal_debug=terminal_debug,
             shared_live_state=shared_live_state,
         )
@@ -131,23 +131,25 @@ def _build_wake_word_service(
         if terminal_debug is not None:
             terminal_debug.update_wake_status("off", "--")
         return None
-    if runtime.stt_backend != "whisper_cpp" or runtime.whisper_model_path is None:
-        raise RuntimeError("wake word support requires whisper_cpp STT and a configured model path")
+    if runtime.input_mode != "speech" or runtime.stt_backend != "whisper_cpp":
+        raise RuntimeError("wake word support requires speech input mode with whisper_cpp STT")
+    if not runtime.wake_word_model.strip():
+        raise RuntimeError("wake word support requires runtime.wake_word_model to be configured")
 
     capture_service = audio_capture or ShellAudioCaptureService(
         command_template=runtime.audio_record_command,
         output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
     )
+    if shared_live_state is None:
+        raise RuntimeError("wake word support requires a shared live speech state")
     if terminal_debug is not None:
         terminal_debug.update_wake_status("listening", runtime.wake_word_phrase)
-    return WhisperCppWakeWordService(
+    return OpenWakeWordWakeWordService(
         audio_capture=capture_service,
-        model_path=runtime.whisper_model_path,
-        binary_path=runtime.whisper_binary_path,
-        language_mode=runtime.language_mode,
         wake_phrase=runtime.wake_word_phrase,
-        wake_window_seconds=runtime.wake_window_seconds,
-        wake_stride_seconds=runtime.wake_stride_seconds,
+        wake_word_model=runtime.wake_word_model,
+        wake_threshold=runtime.wake_word_threshold,
+        wake_lookback_seconds=runtime.wake_lookback_seconds,
         terminal_debug=terminal_debug,
         shared_live_state=shared_live_state,
     )

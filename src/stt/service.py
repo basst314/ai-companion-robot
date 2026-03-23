@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import platform
 import re
 import struct
 import tempfile
@@ -112,6 +113,7 @@ class WakeDetectionResult:
     matched_transcript: str = ""
     prefilled_command_text: str = ""
     audio_window: "AudioWindow | None" = None
+    utterance_stream_start_offset: int | None = None
     utterance_start_offset_seconds: float = 0.0
     segments: tuple[WhisperSegment, ...] = ()
 
@@ -190,6 +192,7 @@ class SharedLiveSpeechState:
     _source_offset_bytes: int = field(default=0, init=False, repr=False)
     _callback_driven: bool = field(default=False, init=False, repr=False)
     _source_path: Path | None = field(default=None, init=False, repr=False)
+    _chunk_listeners: list[Callable[[bytes, int], None]] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         bytes_per_second = max(1, self.channels * self.sample_width * self.sample_rate)
@@ -273,6 +276,10 @@ class SharedLiveSpeechState:
             stream_start_offset=start_offset,
         )
 
+    @property
+    def wake_buffer_start_offset(self) -> int:
+        return self._wake_buffer.start_offset
+
     def current_utterance_window(self, *, threshold: int, source_path: Path | None = None) -> "AudioWindow | None":
         return self._build_window(
             bytes(self.utterance_buffer),
@@ -326,12 +333,23 @@ class SharedLiveSpeechState:
         self._wake_buffer.clear()
         self.reset_utterance()
 
+    def add_chunk_listener(self, listener: Callable[[bytes, int], None]) -> None:
+        if listener not in self._chunk_listeners:
+            self._chunk_listeners.append(listener)
+
+    def remove_chunk_listener(self, listener: Callable[[bytes, int], None]) -> None:
+        with contextlib.suppress(ValueError):
+            self._chunk_listeners.remove(listener)
+
     def _handle_chunk(self, chunk: bytes) -> None:
         if not chunk:
             return
+        chunk_start_offset = self._wake_buffer.end_offset
         self._wake_buffer.append(chunk)
         if self.utterance_active:
             self.utterance_buffer.extend(chunk)
+        for listener in tuple(self._chunk_listeners):
+            listener(chunk, chunk_start_offset)
 
     def _build_window(
         self,
@@ -796,6 +814,12 @@ class WhisperCppSttService:
                     detection.utterance_start_offset_seconds,
                     threshold=self.speech_energy_threshold,
                 )
+            return
+
+        if detection is not None and detection.utterance_stream_start_offset is not None:
+            if trigger == "manual" and self.shared_live_state.utterance_active:
+                self.shared_live_state.reset_utterance()
+            self.shared_live_state.start_utterance(stream_start_offset=detection.utterance_stream_start_offset)
             return
 
         initial_window = None
@@ -1582,304 +1606,292 @@ class WhisperCppSttService:
                 return candidate
 
 
-@dataclass(slots=True)
-class WhisperCppWakeWordService(WhisperCppSttService):
-    """Bounded wake-word detector using overlapping audio windows."""
+class WakeWordModelAdapter(Protocol):
+    """Minimal wake-word scoring interface used by the streaming detector."""
 
+    def score_frame(self, pcm_frame: bytes) -> float:
+        """Return a normalized confidence score for a fixed PCM frame."""
+
+    def reset(self) -> None:
+        """Reset any internal streaming state before a fresh listen loop."""
+
+
+@dataclass(slots=True)
+class OpenWakeWordModelAdapter:
+    """Small adapter that lazily bridges fixed PCM frames into OpenWakeWord."""
+
+    wake_word_model: str
+    inference_framework: str | None = None
+    _model: object = field(init=False, repr=False)
+    _numpy: object = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+            from openwakeword.model import Model  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenWakeWord wake detection requires the 'openwakeword' package and its runtime dependencies"
+            ) from exc
+        inference_framework = self.inference_framework or _select_openwakeword_inference_framework(self.wake_word_model)
+        try:
+            self._model = Model(
+                wakeword_models=[self.wake_word_model],
+                inference_framework=inference_framework,
+            )
+        except Exception as exc:  # pragma: no cover - exercised with dependency installed
+            raise RuntimeError(f"unable to initialize OpenWakeWord model '{self.wake_word_model}': {exc}") from exc
+        self._numpy = np
+
+    def score_frame(self, pcm_frame: bytes) -> float:
+        pcm_samples = self._numpy.frombuffer(pcm_frame, dtype=self._numpy.int16)
+        predictions = self._model.predict(pcm_samples)
+        if not isinstance(predictions, dict) or not predictions:
+            return 0.0
+        return max(float(score) for score in predictions.values())
+
+    def reset(self) -> None:
+        reset = getattr(self._model, "reset", None)
+        if callable(reset):
+            reset()
+
+
+def _default_openwakeword_model_factory(wake_word_model: str) -> WakeWordModelAdapter:
+    return OpenWakeWordModelAdapter(wake_word_model=wake_word_model)
+
+
+def _select_openwakeword_inference_framework(wake_word_model: str) -> str:
+    """Pick a supported OpenWakeWord inference framework for this model reference."""
+
+    normalized = wake_word_model.strip().lower()
+    if normalized.endswith(".onnx"):
+        return "onnx"
+    if normalized.endswith(".tflite"):
+        return "tflite"
+    if platform.system() == "Darwin":
+        return "onnx"
+    if _module_available("ai_edge_litert") or _module_available("tflite_runtime"):
+        return "tflite"
+    return "onnx"
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        __import__(module_name)
+    except ImportError:
+        return False
+    return True
+
+
+@dataclass(slots=True)
+class StreamingWakeWordDetector:
+    """Translate a raw PCM stream into frame-by-frame wake detections."""
+
+    model: WakeWordModelAdapter
+    threshold: float
+    sample_rate: int
+    channels: int
+    sample_width: int
+    frame_duration_seconds: float = 0.08
+    patience_frames: int = 1
+    debounce_seconds: float = 1.0
+    _frame_buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
+    _frame_buffer_start_offset: int | None = field(default=None, init=False, repr=False)
+    _consecutive_hits: int = field(default=0, init=False, repr=False)
+    _debounce_until_offset: int = field(default=0, init=False, repr=False)
+
+    @property
+    def frame_byte_count(self) -> int:
+        return _seconds_to_byte_offset(
+            seconds=self.frame_duration_seconds,
+            channels=self.channels,
+            sample_width=self.sample_width,
+            sample_rate=self.sample_rate,
+        )
+
+    @property
+    def debounce_byte_count(self) -> int:
+        return _seconds_to_byte_offset(
+            seconds=self.debounce_seconds,
+            channels=self.channels,
+            sample_width=self.sample_width,
+            sample_rate=self.sample_rate,
+        )
+
+    def process_chunk(self, chunk: bytes, stream_start_offset: int) -> int | None:
+        if not chunk:
+            return None
+
+        expected_start = None
+        if self._frame_buffer_start_offset is not None:
+            expected_start = self._frame_buffer_start_offset + len(self._frame_buffer)
+        if expected_start is None or stream_start_offset != expected_start:
+            self._frame_buffer.clear()
+            self._frame_buffer_start_offset = stream_start_offset
+
+        self._frame_buffer.extend(chunk)
+        frame_byte_count = self.frame_byte_count
+        if frame_byte_count <= 0:
+            return None
+
+        while len(self._frame_buffer) >= frame_byte_count:
+            frame = bytes(self._frame_buffer[:frame_byte_count])
+            del self._frame_buffer[:frame_byte_count]
+            frame_end_offset = (self._frame_buffer_start_offset or stream_start_offset) + frame_byte_count
+            self._frame_buffer_start_offset = frame_end_offset if self._frame_buffer else None
+            score = self.model.score_frame(frame)
+            if score >= self.threshold:
+                self._consecutive_hits += 1
+            else:
+                self._consecutive_hits = 0
+            if self._consecutive_hits < max(1, self.patience_frames):
+                continue
+            if frame_end_offset < self._debounce_until_offset:
+                continue
+            self._debounce_until_offset = frame_end_offset + self.debounce_byte_count
+            self._consecutive_hits = 0
+            return frame_end_offset
+        return None
+
+
+@dataclass(slots=True)
+class OpenWakeWordWakeWordService:
+    """Wake-word detector backed by OpenWakeWord on the shared live stream."""
+
+    audio_capture: AudioCaptureService
     wake_phrase: str = ""
-    wake_window_seconds: float = 1.5
-    wake_stride_seconds: float = 0.5
-    _wake_session: RecordingSession | None = field(default=None, init=False, repr=False)
-    _wake_carry_window: AudioWindow | None = field(default=None, init=False, repr=False)
+    wake_word_model: str = ""
+    wake_threshold: float = 0.5
+    wake_lookback_seconds: float = 0.8
+    poll_interval_seconds: float = 0.08
+    speech_energy_threshold: int = 60
+    frame_duration_seconds: float = 0.08
+    trigger_patience_frames: int = 1
+    trigger_debounce_seconds: float = 1.0
+    terminal_debug: TerminalDebugSink | None = None
+    shared_live_state: SharedLiveSpeechState | None = None
+    model_factory: Callable[[str], WakeWordModelAdapter] = _default_openwakeword_model_factory
+    _model: WakeWordModelAdapter = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.shared_live_state is None:
+            raise RuntimeError("OpenWakeWord wake detection requires a shared live speech state")
+        if not self.wake_word_model.strip():
+            raise RuntimeError("OpenWakeWord wake detection requires a configured wake word model")
+        self._model = self.model_factory(self.wake_word_model)
 
     async def wait_for_wake_word(self) -> WakeDetectionResult:
         wake_phrase = self.wake_phrase.strip()
         if not wake_phrase:
             return WakeDetectionResult(detected=True)
-
-        if self.shared_live_state is not None:
-            return await self._wait_for_wake_word_shared(wake_phrase)
-
-        self._publish_wake_status("listening", wake_phrase)
-        try:
-            while True:
-                next_window = await self._capture_bounded_window(
-                    self.wake_window_seconds if self._wake_session is None and self._wake_carry_window is None else self.wake_stride_seconds
-                )
-                if next_window is None or not next_window.pcm_data:
-                    continue
-
-                transcript, segments = await self._transcribe_snapshot_with_segments(
-                    next_window,
-                    datetime.now(UTC),
-                    is_final=True,
-                )
-                self._publish_wake_transcript(transcript)
-                stripped_text = strip_wake_phrase(transcript.text, wake_phrase)
-                if stripped_text is None:
-                    self._publish_wake_status("listening", wake_phrase)
-                    continue
-
-                utterance_start_offset = _wake_phrase_start_offset_seconds(
-                    transcript.text,
-                    wake_phrase,
-                    segments,
-                    pre_roll_seconds=0.2,
-                )
-                self._publish_wake_status("awake", wake_phrase)
-                return WakeDetectionResult(
-                    detected=True,
-                    matched_transcript=transcript.text,
-                    prefilled_command_text=stripped_text,
-                    audio_window=next_window,
-                    utterance_start_offset_seconds=utterance_start_offset,
-                    segments=segments,
-                )
-        finally:
-            await self._close_wake_session()
-
-    async def _wait_for_wake_word_shared(self, wake_phrase: str) -> WakeDetectionResult:
         if self.shared_live_state is None:
             raise RuntimeError("shared wake detection requires shared live speech state")
 
-        await self.shared_live_state.ensure_session()
-        self._publish_ring_buffer_state(self.wake_window_seconds, self.wake_stride_seconds)
+        self._model.reset()
+        detector = StreamingWakeWordDetector(
+            model=self._model,
+            threshold=self.wake_threshold,
+            sample_rate=self.shared_live_state.sample_rate,
+            channels=self.shared_live_state.channels,
+            sample_width=self.shared_live_state.sample_width,
+            frame_duration_seconds=self.frame_duration_seconds,
+            patience_frames=self.trigger_patience_frames,
+            debounce_seconds=self.trigger_debounce_seconds,
+        )
+        wake_event = asyncio.Event()
+        detection_stream_offset: int | None = None
+
+        def on_chunk(chunk: bytes, stream_start_offset: int) -> None:
+            nonlocal detection_stream_offset
+            frame_detection_offset = detector.process_chunk(chunk, stream_start_offset)
+            if frame_detection_offset is None or detection_stream_offset is not None:
+                return
+            detection_stream_offset = frame_detection_offset
+            wake_event.set()
+
+        self.shared_live_state.add_chunk_listener(on_chunk)
         self._publish_wake_status("listening", wake_phrase)
-        initial_delay_seconds = self.wake_window_seconds
         try:
+            await self.shared_live_state.ensure_session()
+            self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
             while True:
-                await asyncio.sleep(initial_delay_seconds)
-                initial_delay_seconds = self.wake_stride_seconds
+                if detection_stream_offset is not None:
+                    break
+                try:
+                    await asyncio.wait_for(wake_event.wait(), timeout=self.poll_interval_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                wake_event.clear()
                 await self.shared_live_state.sync()
-                self._publish_ring_buffer_state(self.wake_window_seconds, self.wake_stride_seconds)
-                audio_window = self.shared_live_state.current_wake_window(
-                    duration_seconds=self.wake_window_seconds,
+                self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
+                self._publish_wake_audio()
+
+            lookback_offset = _seconds_to_byte_offset(
+                seconds=self.wake_lookback_seconds,
+                channels=self.shared_live_state.channels,
+                sample_width=self.shared_live_state.sample_width,
+                sample_rate=self.shared_live_state.sample_rate,
+            )
+            utterance_start_stream_offset = max(
+                self.shared_live_state.wake_buffer_start_offset,
+                detection_stream_offset - lookback_offset,
+            )
+            self.shared_live_state.start_utterance(stream_start_offset=utterance_start_stream_offset)
+            self._publish_ring_buffer_state(self.wake_lookback_seconds, detector.frame_duration_seconds)
+            self._publish_wake_status("awake", wake_phrase)
+            return WakeDetectionResult(
+                detected=True,
+                audio_window=self.shared_live_state.current_wake_window(
+                    duration_seconds=self.wake_lookback_seconds,
                     threshold=self.speech_energy_threshold,
-                )
-                self._publish_wake_audio(audio_window, self.wake_window_seconds)
-                if audio_window is None or not audio_window.pcm_data:
-                    continue
-
-                transcript, segments = await self._transcribe_snapshot_with_segments(
-                    audio_window,
-                    datetime.now(UTC),
-                    is_final=True,
-                )
-                self._publish_wake_transcript(transcript)
-                stripped_text = strip_wake_phrase(transcript.text, wake_phrase)
-                if stripped_text is None:
-                    self._publish_wake_status("listening", wake_phrase)
-                    continue
-
-                utterance_start_offset = _wake_phrase_start_offset_seconds(
-                    transcript.text,
-                    wake_phrase,
-                    segments,
-                    pre_roll_seconds=0.2,
-                )
-                utterance_start_stream_offset = audio_window.stream_start_offset + _seconds_to_byte_offset(
-                    seconds=utterance_start_offset,
-                    channels=audio_window.channels,
-                    sample_width=audio_window.sample_width,
-                    sample_rate=audio_window.sample_rate,
-                )
-                self.shared_live_state.start_utterance(stream_start_offset=utterance_start_stream_offset)
-                self._publish_ring_buffer_state(self.wake_window_seconds, self.wake_stride_seconds)
-                self._publish_wake_status("awake", wake_phrase)
-                return WakeDetectionResult(
-                    detected=True,
-                    matched_transcript=transcript.text,
-                    prefilled_command_text=stripped_text,
-                    audio_window=audio_window,
-                    utterance_start_offset_seconds=utterance_start_offset,
-                    segments=segments,
-                )
+                ),
+                utterance_stream_start_offset=utterance_start_stream_offset,
+            )
         except asyncio.CancelledError:
             self._publish_wake_status("listening", wake_phrase)
             raise
-
-    async def _capture_bounded_window(self, duration_seconds: float) -> AudioWindow | None:
-        if not hasattr(self.audio_capture, "start_capture"):
-            audio_path = await self.audio_capture.capture_wav()
-            audio_window = self._read_audio_window(audio_path)
-            self._publish_wake_audio(audio_window, duration_seconds)
-            return audio_window
-
-        if self._wake_session is None:
-            self._wake_session = await self.audio_capture.start_capture()
-        session = self._wake_session
-        started_at = datetime.now(UTC)
-        try:
-            remaining_seconds = max(0.0, duration_seconds)
-            while remaining_seconds > 0:
-                sleep_seconds = min(self.poll_interval_seconds, remaining_seconds)
-                await asyncio.sleep(sleep_seconds)
-                remaining_seconds -= sleep_seconds
-                live_audio_path = getattr(session, "pcm_path", session.output_path)
-                self._publish_wake_audio(
-                    self._read_audio_window(live_audio_path),
-                    (datetime.now(UTC) - started_at).total_seconds(),
-                )
-            live_audio_path = getattr(session, "pcm_path", session.output_path)
-            audio_window = self._read_audio_window(live_audio_path)
-            self._publish_wake_audio(audio_window, duration_seconds)
-            recent_window = self._recent_audio_window(audio_window, self.wake_window_seconds)
-            detection_window = self._select_detection_window(self._wake_carry_window, recent_window)
-            if audio_window is not None and audio_window.duration_seconds >= self._max_wake_buffer_seconds():
-                self._wake_carry_window = recent_window
-                await self._restart_wake_session()
-            return detection_window
-        except Exception:
-            await self._close_wake_session()
-            raise
-
-    def _merge_overlapping_windows(
-        self,
-        previous_window: AudioWindow | None,
-        next_window: AudioWindow | None,
-    ) -> AudioWindow | None:
-        if next_window is None:
-            return previous_window
-        if previous_window is None:
-            return next_window
-        if (
-            previous_window.channels != next_window.channels
-            or previous_window.sample_width != next_window.sample_width
-            or previous_window.sample_rate != next_window.sample_rate
-        ):
-            return next_window
-
-        prefix = self._tail_pcm(previous_window, max(0.0, self.wake_window_seconds - self.wake_stride_seconds))
-        combined_window = AudioWindow(
-            source_path=next_window.source_path,
-            channels=next_window.channels,
-            sample_width=next_window.sample_width,
-            sample_rate=next_window.sample_rate,
-            pcm_data=prefix + next_window.pcm_data,
-            duration_seconds=0.0,
-            trailing_silence_seconds=0.0,
-            has_speech=False,
-            current_energy=0.0,
-            peak_energy=0.0,
-            stream_start_offset=max(
-                previous_window.stream_start_offset,
-                previous_window.stream_start_offset + len(previous_window.pcm_data) - len(prefix),
-            ),
-        )
-        return self._rebuild_audio_window(combined_window)
-
-    def _select_detection_window(
-        self,
-        previous_window: AudioWindow | None,
-        next_window: AudioWindow | None,
-    ) -> AudioWindow | None:
-        if next_window is None:
-            return previous_window
-        if previous_window is None:
-            return next_window
-        merged_window = self._merge_overlapping_windows(previous_window, next_window)
-        return self._recent_audio_window(merged_window, self.wake_window_seconds)
-
-    def _tail_pcm(self, audio_window: AudioWindow, duration_seconds: float) -> bytes:
-        bytes_per_frame = audio_window.channels * audio_window.sample_width
-        frame_count = int(audio_window.sample_rate * max(0.0, duration_seconds))
-        byte_count = frame_count * bytes_per_frame
-        if byte_count <= 0:
-            return b""
-        return audio_window.pcm_data[-byte_count:]
-
-    def _rebuild_audio_window(self, audio_window: AudioWindow) -> AudioWindow | None:
-        return _audio_window_from_pcm(
-            audio_window.pcm_data,
-            source_path=audio_window.source_path,
-            channels=audio_window.channels,
-            sample_width=audio_window.sample_width,
-            sample_rate=audio_window.sample_rate,
-            threshold=self.speech_energy_threshold,
-            stream_start_offset=audio_window.stream_start_offset,
-        )
-
-    def _recent_audio_window(self, audio_window: AudioWindow | None, duration_seconds: float) -> AudioWindow | None:
-        if audio_window is None:
-            return None
-        bytes_per_frame = audio_window.channels * audio_window.sample_width
-        if bytes_per_frame <= 0 or audio_window.sample_rate <= 0:
-            return audio_window
-        frame_count = int(audio_window.sample_rate * max(0.0, duration_seconds))
-        byte_count = frame_count * bytes_per_frame
-        if byte_count <= 0 or len(audio_window.pcm_data) <= byte_count:
-            return audio_window
-        trimmed_window = AudioWindow(
-            source_path=audio_window.source_path,
-            channels=audio_window.channels,
-            sample_width=audio_window.sample_width,
-            sample_rate=audio_window.sample_rate,
-            pcm_data=audio_window.pcm_data[-byte_count:],
-            duration_seconds=0.0,
-            trailing_silence_seconds=0.0,
-            has_speech=False,
-            current_energy=0.0,
-            peak_energy=0.0,
-            stream_start_offset=audio_window.stream_start_offset + max(0, len(audio_window.pcm_data) - byte_count),
-        )
-        return self._rebuild_audio_window(trimmed_window)
-
-    async def _close_wake_session(self) -> None:
-        session = self._wake_session
-        self._wake_session = None
-        if session is None:
-            self._wake_carry_window = None
-            return
-        with contextlib.suppress(ProcessLookupError):
-            if session.returncode is None:
-                await session.stop()
-        with contextlib.suppress(OSError):
-            live_audio_path = getattr(session, "pcm_path", None)
-            if live_audio_path is not None:
-                live_audio_path.unlink()
-        self._wake_carry_window = None
-
-    async def _restart_wake_session(self) -> None:
-        session = self._wake_session
-        self._wake_session = None
-        if session is None:
-            return
-        with contextlib.suppress(ProcessLookupError):
-            if session.returncode is None:
-                await session.stop()
-        with contextlib.suppress(OSError):
-            live_audio_path = getattr(session, "pcm_path", None)
-            if live_audio_path is not None:
-                live_audio_path.unlink()
-
-    def _max_wake_buffer_seconds(self) -> float:
-        return max(self.wake_window_seconds * 2.0, self.wake_window_seconds + self.wake_stride_seconds)
+        finally:
+            self.shared_live_state.remove_chunk_listener(on_chunk)
 
     def _publish_wake_status(self, status: str, detail: str | None = None) -> None:
         if self.terminal_debug is None:
             return
         self.terminal_debug.update_wake_status(status, detail)
 
-    def _publish_wake_transcript(self, transcript: Transcript) -> None:
-        if self.terminal_debug is None:
+    def _publish_ring_buffer_state(self, wake_window_seconds: float, stride_seconds: float) -> None:
+        if self.terminal_debug is None or self.shared_live_state is None:
             return
-        self.terminal_debug.update_transcript(
-            transcript.text or "...",
-            language=transcript.language.value,
-            is_final=False,
+        capacity_seconds, filled_seconds, wake_window, utterance_start, write_head = self.shared_live_state.ring_buffer_debug_state(
+            wake_window_seconds=wake_window_seconds
+        )
+        self.terminal_debug.update_ring_buffer(
+            capacity_seconds=capacity_seconds,
+            filled_seconds=filled_seconds,
+            wake_window_seconds=wake_window,
+            stride_seconds=stride_seconds,
+            utterance_start_seconds=utterance_start,
+            write_head_seconds=write_head,
         )
 
-    def _publish_wake_audio(self, audio_window: AudioWindow | None, elapsed_seconds: float) -> None:
+    def _publish_wake_audio(self) -> None:
+        if self.shared_live_state is None:
+            return
+        audio_window = self.shared_live_state.current_wake_window(
+            duration_seconds=self.wake_lookback_seconds,
+            threshold=self.speech_energy_threshold,
+        )
+        if self.terminal_debug is None:
+            return
         if audio_window is None:
-            self._publish_audio_status(
+            self.terminal_debug.update_audio(
                 current_noise=0.0,
                 peak_energy=0.0,
-                trailing_silence_seconds=elapsed_seconds,
+                trailing_silence_seconds=self.wake_lookback_seconds,
                 speech_started=False,
                 partial_pending=False,
             )
             return
-        self._publish_audio_status(
+        self.terminal_debug.update_audio(
             current_noise=audio_window.current_energy,
             peak_energy=audio_window.peak_energy,
             trailing_silence_seconds=audio_window.trailing_silence_seconds,

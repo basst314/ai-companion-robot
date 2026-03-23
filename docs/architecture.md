@@ -48,12 +48,15 @@ Input:
 - microphone audio stream
 
 Processing:
+- continuous wake-word detection using OpenWakeWord (local)
 - speech-to-text using whisper.cpp (local)
+- shared live audio buffering so wake detection and STT consume the same microphone stream without restarting capture
 
 Output:
 - transcript
 - detected language
 - confidence score
+- wake-word activation events with buffered pre-roll handoff into the STT loop
 
 ---
 
@@ -140,6 +143,7 @@ Used by:
 ```
 User speech
 → Microphone
+→ Wake-word detection (OpenWakeWord, local)
 → STT (local)
 → Orchestrator
 → AI (cloud)
@@ -165,6 +169,7 @@ Camera
 
 ### Local (Raspberry Pi)
 
+- Wake-word detection (OpenWakeWord)
 - STT (whisper.cpp)
 - TTS (Piper)
 - Vision processing

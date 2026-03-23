@@ -42,6 +42,9 @@ class RuntimeConfig:
     max_recording_seconds: float = 15.0
     wake_word_enabled: bool = False
     wake_word_phrase: str = ""
+    wake_word_model: str = ""
+    wake_word_threshold: float = 0.5
+    wake_lookback_seconds: float = 0.8
     wake_window_seconds: float = 1.5
     wake_stride_seconds: float = 0.5
     utterance_finalize_timeout_seconds: float = 0.6
@@ -144,6 +147,15 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         default=runtime.wake_word_enabled,
     )
     runtime.wake_word_phrase = env.get(f"{ENV_PREFIX}WAKE_WORD_PHRASE", runtime.wake_word_phrase).strip()
+    runtime.wake_word_model = env.get(f"{ENV_PREFIX}WAKE_WORD_MODEL", runtime.wake_word_model).strip()
+    runtime.wake_word_threshold = _parse_float(
+        env.get(f"{ENV_PREFIX}WAKE_WORD_THRESHOLD"),
+        default=runtime.wake_word_threshold,
+    )
+    runtime.wake_lookback_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}WAKE_LOOKBACK_SECONDS"),
+        default=runtime.wake_lookback_seconds,
+    )
     runtime.wake_window_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}WAKE_WINDOW_SECONDS"),
         default=runtime.wake_window_seconds,
@@ -160,6 +172,12 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}UTTERANCE_TAIL_STABLE_POLLS"),
         default=runtime.utterance_tail_stable_polls,
     )
+    if runtime.wake_lookback_seconds <= 0:
+        runtime.wake_lookback_seconds = 0.8
+    if runtime.wake_word_threshold <= 0:
+        runtime.wake_word_threshold = 0.5
+    elif runtime.wake_word_threshold > 1.0:
+        runtime.wake_word_threshold = 1.0
     if runtime.wake_window_seconds <= runtime.wake_stride_seconds:
         runtime.wake_window_seconds = max(runtime.wake_stride_seconds + 0.1, runtime.wake_window_seconds)
     runtime.language_mode = _parse_language_mode(
@@ -182,8 +200,20 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}USE_MOCK_HARDWARE"),
         default=runtime.use_mock_hardware,
     )
+    _validate_runtime_config(runtime)
 
     return config
+
+
+def _validate_runtime_config(runtime: RuntimeConfig) -> None:
+    """Reject obviously incomplete wake-word configurations early."""
+
+    if not runtime.wake_word_enabled:
+        return
+    if not runtime.wake_word_phrase.strip():
+        raise ValueError("wake word detection is enabled but AI_COMPANION_WAKE_WORD_PHRASE is not configured")
+    if not runtime.wake_word_model.strip():
+        raise ValueError("wake word detection is enabled but AI_COMPANION_WAKE_WORD_MODEL is not configured")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:

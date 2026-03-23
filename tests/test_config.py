@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from shared.config import load_app_config
 
 
@@ -26,8 +28,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_MAX_RECORDING_SECONDS=11.5",
                 "AI_COMPANION_WAKE_WORD_ENABLED=true",
                 "AI_COMPANION_WAKE_WORD_PHRASE=Oreo",
-                "AI_COMPANION_WAKE_WINDOW_SECONDS=2.0",
-                "AI_COMPANION_WAKE_STRIDE_SECONDS=0.8",
+                "AI_COMPANION_WAKE_WORD_MODEL=/models/oreo.tflite",
+                "AI_COMPANION_WAKE_WORD_THRESHOLD=0.65",
+                "AI_COMPANION_WAKE_LOOKBACK_SECONDS=0.9",
                 "AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.9",
                 "AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=3",
                 "AI_COMPANION_LANGUAGE_MODE=de",
@@ -47,8 +50,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.max_recording_seconds == 11.5
     assert config.runtime.wake_word_enabled is True
     assert config.runtime.wake_word_phrase == "Oreo"
-    assert config.runtime.wake_window_seconds == 2.0
-    assert config.runtime.wake_stride_seconds == 0.8
+    assert config.runtime.wake_word_model == "/models/oreo.tflite"
+    assert config.runtime.wake_word_threshold == 0.65
+    assert config.runtime.wake_lookback_seconds == 0.9
     assert config.runtime.utterance_finalize_timeout_seconds == 0.9
     assert config.runtime.utterance_tail_stable_polls == 3
     assert config.runtime.language_mode == "de"
@@ -63,6 +67,21 @@ def test_process_environment_overrides_env_file(monkeypatch, tmp_path: Path) -> 
     config = load_app_config(base_dir=tmp_path)
 
     assert config.runtime.input_mode == "speech"
+
+
+def test_load_app_config_rejects_enabled_wake_word_without_model(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_WAKE_WORD_ENABLED=true",
+                "AI_COMPANION_WAKE_WORD_PHRASE=Hey Jarvis",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="WAKE_WORD_MODEL"):
+        load_app_config(base_dir=tmp_path)
 
 
 def test_setup_script_help_is_available() -> None:

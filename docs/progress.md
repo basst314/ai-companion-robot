@@ -198,8 +198,10 @@ Available now:
 - orchestrator method for partial transcript handling
 - `WhisperCppSttService` for one-shot local transcription through `whisper.cpp`
 - shell-based audio capture adapter for live microphone PCM streaming
+- `OpenWakeWordWakeWordService` for transcript-independent wake-word detection
 - wake-word-gated speech mode with a bounded rolling buffer while idle
 - shared live-stream handoff from wake detection into the active utterance without restarting capture
+- configurable built-in or custom wake-word model selection through runtime config
 - end-of-utterance finalization that keeps the last spoken words more reliably
 - sticky terminal debug rows for mic state, ring-buffer state, wake status, and transcript preview
 - speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
@@ -208,6 +210,7 @@ Current limitations:
 - no partial transcript support from the real STT path yet
 - recording still depends on a configured external command such as `rec` or `arecord`
 - microphone setup is scripted for supported platforms, but device-specific debugging may still be manual
+- custom wake phrases still require a matching custom OpenWakeWord model
 
 ### Setup
 
@@ -216,7 +219,9 @@ Status: first automated bootstrap available
 Available now:
 - `scripts/setup.sh` for macOS and Raspberry Pi bootstrap
 - automatic `.venv` creation and Python dependency install
+- Python-version-aware `.venv` recreation when the existing environment is incompatible
 - `whisper.cpp` clone/build plus default model download
+- OpenWakeWord runtime resolution plus built-in wake-model verification during setup
 - generated `.env.local` runtime configuration
 
 Current limitations:
@@ -250,7 +255,6 @@ Current limitations:
 
 ### Not built yet
 
-- streaming STT integration
 - real TTS provider integration
 - real camera/vision pipeline
 - real hardware drivers

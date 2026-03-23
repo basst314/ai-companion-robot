@@ -15,10 +15,11 @@ from shared.models import Language, Transcript
 from stt.service import (
     AudioWindow,
     CommandResult,
+    OpenWakeWordWakeWordService,
     SharedLiveSpeechState,
-    WhisperSegment,
+    StreamingWakeWordDetector,
     WhisperCppSttService,
-    WhisperCppWakeWordService,
+    _select_openwakeword_inference_framework,
     _default_run_command,
     _slice_audio_window,
     strip_wake_phrase,
@@ -62,7 +63,8 @@ class FakeStreamingAudioCaptureService:
     output_path: Path
     session: FakeRecordingSession | None = None
 
-    async def start_capture(self) -> FakeRecordingSession:
+    async def start_capture(self, on_chunk=None) -> FakeRecordingSession:  # type: ignore[no-untyped-def]
+        del on_chunk
         self.session = FakeRecordingSession(output_path=self.output_path)
         return self.session
 
@@ -121,45 +123,23 @@ class ScriptedStreamingWhisperService(WhisperCppSttService):
 
 
 @dataclass(slots=True)
-class ScriptedWakeWordService(WhisperCppWakeWordService):
-    segment_windows: list[AudioWindow | None] = field(default_factory=list)
-    transcript_texts: list[str] = field(default_factory=list)
-    _segment_index: int = 0
-    _transcript_index: int = 0
-    _detection_window: AudioWindow | None = None
+class FakeWakeWordModel:
+    scores: list[float] = field(default_factory=list)
+    calls: int = 0
+    reset_calls: int = 0
 
-    async def _capture_bounded_window(self, duration_seconds: float) -> AudioWindow | None:
-        if self._segment_index >= len(self.segment_windows):
-            window = self.segment_windows[-1] if self.segment_windows else None
-            self._publish_wake_audio(window, duration_seconds)
-            self._detection_window = self._select_detection_window(self._detection_window, window)
-            return self._detection_window
-        window = self.segment_windows[self._segment_index]
-        self._segment_index += 1
-        self._publish_wake_audio(window, duration_seconds)
-        self._detection_window = self._select_detection_window(self._detection_window, window)
-        return self._detection_window
+    def score_frame(self, pcm_frame: bytes) -> float:
+        del pcm_frame
+        if self.calls >= len(self.scores):
+            score = self.scores[-1] if self.scores else 0.0
+        else:
+            score = self.scores[self.calls]
+        self.calls += 1
+        return score
 
-    async def _transcribe_snapshot_with_segments(  # type: ignore[override]
-        self,
-        audio_window: AudioWindow,
-        started_at,
-        *,
-        is_final: bool,
-    ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
-        text = self.transcript_texts[min(self._transcript_index, len(self.transcript_texts) - 1)]
-        self._transcript_index += 1
-        return (
-            Transcript(
-                text=text,
-                language=Language.ENGLISH,
-                confidence=1.0,
-                is_final=is_final,
-                started_at=started_at,
-                ended_at=None,
-            ),
-            (),
-        )
+    def reset(self) -> None:
+        self.calls = 0
+        self.reset_calls += 1
 
 
 @dataclass(slots=True)
@@ -669,82 +649,109 @@ def test_strip_wake_phrase_removes_detected_phrase_case_insensitively() -> None:
     assert strip_wake_phrase("hello there", "oreo") is None
 
 
-def test_whisper_cpp_wake_word_service_uses_overlap_to_detect_boundary_phrase(tmp_path: Path) -> None:
-    wav_path = tmp_path / "wake-overlap.wav"
-    wav_path.write_bytes(b"fake")
-    service = ScriptedWakeWordService(
-        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
-        model_path=Path("/models/ggml-base.bin"),
-        binary_path=Path("/usr/local/bin/whisper-cli"),
-        wake_phrase="Oreo",
-        wake_window_seconds=1.5,
-        wake_stride_seconds=0.5,
-        segment_windows=[
-            _audio_window(wav_path, duration_seconds=1.5, trailing_silence_seconds=0.0, has_speech=True),
-            _audio_window(wav_path, duration_seconds=0.5, trailing_silence_seconds=0.0, has_speech=True),
-        ],
-        transcript_texts=["Ore", "Oreo open your eyes"],
+def test_select_openwakeword_inference_framework_uses_model_suffix_when_present() -> None:
+    assert _select_openwakeword_inference_framework("/tmp/hey_jarvis.onnx") == "onnx"
+    assert _select_openwakeword_inference_framework("/tmp/hey_jarvis.tflite") == "tflite"
+
+
+def test_streaming_wake_word_detector_debounces_repeated_hits() -> None:
+    frame = b"\x00\x00" * 1280
+    detector = StreamingWakeWordDetector(
+        model=FakeWakeWordModel(scores=[0.2, 0.9, 0.95, 0.92]),
+        threshold=0.5,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+        debounce_seconds=0.3,
     )
 
-    detection = asyncio.run(service.wait_for_wake_word())
+    first_detection = detector.process_chunk(frame, 0)
+    second_detection = detector.process_chunk(frame, len(frame))
+    third_detection = detector.process_chunk(frame, len(frame) * 2)
+    fourth_detection = detector.process_chunk(frame, len(frame) * 3)
+
+    assert first_detection is None
+    assert second_detection == len(frame) * 2
+    assert third_detection is None
+    assert fourth_detection is None
+
+
+def test_open_wake_word_service_detects_from_shared_stream_and_sets_handoff_offset(tmp_path: Path) -> None:
+    wav_path = tmp_path / "wake-shared.pcm"
+    wav_path.write_bytes(b"")
+    shared_state = SharedLiveSpeechState(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        wake_buffer_seconds=2.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+    fake_model = FakeWakeWordModel(scores=[0.1] * 11 + [0.9])
+    service = OpenWakeWordWakeWordService(
+        audio_capture=shared_state.audio_capture,
+        wake_phrase="Hey Jarvis",
+        wake_word_model="hey jarvis",
+        wake_lookback_seconds=0.8,
+        shared_live_state=shared_state,
+        model_factory=lambda _model: fake_model,
+    )
+    frame = b"\x01\x00" * 1280
+
+    async def run_detection() -> WakeDetectionResult:
+        wait_task = asyncio.create_task(service.wait_for_wake_word())
+        await asyncio.sleep(0)
+        for _ in range(12):
+            shared_state._handle_chunk(frame)
+            await asyncio.sleep(0)
+        return await asyncio.wait_for(wait_task, timeout=1.0)
+
+    detection = asyncio.run(run_detection())
 
     assert detection.detected is True
-    assert detection.prefilled_command_text == "open your eyes"
+    assert detection.prefilled_command_text == ""
+    assert detection.utterance_stream_start_offset == 5120
     assert detection.audio_window is not None
-    assert detection.audio_window.duration_seconds >= 1.5
+    assert 0.75 <= detection.audio_window.duration_seconds <= 0.85
+    assert shared_state.utterance_active is True
+    assert fake_model.reset_calls == 1
 
 
-def test_whisper_cpp_wake_word_service_trims_detection_window_to_wake_duration(tmp_path: Path) -> None:
-    wav_path = tmp_path / "wake-trim.wav"
-    wav_path.write_bytes(b"fake")
-    service = ScriptedWakeWordService(
-        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
-        model_path=Path("/models/ggml-base.bin"),
-        binary_path=Path("/usr/local/bin/whisper-cli"),
-        wake_phrase="Hello",
-        wake_window_seconds=1.5,
-        wake_stride_seconds=0.5,
-    )
-
-    trimmed = service._recent_audio_window(
-        _audio_window(wav_path, duration_seconds=4.0, trailing_silence_seconds=0.0, has_speech=True),
-        1.5,
-    )
-
-    assert trimmed is not None
-    assert trimmed.duration_seconds <= 1.6
-
-
-def test_whisper_cpp_wake_word_service_emits_debug_updates(tmp_path: Path) -> None:
-    wav_path = tmp_path / "wake-debug.wav"
-    wav_path.write_bytes(b"fake")
+def test_open_wake_word_service_emits_debug_updates(tmp_path: Path) -> None:
+    wav_path = tmp_path / "wake-debug.pcm"
+    wav_path.write_bytes(b"")
     terminal_debug = RecordingTerminalDebugSink()
-    service = ScriptedWakeWordService(
+    shared_state = SharedLiveSpeechState(
         audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
-        model_path=Path("/models/ggml-base.bin"),
-        binary_path=Path("/usr/local/bin/whisper-cli"),
-        terminal_debug=terminal_debug,
-        wake_phrase="Oreo",
-        wake_window_seconds=1.5,
-        wake_stride_seconds=0.5,
-        segment_windows=[_audio_window(wav_path, duration_seconds=1.5, trailing_silence_seconds=0.0, has_speech=True)],
-        transcript_texts=["Oreo look at me"],
+        wake_buffer_seconds=2.0,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
     )
+    service = OpenWakeWordWakeWordService(
+        audio_capture=shared_state.audio_capture,
+        wake_phrase="Hey Jarvis",
+        wake_word_model="hey jarvis",
+        terminal_debug=terminal_debug,
+        shared_live_state=shared_state,
+        model_factory=lambda _model: FakeWakeWordModel(scores=[0.1, 0.9]),
+    )
+    frame = b"\x01\x00" * 1280
 
-    detection = asyncio.run(service.wait_for_wake_word())
+    async def run_detection() -> WakeDetectionResult:
+        wait_task = asyncio.create_task(service.wait_for_wake_word())
+        await asyncio.sleep(0)
+        shared_state._handle_chunk(frame)
+        await asyncio.sleep(0)
+        shared_state._handle_chunk(frame)
+        return await asyncio.wait_for(wait_task, timeout=1.0)
 
-    assert detection.prefilled_command_text == "look at me"
-    assert terminal_debug.wake_updates[0] == {"status": "listening", "detail": "Oreo"}
+    detection = asyncio.run(run_detection())
+
+    assert detection.detected is True
+    assert terminal_debug.wake_updates[0] == {"status": "listening", "detail": "Hey Jarvis"}
     assert terminal_debug.wake_updates[-1]["status"] == "awake"
-    assert any(update["status"] == "listening" for update in terminal_debug.wake_updates)
     assert terminal_debug.audio_updates
-    assert any(update["current_noise"] is not None for update in terminal_debug.audio_updates)
-    assert terminal_debug.transcript_updates
-    assert terminal_debug.transcript_updates[-1] == {
-        "text": "Oreo look at me",
-        "language": "en",
-        "is_final": False,
-    }
+    assert terminal_debug.ring_updates
 
 
 def test_shared_live_speech_state_keeps_idle_wake_buffer_bounded(tmp_path: Path) -> None:

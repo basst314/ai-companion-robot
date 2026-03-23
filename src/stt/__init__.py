@@ -2,18 +2,18 @@
 
 from stt.service import (
     MockSttService,
+    OpenWakeWordWakeWordService,
     ShellAudioCaptureService,
     SttService,
     WakeWordService,
     WhisperCppSttService,
-    WhisperCppWakeWordService,
 )
 
 __all__ = [
     "MockSttService",
+    "OpenWakeWordWakeWordService",
     "ShellAudioCaptureService",
     "SttService",
     "WakeWordService",
     "WhisperCppSttService",
-    "WhisperCppWakeWordService",
 ]

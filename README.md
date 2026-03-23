@@ -90,6 +90,8 @@ The script:
 - installs system dependencies with `brew` or `apt`
 - creates `.venv`
 - installs Python project dependencies
+- resolves the OpenWakeWord runtime for the current platform
+- downloads and validates the selected OpenWakeWord runtime models when wake-word mode is enabled
 - clones and builds `whisper.cpp`
 - downloads a default Whisper model
 - generates `.env.local` with the local STT runtime settings
@@ -119,6 +121,13 @@ Supported flags:
 - `--force`
 - `--skip-system-packages`
 
+`--force` recreates the generated local environment instead of reusing it. In practice that means:
+- rebuild `.venv`
+- rewrite `.env.local`
+- rebuild `whisper.cpp`
+- re-download the selected Whisper model
+- re-resolve and re-verify the wake-word model setup
+
 The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_INPUT_MODE`
 - `AI_COMPANION_INTERACTIVE_CONSOLE`
@@ -129,8 +138,9 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
-- `AI_COMPANION_WAKE_WINDOW_SECONDS`
-- `AI_COMPANION_WAKE_STRIDE_SECONDS`
+- `AI_COMPANION_WAKE_WORD_MODEL`
+- `AI_COMPANION_WAKE_WORD_THRESHOLD`
+- `AI_COMPANION_WAKE_LOOKBACK_SECONDS`
 - `AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS`
 - `AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS`
 - `AI_COMPANION_LANGUAGE_MODE`
@@ -221,12 +231,13 @@ With the generated speech config in place, the interactive console supports type
 
 ### Speech Input Prototype
 
-The bootstrap script now configures the current local speech path automatically: `whisper.cpp` with wake-word gated listening, shared live-stream handoff, and typed/Enter/manual fallback in the interactive console.
+The bootstrap script now configures the current local speech path automatically: `whisper.cpp` for STT, `OpenWakeWord` for wake-word detection, shared live-stream handoff, and typed/Enter/manual fallback in the interactive console.
 
 You need:
 - a built `whisper.cpp` binary such as `whisper-cli`
 - a Whisper model file in ggml format
 - a local recording command that writes 16 kHz mono raw PCM to `stdout`
+- an OpenWakeWord model name or model file path when wake-word mode is enabled
 
 Example `whisper.cpp` setup:
 
@@ -254,7 +265,12 @@ To wire this into the app, configure:
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED=true`
-- `AI_COMPANION_WAKE_WORD_PHRASE=Hello`
+- `AI_COMPANION_WAKE_WORD_PHRASE=Hey Jarvis`
+- `AI_COMPANION_WAKE_WORD_MODEL=hey jarvis`
+- `AI_COMPANION_WAKE_WORD_THRESHOLD=0.5`
+- `AI_COMPANION_WAKE_LOOKBACK_SECONDS=0.8`
+
+The interactive setup script will ask whether you want the default built-in `Hey Jarvis` pairing or a custom phrase plus matching OpenWakeWord model. For the default built-in option, setup downloads and verifies the model locally before writing `.env.local`. Custom phrases only work when you provide a model that was trained for that phrase, and setup now verifies that the file exists and can initialize.
 
 Example Linux/Raspberry Pi recording command template:
 
@@ -362,4 +378,4 @@ For more detailed setup notes and troubleshooting, see `docs/setup.md`.
 
 ## Status
 
-Early working prototype with wake-word gated local STT, shared live-stream handoff, and interactive terminal debugging available for experimentation
+Early working prototype with OpenWakeWord wake detection, local `whisper.cpp` STT, shared live-stream handoff, and interactive terminal debugging available for experimentation
