@@ -18,6 +18,13 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     env_file.write_text(
         "\n".join(
             [
+                "AI_COMPANION_CLOUD_ENABLED=true",
+                "AI_COMPANION_CLOUD_PROVIDER_NAME=openai",
+                "AI_COMPANION_OPENAI_API_KEY=test-key",
+                "AI_COMPANION_OPENAI_BASE_URL=https://api.openai.com/v1/responses",
+                "AI_COMPANION_OPENAI_PLANNER_MODEL=gpt-test-planner",
+                "AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-test-response",
+                "AI_COMPANION_OPENAI_TIMEOUT_SECONDS=18.5",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
                 "AI_COMPANION_STT_BACKEND=whisper_cpp",
@@ -38,12 +45,20 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.9",
                 "AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=3",
                 "AI_COMPANION_LANGUAGE_MODE=de",
+                "AI_COMPANION_USE_MOCK_AI=false",
             ]
         )
     )
 
     config = load_app_config(base_dir=tmp_path)
 
+    assert config.cloud.enabled is True
+    assert config.cloud.provider_name == "openai"
+    assert config.cloud.openai_api_key == "test-key"
+    assert config.cloud.openai_base_url == "https://api.openai.com/v1/responses"
+    assert config.cloud.openai_planner_model == "gpt-test-planner"
+    assert config.cloud.openai_response_model == "gpt-test-response"
+    assert config.cloud.openai_timeout_seconds == 18.5
     assert config.runtime.input_mode == "speech"
     assert config.runtime.interactive_console is True
     assert config.runtime.stt_backend == "whisper_cpp"
@@ -64,6 +79,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.utterance_finalize_timeout_seconds == 0.9
     assert config.runtime.utterance_tail_stable_polls == 3
     assert config.runtime.language_mode == "de"
+    assert config.runtime.use_mock_ai is False
 
 
 def test_process_environment_overrides_env_file(monkeypatch, tmp_path: Path) -> None:
@@ -89,6 +105,22 @@ def test_load_app_config_rejects_enabled_wake_word_without_model(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="WAKE_WORD_MODEL"):
+        load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_rejects_real_cloud_without_required_openai_fields(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_CLOUD_ENABLED=true",
+                "AI_COMPANION_USE_MOCK_AI=false",
+                "AI_COMPANION_OPENAI_API_KEY=test-key",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="OPENAI_PLANNER_MODEL"):
         load_app_config(base_dir=tmp_path)
 
 

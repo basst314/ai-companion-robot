@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared.console import (
@@ -56,6 +56,13 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         route_summary="local action",
         last_error=None,
     )
+    screen.update_ai_status(
+        backend="openai",
+        planning_active=True,
+        response_active=False,
+        plan_preview="look_at_user -> cloud_reply",
+        response_preview="I am looking at you now.",
+    )
     screen.update_audio(
         current_noise=180.0,
         peak_energy=420.0,
@@ -72,9 +79,9 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         utterance_start_seconds=0.8,
     )
 
-    rows = screen.snapshot_rows(width=120)
+    rows = screen.snapshot_rows(width=160)
 
-    assert len(rows) == 4
+    assert len(rows) == 5
     assert "[DBG]" in rows[0]
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
@@ -87,8 +94,15 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[start 0.8s]" in rows[2]
     assert "^" in rows[2]
     assert ">" in rows[2]
-    assert "[TXT en/live]" in rows[3]
-    assert "open your eyes please" in rows[3]
+    assert "[AI]" in rows[3]
+    assert "[backend openai]" in rows[3]
+    assert "[plan active]" in rows[3]
+    assert "[plan-t" in rows[3]
+    assert "[reply-t" in rows[3]
+    assert "look_at_user -> cloud_reply" in rows[3]
+    assert "say" in rows[3]
+    assert "[TXT en/live]" in rows[4]
+    assert "open your eyes please" in rows[4]
 
 
 def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
@@ -101,10 +115,28 @@ def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
 
     rows = screen.snapshot_rows(width=36)
 
-    assert len(rows[3]) == 36
-    assert rows[3].startswith("[TXT en/live]")
-    assert "..." in rows[3]
-    assert "narrow terminals" in rows[3]
+    assert len(rows[4]) == 36
+    assert rows[4].startswith("[TXT en/live]")
+    assert "..." in rows[4]
+    assert "narrow terminals" in rows[4]
+
+
+def test_terminal_debug_screen_shows_ai_phase_durations() -> None:
+    screen = TerminalDebugScreen(stream=FakeTty())
+    now = datetime.now(UTC)
+    screen.state.ai_backend = "openai"
+    screen.state.ai_planning_active = False
+    screen.state.ai_planning_last_duration = "0.42s"
+    screen.state.ai_response_active = True
+    screen.state.ai_response_started_at = now - timedelta(seconds=1.25)
+    screen.state.ai_plan_preview = "cloud_reply"
+    screen.state.ai_response_preview = "hello there"
+
+    row = screen.snapshot_rows(width=160)[3]
+
+    assert "[plan-t 0.42s]" in row
+    assert "[reply active]" in row
+    assert "[reply-t 1.25s]" in row or "[reply-t 1.24s]" in row or "[reply-t 1.26s]" in row
 
 
 def test_terminal_debug_screen_holds_peak_and_shows_current_noise() -> None:

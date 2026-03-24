@@ -20,10 +20,15 @@ class PathConfig:
 
 @dataclass(slots=True)
 class CloudConfig:
-    """Minimal cloud configuration for future provider wiring."""
+    """Cloud planner/response configuration."""
 
     enabled: bool = False
-    provider_name: str | None = "mock-cloud"
+    provider_name: str | None = "openai"
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1/responses"
+    openai_planner_model: str = ""
+    openai_response_model: str = ""
+    openai_timeout_seconds: float = 20.0
 
 
 @dataclass(slots=True)
@@ -111,6 +116,20 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         default=config.cloud.enabled,
     )
     config.cloud.provider_name = env.get(f"{ENV_PREFIX}CLOUD_PROVIDER_NAME", config.cloud.provider_name)
+    config.cloud.openai_api_key = env.get(f"{ENV_PREFIX}OPENAI_API_KEY", config.cloud.openai_api_key).strip()
+    config.cloud.openai_base_url = env.get(f"{ENV_PREFIX}OPENAI_BASE_URL", config.cloud.openai_base_url).strip()
+    config.cloud.openai_planner_model = env.get(
+        f"{ENV_PREFIX}OPENAI_PLANNER_MODEL",
+        config.cloud.openai_planner_model,
+    ).strip()
+    config.cloud.openai_response_model = env.get(
+        f"{ENV_PREFIX}OPENAI_RESPONSE_MODEL",
+        config.cloud.openai_response_model,
+    ).strip()
+    config.cloud.openai_timeout_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}OPENAI_TIMEOUT_SECONDS"),
+        default=config.cloud.openai_timeout_seconds,
+    )
 
     runtime = config.runtime
     runtime.auto_run = _parse_bool(env.get(f"{ENV_PREFIX}AUTO_RUN"), default=runtime.auto_run)
@@ -217,6 +236,7 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         default=runtime.use_mock_hardware,
     )
     _validate_runtime_config(runtime)
+    _validate_cloud_config(config.cloud, runtime=runtime)
 
     return config
 
@@ -230,6 +250,23 @@ def _validate_runtime_config(runtime: RuntimeConfig) -> None:
         raise ValueError("wake word detection is enabled but AI_COMPANION_WAKE_WORD_PHRASE is not configured")
     if not runtime.wake_word_model.strip():
         raise ValueError("wake word detection is enabled but AI_COMPANION_WAKE_WORD_MODEL is not configured")
+
+
+def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> None:
+    """Reject incomplete non-mock cloud configuration."""
+
+    if runtime.use_mock_ai or not cloud.enabled:
+        return
+    if (cloud.provider_name or "").strip().lower() != "openai":
+        raise ValueError("only the 'openai' cloud provider is currently supported for real cloud execution")
+    if not cloud.openai_api_key.strip():
+        raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_API_KEY is not configured")
+    if not cloud.openai_planner_model.strip():
+        raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_PLANNER_MODEL is not configured")
+    if not cloud.openai_response_model.strip():
+        raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_RESPONSE_MODEL is not configured")
+    if cloud.openai_timeout_seconds <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_TIMEOUT_SECONDS must be greater than zero")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:

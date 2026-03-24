@@ -9,6 +9,43 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-23 — OpenAI Integration Polish And Debug Visibility
+
+### Highlights
+- Hardened the OpenAI planner schema for strict structured-output validation and improved runtime observability with raw AI request/response logging.
+- Expanded the sticky terminal debug header with a dedicated AI backend row that shows planner/reply activity, durations, plan summaries, and reply previews.
+- Polished setup and docs so the bootstrap flow can enable the OpenAI backend interactively, prompt for the API key, and still allow the key to be filled in later.
+
+### Why this matters
+This is the submission-polish pass for the hybrid orchestrator milestone: the real OpenAI integration is easier to configure, easier to debug, and better documented for both local development and Raspberry Pi bring-up.
+
+### Key decisions & rationale
+- Decision: keep the OpenAI API key prompt optional even when the real backend is enabled.
+  - Why: it supports machine bootstrap and shared setup sessions where credentials are added later without blocking the rest of the environment.
+- Decision: surface AI planner/reply timing directly in the sticky header.
+  - Why: planner latency is now a first-order UX concern, and it needs to be visible without digging through logs.
+
+## 2026-03-22 — Hybrid Turn Planner And Capability Execution
+
+### Highlights
+- Replaced the old single-route orchestrator flow with a multi-step `TurnPlan` pipeline built around typed capabilities, step validation, and step execution.
+- Added a local capability registry for actions, queries, and cloud reply generation, plus a reactive policy layer for quick nonverbal behavior during active turns.
+- Split cloud AI into planning and response services, with mock implementations for tests and an OpenAI Responses API-backed provider path for real deployments.
+- Extended interaction persistence and telemetry so the runtime now records plan summaries, executed steps, and step-level events.
+
+### Why this matters
+This is the first architecture that matches the robot's intended behavior model: the system can now treat one utterance as a sequence of actions rather than a single route, while keeping validation, hardware authority, and TTS local on the robot.
+
+### Key decisions & rationale
+- Decision: keep a local shortcut layer and validator in front of cloud execution.
+  - Why: the robot should stay responsive and safe even when cloud planning is slow or unavailable.
+- Decision: keep cloud output text-only.
+  - Why: speech output needs to remain local for Raspberry Pi deployment and later Piper integration.
+- Decision: use an internal capability registry instead of MCP for v1.
+  - Why: it delivers the tool-selection benefits needed for the robot without introducing another protocol before the local architecture is stable.
+
+---
+
 ## 2026-03-22 — Dedicated VAD Endpointing For STT
 
 ### Highlights

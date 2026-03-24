@@ -13,15 +13,16 @@ import termios
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from ai.cloud import CloudAiService
-from ai.local import LocalAiService
+from ai.cloud import CloudResponseService
 from hardware.service import HardwareService
 from memory.service import MemoryService
-from orchestrator.router import IntentRouter
+from orchestrator.capabilities import CapabilityRegistry
+from orchestrator.reactive import ReactivePolicyEngine
+from orchestrator.router import TurnPlanner
 from orchestrator.state import LifecycleStage, OrchestratorState
 from shared.config import AppConfig
 from shared.console import ConsoleFormatter, TerminalDebugSink, configure_terminal_debug_screen
-from shared.events import Event, EventName
+from shared.events import Event, EventBus, EventName
 from shared.models import (
     ActionRequest,
     AiResponse,
@@ -29,11 +30,14 @@ from shared.models import (
     EmotionState,
     InteractionContext,
     InteractionRecord,
+    PlanStep,
+    PlanStepResult,
     QueryResult,
     RobotStateSnapshot,
-    RouteDecision,
     RouteKind,
+    StepPhase,
     Transcript,
+    TurnPlan,
 )
 from stt.service import SttService, WakeWordService, strip_wake_phrase
 from tts.service import TtsService
@@ -49,13 +53,15 @@ class OrchestratorService:
 
     config: AppConfig
     state: OrchestratorState
-    router: IntentRouter
+    planner: TurnPlanner
+    capability_registry: CapabilityRegistry
+    reactive_policy: ReactivePolicyEngine
+    event_bus: EventBus
     memory: MemoryService
     vision: VisionService
     ui: UiService
     hardware: HardwareService
-    local_ai: LocalAiService
-    cloud_ai: CloudAiService
+    cloud_response: CloudResponseService
     stt: SttService | None
     tts: TtsService
     wake_word: WakeWordService | None = None
@@ -88,13 +94,6 @@ class OrchestratorService:
 
         await self.start()
         try:
-            await self.handle_event(
-                Event(
-                    name=EventName.LISTENING_STARTED,
-                    source=ComponentName.ORCHESTRATOR,
-                )
-            )
-
             if self.config.runtime.input_mode == "speech":
                 await self._run_speech_loop()
             elif self.config.runtime.interactive_console:
@@ -246,6 +245,18 @@ class OrchestratorService:
 
         self.state.last_error = None
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
+        await self.handle_event(
+            Event(
+                name=EventName.LISTENING_STARTED,
+                source=ComponentName.ORCHESTRATOR,
+            )
+        )
+        await self._apply_reactive_steps(
+            self.reactive_policy.listening_started(
+                self.state,
+                has_attention_target=bool(self.state.last_detections or self.config.mocks.visible_people),
+            )
+        )
         strip_wake_phrase_from_turn = self._active_speech_trigger == "wake"
         try:
             final_transcript: Transcript | None = None
@@ -291,6 +302,7 @@ class OrchestratorService:
         self._debug_transcript(transcript, kind="partial")
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
+        self.state.last_step_results = ()
         preview_text = None if self.config.runtime.interactive_console else transcript.text
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, preview_text)
         self._update_terminal_debug_transcript(transcript, is_final=False)
@@ -301,15 +313,18 @@ class OrchestratorService:
                 payload={"transcript": transcript},
             )
         )
+        await self._apply_reactive_steps(self.reactive_policy.partial_transcript(self.state, transcript))
 
     async def run_turn(self, transcript: Transcript) -> None:
-        """Process a final transcript through routing, execution, and response."""
+        """Process a final transcript through planning, execution, and response."""
 
         self._debug_transcript(transcript, kind="final")
         self.state.last_error = None
         self.state.interaction_id += 1
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
+        self.state.last_plan = None
+        self.state.last_step_results = ()
         self._update_terminal_debug_transcript(transcript, is_final=True)
         await self._set_lifecycle(LifecycleStage.PROCESSING, EmotionState.THINKING, transcript.text)
         await self.handle_event(
@@ -319,75 +334,83 @@ class OrchestratorService:
                 payload={"transcript": transcript},
             )
         )
+        await self._apply_reactive_steps(self.reactive_policy.processing_started(self.state))
 
         context = await self._build_context()
-        decision = await self.router.route(transcript, context)
-        self.state.last_route = decision
-        self._log_route_selection(decision)
-        if self.terminal_debug is not None:
-            self.terminal_debug.update_runtime(
-                lifecycle=self.state.lifecycle.value,
-                emotion=self.state.emotion.value,
-                language=self.state.active_language.value,
-                route_summary=self._route_summary(decision.kind),
-                last_error=self.state.last_error,
-            )
-        await self.handle_event(
-            Event(
-                name=EventName.ROUTE_SELECTED,
-                source=ComponentName.ORCHESTRATOR,
-                payload={"decision": decision},
-            )
-        )
-
-        await self.execute_route(decision, context)
-
-    async def execute_route(self, decision: RouteDecision, context: InteractionContext) -> None:
-        """Execute the selected route and deliver the response."""
-
-        transcript = self.state.current_transcript
-        if transcript is None:
-            raise RuntimeError("no active transcript available for route execution")
+        available_components = self._available_components()
+        available_capabilities = self.capability_registry.list_available(available_components)
 
         try:
-            if decision.kind is RouteKind.LOCAL_ACTION:
-                result = await self.hardware.execute_action(
-                    ActionRequest(name=decision.action_name or "unknown_action", arguments=decision.arguments)
+            self._update_ai_debug(
+                planning_active=True,
+                response_active=False,
+                plan_preview="planning...",
+                response_preview=None,
+            )
+            plan = await self.planner.plan(transcript, context, available_capabilities)
+            await self.handle_event(
+                Event(
+                    name=EventName.PLAN_CREATED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"plan": plan},
                 )
-                await self.handle_event(
-                    Event(
-                        name=EventName.ACTION_EXECUTED,
-                        source=ComponentName.HARDWARE,
-                        payload={"result": result},
+            )
+            validated_plan, skipped_results = self.capability_registry.validate_plan(
+                plan,
+                available_components=available_components,
+            )
+            if not validated_plan.steps:
+                if any(capability.capability_id == "cloud_reply" for capability in available_capabilities):
+                    validated_plan = TurnPlan(
+                        route_kind=RouteKind.CLOUD_CHAT,
+                        confidence=0.0,
+                        rationale="validator fell back to a single cloud reply step",
+                        source="validator",
+                        steps=(PlanStep(capability_id="cloud_reply", reason="fallback response generation"),),
                     )
+                else:
+                    raise RuntimeError("validated turn plan contained no executable steps")
+
+            self.state.last_plan = validated_plan
+            self._log_plan_selection(validated_plan)
+            self._update_ai_debug(
+                planning_active=False,
+                plan_preview=self._ai_plan_preview(validated_plan),
+            )
+            if self.terminal_debug is not None:
+                self.terminal_debug.update_runtime(
+                    lifecycle=self.state.lifecycle.value,
+                    emotion=self.state.emotion.value,
+                    language=self.state.active_language.value,
+                    route_summary=self._route_summary(validated_plan.route_kind),
+                    last_error=self.state.last_error,
                 )
-                self._apply_state_changes(result.state_changes)
-                response = AiResponse(
-                    text=result.message,
-                    emotion=EmotionState.HAPPY if result.success else EmotionState.CURIOUS,
-                    intent=decision.action_name,
+            await self.handle_event(
+                Event(
+                    name=EventName.ROUTE_SELECTED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"route_kind": validated_plan.route_kind.value},
                 )
-            elif decision.kind is RouteKind.LOCAL_QUERY:
-                result = await self._run_local_query(decision, context)
-                await self.handle_event(
-                    Event(
-                        name=EventName.QUERY_EXECUTED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
+            )
+            await self.handle_event(
+                Event(
+                    name=EventName.PLAN_VALIDATED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"plan": validated_plan, "skipped_steps": skipped_results},
                 )
-                response = AiResponse(
-                    text=result.answer_text,
-                    emotion=EmotionState.CURIOUS,
-                    intent=decision.query_name,
-                )
-            elif decision.kind is RouteKind.LOCAL_LLM:
-                response = await self.local_ai.generate_reply(transcript, context)
-            else:
-                response = await self._run_cloud_with_fallback(transcript, context)
+            )
+            response, step_results = await self.execute_plan(validated_plan, context, transcript, skipped_results)
         except Exception as exc:
-            logger.exception("route execution failed")
+            logger.exception("turn planning/execution failed")
             self.state.last_error = str(exc)
+            self.state.last_plan = None
+            step_results = ()
+            self._update_ai_debug(
+                planning_active=False,
+                response_active=False,
+                plan_preview="planning failed",
+                response_preview="error",
+            )
             await self.handle_event(
                 Event(
                     name=EventName.ERROR_OCCURRED,
@@ -401,9 +424,16 @@ class OrchestratorService:
                 intent="error_recovery",
             )
 
+        self.state.last_step_results = step_results
         self.state.current_response = response.text
+        self._update_ai_debug(
+            planning_active=False,
+            response_active=False,
+            plan_preview=self._ai_plan_preview(self.state.last_plan),
+            response_preview=response.text,
+        )
         if self.terminal_debug is not None:
-            route_summary = self._route_summary(decision.kind)
+            route_summary = self._route_summary(self.state.last_plan.route_kind) if self.state.last_plan else "error"
             self.terminal_debug.update_runtime(
                 lifecycle=self.state.lifecycle.value,
                 emotion=self.state.emotion.value,
@@ -418,14 +448,68 @@ class OrchestratorService:
                 payload={"response": response},
             )
         )
-        await self._deliver_response(response, transcript, decision.kind)
+        await self._deliver_response(
+            response,
+            transcript,
+            self.state.last_plan.route_kind if self.state.last_plan else RouteKind.CLOUD_CHAT,
+            plan=self.state.last_plan,
+            step_results=step_results,
+        )
+
+    async def execute_plan(
+        self,
+        plan: TurnPlan,
+        context: InteractionContext,
+        transcript: Transcript,
+        skipped_results: tuple[PlanStepResult, ...] = (),
+    ) -> tuple[AiResponse, tuple[PlanStepResult, ...]]:
+        """Execute the selected multi-step plan and return the final reply."""
+
+        completed_results: list[PlanStepResult] = []
+        response: AiResponse | None = None
+
+        for skipped in skipped_results:
+            completed_results.append(skipped)
+            await self.handle_event(
+                Event(
+                    name=EventName.STEP_SKIPPED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"result": skipped},
+                )
+            )
+
+        for phase in (
+            StepPhase.IMMEDIATE,
+            StepPhase.QUERY,
+            StepPhase.REPLY,
+            StepPhase.CLEANUP,
+        ):
+            for step in plan.steps:
+                if (step.phase or StepPhase.IMMEDIATE) is not phase:
+                    continue
+                step_result, cloud_response = await self._execute_plan_step(
+                    step,
+                    plan=plan,
+                    context=context,
+                    transcript=transcript,
+                    prior_results=tuple(completed_results),
+                )
+                completed_results.append(step_result)
+                if cloud_response is not None:
+                    response = cloud_response
+
+        if response is None:
+            response = self._derive_response_from_results(completed_results)
+
+        return response, tuple(completed_results)
 
     async def handle_event(self, event: Event) -> None:
-        """Accept an event for routing history and state transitions."""
+        """Accept an event for routing history, subscribers, and debugging."""
 
         self.event_history.append(event)
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
+        await self.event_bus.publish(event)
 
     async def _build_context(self) -> InteractionContext:
         active_user = await self.memory.get_active_user()
@@ -445,23 +529,237 @@ class OrchestratorService:
             ),
         )
 
-    async def _run_local_query(
+    async def _execute_plan_step(
         self,
-        decision: RouteDecision,
+        step: PlanStep,
+        *,
+        plan: TurnPlan,
+        context: InteractionContext,
+        transcript: Transcript,
+        prior_results: tuple[PlanStepResult, ...],
+    ) -> tuple[PlanStepResult, AiResponse | None]:
+        await self.handle_event(
+            Event(
+                name=EventName.STEP_STARTED,
+                source=ComponentName.ORCHESTRATOR,
+                payload={"step": step},
+            )
+        )
+
+        try:
+            if step.capability_id == "look_at_user":
+                action_result = await self.hardware.execute_action(ActionRequest(name="look_at_user"))
+                await self.handle_event(
+                    Event(
+                        name=EventName.ACTION_EXECUTED,
+                        source=ComponentName.HARDWARE,
+                        payload={"result": action_result},
+                    )
+                )
+                self._apply_state_changes(action_result.state_changes)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=action_result.success,
+                    message=action_result.message,
+                    state_changes=action_result.state_changes,
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "turn_head":
+                action_result = await self.hardware.execute_action(
+                    ActionRequest(name="turn_head", arguments=step.arguments)
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.ACTION_EXECUTED,
+                        source=ComponentName.HARDWARE,
+                        payload={"result": action_result},
+                    )
+                )
+                self._apply_state_changes(action_result.state_changes)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=action_result.success,
+                    message=action_result.message,
+                    state_changes=action_result.state_changes,
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "set_emotion":
+                emotion = EmotionState(str(step.arguments.get("emotion", EmotionState.NEUTRAL.value)))
+                preview = self.state.current_response or (
+                    None if self.config.runtime.interactive_console else (self.state.current_transcript.text if self.state.current_transcript else None)
+                )
+                await self._set_lifecycle(self.state.lifecycle, emotion, preview)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=True,
+                    message=f"Showing {emotion.value} emotion.",
+                    state_changes={"emotion": emotion.value},
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "visible_people":
+                query = await self._run_query("visible_people", context)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=True,
+                    message=query.answer_text,
+                    data=query.data,
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.QUERY_EXECUTED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": query},
+                    )
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "user_summary":
+                query = await self._run_query("user_summary", context)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=True,
+                    message=query.answer_text,
+                    data=query.data,
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.QUERY_EXECUTED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": query},
+                    )
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "robot_status":
+                query = await self._run_query("robot_status", context)
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=True,
+                    message=query.answer_text,
+                    data=query.data,
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.QUERY_EXECUTED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": query},
+                    )
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, None
+
+            if step.capability_id == "cloud_reply":
+                self._update_ai_debug(
+                    response_active=True,
+                    response_preview="responding...",
+                )
+                reply = await self._run_cloud_reply(transcript, context, plan, prior_results)
+                self._update_ai_debug(
+                    response_active=False,
+                    response_preview=reply.text,
+                )
+                result = PlanStepResult(
+                    capability_id=step.capability_id,
+                    success=True,
+                    message=reply.text,
+                    data={"emotion": reply.emotion.value},
+                )
+                await self.handle_event(
+                    Event(
+                        name=EventName.STEP_FINISHED,
+                        source=ComponentName.ORCHESTRATOR,
+                        payload={"result": result},
+                    )
+                )
+                return result, reply
+
+            raise RuntimeError(f"unsupported capability '{step.capability_id}'")
+        except Exception as exc:
+            logger.exception("plan step failed")
+            self.state.last_error = str(exc)
+            await self.handle_event(
+                Event(
+                    name=EventName.ERROR_OCCURRED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"error": str(exc), "step": step.capability_id},
+                )
+            )
+            result = PlanStepResult(
+                capability_id=step.capability_id,
+                success=False,
+                message=f"Failed to execute {step.capability_id}: {exc}",
+            )
+            await self.handle_event(
+                Event(
+                    name=EventName.STEP_FINISHED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"result": result},
+                )
+            )
+            return result, None
+
+    async def _run_query(
+        self,
+        query_name: str,
         context: InteractionContext,
     ) -> QueryResult:
-        if decision.query_name == "visible_people":
-            if not context.current_detections:
+        if query_name == "visible_people":
+            detections = await self._safe_get_detections()
+            if not detections:
                 return QueryResult(answer_text="I do not see anyone right now.")
 
-            names = ", ".join(detection.label for detection in context.current_detections)
-            return QueryResult(answer_text=f"I can currently see {names}.")
+            names = ", ".join(detection.label for detection in detections)
+            return QueryResult(answer_text=f"I can currently see {names}.", data={"detections": names})
 
-        if decision.query_name == "user_summary":
+        if query_name == "user_summary":
             summary = await self.memory.get_user_summary(self.state.active_user_id)
             return QueryResult(answer_text=summary)
 
-        if decision.query_name == "robot_status":
+        if query_name == "robot_status":
             return QueryResult(
                 answer_text=(
                     f"I am {self.state.lifecycle.value}, my eyes are "
@@ -472,15 +770,17 @@ class OrchestratorService:
 
         return QueryResult(answer_text="I do not have an answer for that local query yet.")
 
-    async def _run_cloud_with_fallback(
+    async def _run_cloud_reply(
         self,
         transcript: Transcript,
         context: InteractionContext,
+        plan: TurnPlan,
+        prior_results: tuple[PlanStepResult, ...],
     ) -> AiResponse:
         try:
-            return await self.cloud_ai.generate_reply(transcript, context)
+            return await self.cloud_response.generate_reply(transcript, context, plan, prior_results)
         except Exception as exc:
-            logger.exception("cloud AI failed")
+            logger.exception("cloud response failed")
             self.state.last_error = str(exc)
             await self.handle_event(
                 Event(
@@ -495,41 +795,76 @@ class OrchestratorService:
                 intent="cloud_fallback",
             )
 
+    def _derive_response_from_results(self, results: list[PlanStepResult]) -> AiResponse:
+        for result in reversed(results):
+            if not result.success or result.skipped:
+                continue
+            if result.capability_id in {"look_at_user", "turn_head"}:
+                return AiResponse(
+                    text=result.message,
+                    emotion=EmotionState.HAPPY,
+                    intent=result.capability_id,
+                )
+            if result.capability_id == "set_emotion":
+                return AiResponse(
+                    text=result.message,
+                    emotion=self.state.emotion,
+                    intent=result.capability_id,
+                    should_speak=False,
+                )
+            return AiResponse(
+                text=result.message,
+                emotion=EmotionState.CURIOUS,
+                intent=result.capability_id,
+            )
+
+        return AiResponse(
+            text="I am ready for the next turn.",
+            emotion=EmotionState.NEUTRAL,
+            intent="noop",
+            should_speak=False,
+        )
+
     async def _deliver_response(
         self,
         response: AiResponse,
         transcript: Transcript,
         route_kind: RouteKind,
+        *,
+        plan: TurnPlan | None,
+        step_results: tuple[PlanStepResult, ...],
     ) -> None:
-        await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, response.text)
-        await self.ui.show_text(response.text)
+        display_text = response.display_text or response.text
+        await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
+        await self.ui.show_text(display_text)
 
-        try:
-            await self.handle_event(
-                Event(
-                    name=EventName.TTS_STARTED,
-                    source=ComponentName.TTS,
-                    payload={"text": response.text},
+        if response.should_speak:
+            try:
+                await self.handle_event(
+                    Event(
+                        name=EventName.TTS_STARTED,
+                        source=ComponentName.TTS,
+                        payload={"text": response.text},
+                    )
                 )
-            )
-            await self.tts.speak(response.text)
-            await self.handle_event(
-                Event(
-                    name=EventName.TTS_FINISHED,
-                    source=ComponentName.TTS,
-                    payload={"text": response.text},
+                await self.tts.speak(response.text)
+                await self.handle_event(
+                    Event(
+                        name=EventName.TTS_FINISHED,
+                        source=ComponentName.TTS,
+                        payload={"text": response.text},
+                    )
                 )
-            )
-        except Exception as exc:
-            logger.exception("tts failed")
-            self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.TTS,
-                    payload={"error": str(exc)},
+            except Exception as exc:
+                logger.exception("tts failed")
+                self.state.last_error = str(exc)
+                await self.handle_event(
+                    Event(
+                        name=EventName.ERROR_OCCURRED,
+                        source=ComponentName.TTS,
+                        payload={"error": str(exc)},
+                    )
                 )
-            )
 
         await self.memory.save_interaction(
             InteractionRecord(
@@ -539,6 +874,12 @@ class OrchestratorService:
                 timestamp=datetime.now(UTC),
                 route_kind=route_kind,
                 user_id=self.state.active_user_id,
+                plan_summary=self._plan_summary(plan),
+                executed_steps=tuple(
+                    result.capability_id
+                    for result in step_results
+                    if result.success and not result.skipped
+                ),
             )
         )
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
@@ -582,6 +923,89 @@ class OrchestratorService:
             )
             return ()
 
+    def _available_components(self) -> set[ComponentName]:
+        available = {
+            ComponentName.ORCHESTRATOR,
+            ComponentName.UI,
+            ComponentName.MEMORY,
+            ComponentName.HARDWARE,
+            ComponentName.VISION,
+            ComponentName.TTS,
+        }
+        if self.cloud_response is not None:
+            available.add(ComponentName.CLOUD)
+        return available
+
+    async def _apply_reactive_steps(self, steps: tuple[PlanStep, ...]) -> tuple[PlanStepResult, ...]:
+        if not steps:
+            return ()
+
+        plan = TurnPlan(
+            route_kind=RouteKind.HYBRID,
+            confidence=1.0,
+            rationale="reactive local behavior",
+            source="reactive_policy",
+            steps=steps,
+        )
+        validated_plan, skipped = self.capability_registry.validate_plan(
+            plan,
+            available_components=self._available_components(),
+        )
+        results: list[PlanStepResult] = list(skipped)
+
+        for skipped_result in skipped:
+            await self.handle_event(
+                Event(
+                    name=EventName.STEP_SKIPPED,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={"result": skipped_result},
+                )
+            )
+
+        if self.state.current_transcript is None:
+            transcript = Transcript(
+                text="",
+                language=self.state.active_language,
+                confidence=0.0,
+                is_final=False,
+            )
+        else:
+            transcript = self.state.current_transcript
+
+        context = InteractionContext(
+            active_user=None,
+            recent_history=(),
+            current_detections=self.state.last_detections,
+            robot_state=RobotStateSnapshot(
+                lifecycle=self.state.lifecycle.value,
+                emotion=self.state.emotion,
+                eyes_open=self.state.eyes_open,
+                head_direction=self.state.head_direction,
+            ),
+        )
+
+        for step in validated_plan.steps:
+            result, _response = await self._execute_plan_step(
+                step,
+                plan=validated_plan,
+                context=context,
+                transcript=transcript,
+                prior_results=tuple(results),
+            )
+            results.append(result)
+
+        return tuple(results)
+
+    def _plan_summary(self, plan: TurnPlan | None) -> str | None:
+        if plan is None:
+            return None
+        step_ids = ", ".join(step.capability_id for step in plan.steps)
+        if not step_ids:
+            step_ids = "no-steps"
+        if plan.rationale:
+            return f"{plan.route_kind.value}: {step_ids} ({plan.rationale})"
+        return f"{plan.route_kind.value}: {step_ids}"
+
     async def _set_lifecycle(
         self,
         lifecycle: LifecycleStage,
@@ -596,9 +1020,14 @@ class OrchestratorService:
                 lifecycle=lifecycle.value,
                 emotion=emotion.value,
                 language=self.state.active_language.value,
-                route_summary=self._route_summary(self.state.last_route.kind) if self.state.last_route else None,
+                route_summary=self._route_summary(self.state.last_plan.route_kind) if self.state.last_plan else None,
                 last_error=self.state.last_error,
             )
+            if lifecycle is LifecycleStage.IDLE:
+                self._update_ai_debug(
+                    planning_active=False,
+                    response_active=False,
+                )
 
     def _apply_state_changes(self, state_changes: dict[str, object]) -> None:
         if "eyes_open" in state_changes:
@@ -666,18 +1095,42 @@ class OrchestratorService:
     def _route_summary(self, route_kind: RouteKind) -> str:
         return route_kind.value.replace("_", " ")
 
-    def _log_route_selection(self, decision: RouteDecision) -> None:
+    def _ai_plan_preview(self, plan: TurnPlan | None) -> str | None:
+        if plan is None or not plan.steps:
+            return None
+        return " -> ".join(step.capability_id for step in plan.steps)
+
+    def _update_ai_debug(
+        self,
+        *,
+        planning_active: bool | None = None,
+        response_active: bool | None = None,
+        plan_preview: str | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        if self.terminal_debug is None:
+            return
+        backend = "mock" if self.config.runtime.use_mock_ai else (self.config.cloud.provider_name or "cloud")
+        self.terminal_debug.update_ai_status(
+            backend=backend,
+            planning_active=planning_active,
+            response_active=response_active,
+            plan_preview=plan_preview,
+            response_preview=response_preview,
+        )
+
+    def _log_plan_selection(self, plan: TurnPlan) -> None:
         formatter = ConsoleFormatter()
-        rationale = f" rationale={decision.rationale}" if decision.rationale else ""
+        rationale = f" rationale={plan.rationale}" if plan.rationale else ""
         plain = formatter.stamp(
-            f"[ROUTE] kind={decision.kind.value} confidence={decision.confidence:.2f}{rationale}"
+            f"[ROUTE] kind={plan.route_kind.value} confidence={plan.confidence:.2f}{rationale}"
         )
         formatter.emit(
             formatter.stamp(
                 f"{formatter.route_label('[ROUTE]')} "
-                f"{formatter.response(decision.kind.value)} "
-                f"confidence={decision.confidence:.2f}"
-                f"{formatter.label(' rationale=') + decision.rationale if decision.rationale else ''}"
+                f"{formatter.response(plan.route_kind.value)} "
+                f"confidence={plan.confidence:.2f}"
+                f"{formatter.label(' rationale=') + plan.rationale if plan.rationale else ''}"
             ),
             plain_text=plain,
         )

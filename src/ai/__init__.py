@@ -1,11 +1,22 @@
 """AI services for local and cloud response generation."""
 
-from ai.cloud import CloudAiService, MockCloudAiService
+from ai.cloud import (
+    CloudResponseService,
+    MockCloudPlanningService,
+    MockCloudResponseService,
+    OpenAiCloudPlanningService,
+    OpenAiCloudResponseService,
+    OpenAiResponsesClient,
+)
 from ai.local import LocalAiService, MockLocalAiService
 
 __all__ = [
-    "CloudAiService",
+    "CloudResponseService",
     "LocalAiService",
-    "MockCloudAiService",
+    "MockCloudPlanningService",
+    "MockCloudResponseService",
     "MockLocalAiService",
+    "OpenAiCloudPlanningService",
+    "OpenAiCloudResponseService",
+    "OpenAiResponsesClient",
 ]

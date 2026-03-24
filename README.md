@@ -8,13 +8,15 @@ A desktop AI companion robot built on a Raspberry Pi, designed to be conversatio
 
 The system combines voice interaction, computer vision, a screen-based face, and a lightweight local control layer with cloud-based AI to create a responsive and engaging companion.
 
+The current runtime uses a hybrid turn planner: fast local reactive behaviors during listening and thinking, a typed local capability registry for actions and queries, cloud planning/reply text generation, and local speech output on the robot.
+
 ---
 
 ## Overview
 
-The robot listens, understands, and responds using a pipeline:
+The robot listens, plans, acts, and responds using a pipeline:
 ```
-Microphone → Speech-to-Text → AI → Text-to-Speech → Speaker
+Microphone → Speech-to-Text → Orchestrator/Planner → Local Actions + Cloud Reply Text → Text-to-Speech → Speaker
 ```
 It also uses a camera for basic awareness and a display to show animated facial expressions.
 
@@ -28,18 +30,18 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Audio input (microphone)
 - Speech-to-text (Whisper / whisper.cpp)
-- Text-to-speech (Piper)
+- Text-to-speech (local, Piper later)
 - Camera processing (face detection)
 - Display rendering (eyes and expressions)
-- AI orchestrator (main control loop)
+- Hybrid orchestrator and capability executor
 - Memory (local storage)
 - Hardware control (future)
 
 ### Runs in the Cloud
 
-- Large Language Model (primary reasoning and response generation)
+- OpenAI-backed turn planning and response text generation
 - Optional fallback speech-to-text
-- Optional higher-quality text-to-speech
+- No cloud speech output in the current architecture
 
 ---
 
@@ -68,8 +70,8 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 ## Software Stack
 
 - STT: whisper.cpp (local)
-- TTS: Piper (local)
-- AI: cloud LLM (e.g. OpenAI, Gemini)
+- TTS: local output pipeline, with Piper planned as the first real provider
+- AI planning/reply: OpenAI Responses API for the first real cloud backend
 - Vision: OpenCV (initial)
 - Orchestrator: Python service running on the Pi
 
@@ -132,6 +134,14 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_INPUT_MODE`
 - `AI_COMPANION_INTERACTIVE_CONSOLE`
 - `AI_COMPANION_STT_BACKEND`
+- `AI_COMPANION_USE_MOCK_AI`
+- `AI_COMPANION_CLOUD_ENABLED`
+- `AI_COMPANION_CLOUD_PROVIDER_NAME`
+- `AI_COMPANION_OPENAI_API_KEY`
+- `AI_COMPANION_OPENAI_BASE_URL`
+- `AI_COMPANION_OPENAI_PLANNER_MODEL`
+- `AI_COMPANION_OPENAI_RESPONSE_MODEL`
+- `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -236,6 +246,8 @@ With the generated speech config in place, the interactive console supports type
 ### Speech Input Prototype
 
 The bootstrap script now configures the current local speech path automatically: `whisper.cpp` for STT, `OpenWakeWord` for wake-word detection, shared live-stream handoff, and typed/Enter/manual fallback in the interactive console.
+
+The interaction layer now supports multi-step turns. A single utterance can trigger local actions or queries before the cloud reply is generated, for example turning toward the user and then speaking a cloud-generated answer with local TTS.
 
 You need:
 - a built `whisper.cpp` binary such as `whisper-cli`
@@ -343,17 +355,32 @@ The sticky terminal header also shows:
 - the wake state (`listening` or `awake`)
 - the live transcript preview
 - the wake ring-buffer state for debugging handoff timing
+- AI backend activity, including planning/reply state, recent durations, proposed plan summary, and a clipped reply preview
 
 If `.env.local` is not present, the app falls back to the default manual text-mode prompt and you can type messages at `You>`.
 
 Examples:
-- `open your eyes`
 - `look at me`
+- `look at me and tell me a joke`
 - `turn your head left`
+- `can you see me`
 - `who do you see`
 - `what do you know about me`
 - `tell me a joke`
-- `please use your local brain`
+
+To enable the real OpenAI planner/reply path instead of the mock cloud services, set:
+
+```env
+AI_COMPANION_USE_MOCK_AI=false
+AI_COMPANION_CLOUD_ENABLED=true
+AI_COMPANION_CLOUD_PROVIDER_NAME=openai
+AI_COMPANION_OPENAI_API_KEY=...
+AI_COMPANION_OPENAI_PLANNER_MODEL=...
+AI_COMPANION_OPENAI_RESPONSE_MODEL=...
+```
+
+The cloud backend returns plans and reply text only. Audio output remains local and Piper is still a later milestone.
+The setup script can now enable the OpenAI path interactively, asks for the API key when you opt in, and accepts a blank value so you can add the key later in `.env.local`.
 
 Exit with:
 

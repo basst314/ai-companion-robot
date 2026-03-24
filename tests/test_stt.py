@@ -198,6 +198,7 @@ class FakeEndpointVadModel:
 @dataclass(slots=True)
 class RecordingTerminalDebugSink(TerminalDebugSink):
     runtime_updates: list[dict[str, object]] = field(default_factory=list)
+    ai_updates: list[dict[str, object]] = field(default_factory=list)
     audio_updates: list[dict[str, object]] = field(default_factory=list)
     transcript_updates: list[dict[str, object]] = field(default_factory=list)
     whisper_updates: list[str | None] = field(default_factory=list)
@@ -226,6 +227,25 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
                 "language": language,
                 "route_summary": route_summary,
                 "last_error": last_error,
+            }
+        )
+
+    def update_ai_status(
+        self,
+        *,
+        backend: str | None = None,
+        planning_active: bool | None = None,
+        response_active: bool | None = None,
+        plan_preview: str | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        self.ai_updates.append(
+            {
+                "backend": backend,
+                "planning_active": planning_active,
+                "response_active": response_active,
+                "plan_preview": plan_preview,
+                "response_preview": response_preview,
             }
         )
 
@@ -1125,14 +1145,14 @@ def test_speech_mode_runtime_uses_stt_transcript_for_full_turn() -> None:
     config = AppConfig()
     config.runtime.input_mode = "speech"
     config.runtime.stt_backend = "mock"
-    config.runtime.manual_inputs = ("open your eyes",)
+    config.runtime.manual_inputs = ("look at me",)
     service = build_application(config)
 
     asyncio.run(service.run())
 
     assert service.state.lifecycle.value == "idle"
-    assert service.state.eyes_open is True
-    assert service.state.current_response == "Opening my eyes now."
+    assert service.state.head_direction == "user"
+    assert service.state.current_response == "I am looking at you now."
     assert any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
 
 

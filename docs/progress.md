@@ -14,8 +14,8 @@ Update it with every iteration so it stays useful as:
 Status: early working local prototype
 
 Current milestone:
-- the project has a working mocked end-to-end orchestration loop
-- the orchestrator can route manual text input to local actions, local queries, local AI, or cloud AI
+- the project has a working hybrid turn-planning loop
+- the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and cloud reply generation
 - responses can be shown in the UI mock and acknowledged by the TTS mock
 - interaction history is stored in memory
 - a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
@@ -37,36 +37,30 @@ Available now:
 - central `OrchestratorService`
 - lifecycle management for `idle`, `listening`, `processing`, `responding`, `error`
 - typed interaction state
-- route execution for local actions, local queries, local AI, and cloud chat
-- event history tracking
+- multi-step turn execution with plan validation
+- internal event bus plus event history tracking
+- fast local reactive policies during active turns
 - fallback handling for vision, cloud AI, and TTS failures
 
 Current limitations:
 - manual-input-driven runtime
 - no live microphone or camera loop yet
-- event handling is recorded internally, not yet broadcast to external subscribers
+- no background/idle autonomy yet
 
-### Routing
+### Turn Planning
 
 Status: functional
 
 Available now:
-- rule-based `IntentRouter`
-- local action routing for:
-  - `open your eyes`
-  - `close your eyes`
-  - `look at me`
-  - `turn your head`
-- local query routing for:
-  - `who do you see`
-  - `what do you know about me`
-  - `what state are you in`
-- local LLM route trigger
-- cloud chat fallback for unmatched requests
+- typed `TurnPlan`, `PlanStep`, and capability registry
+- local shortcut planner for obvious safe single-purpose turns
+- cloud planner for multi-action or conversational turns
+- validation for unknown capabilities, unavailable subsystems, and bad arguments
+- hybrid execution for turns such as `look at me and tell me a joke`
 
 Current limitations:
-- keyword/rule-based only
-- no confidence learning or ambiguity resolution yet
+- no streaming cloud planning/reply yet
+- no idle/background behavior planner yet
 
 ### Shared Contracts
 
@@ -75,7 +69,10 @@ Status: functional
 Available now:
 - typed models for:
   - `Transcript`
-  - `RouteDecision`
+  - `TurnPlan`
+  - `CapabilityDefinition`
+  - `PlanStep`
+  - `PlanStepResult`
   - `ActionRequest`
   - `ActionResult`
   - `QueryResult`
@@ -133,30 +130,19 @@ Current limitations:
 - no real GPIO, servo, or motor control
 - no safety constraints or movement limits yet
 
-### Local AI
-
-Status: functional mock
-
-Available now:
-- stubbed lightweight local reply path
-- explicit local-AI route supported by orchestrator
-
-Current limitations:
-- not yet a real local model
-- not yet used for general command parsing
-
 ### Cloud AI
 
-Status: functional mock
+Status: mock plus first real provider interface
 
 Available now:
+- mock cloud planner
 - mock cloud conversational responder
-- context-aware replies using transcript and detections
+- first OpenAI-specific planner/reply service interfaces
+- context-aware replies using transcript, detections, and local step results
 - fallback response when cloud generation fails
 
 Current limitations:
-- no real provider integration yet
-- no prompt management
+- real OpenAI path requires credentials and is not exercised by CI
 - no streaming responses
 
 ### TTS
@@ -172,7 +158,7 @@ Available now:
 Current limitations:
 - no audio synthesis
 - no playback queue
-- no voice selection
+- Piper integration is still pending
 
 ### UI
 
@@ -205,6 +191,7 @@ Available now:
 - bundled Silero VAD endpointing for noisy-room end-of-utterance detection
 - tunable VAD endpoint controls through runtime config
 - sticky terminal debug rows for mic state, VAD tail state, ring-buffer state, wake status, and transcript preview
+- sticky terminal AI row for backend state, planning/reply durations, compact plan preview, and compact reply preview
 - speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
 
 Current limitations:
@@ -224,6 +211,7 @@ Available now:
 - `whisper.cpp` clone/build plus default model download
 - OpenWakeWord runtime resolution plus built-in wake-model verification during setup
 - generated `.env.local` runtime configuration
+- optional interactive OpenAI enablement plus API-key prompt with blank-later support
 
 Current limitations:
 - only macOS and Raspberry Pi are first-class setup targets
@@ -238,9 +226,9 @@ Current limitations:
 
 - shared typed contracts
 - orchestrator control flow
-- routing logic
+- turn planning and validation logic
 - state transitions
-- event tracking
+- event tracking and in-process pub/sub
 - failure handling patterns
 - integration tests for the main interaction loop
 
@@ -251,7 +239,6 @@ Current limitations:
 - memory persistence
 - vision
 - hardware control
-- local AI
 - cloud AI
 
 ### Not built yet
@@ -259,7 +246,6 @@ Current limitations:
 - real TTS provider integration
 - real camera/vision pipeline
 - real hardware drivers
-- real local LLM
 - real cloud LLM provider integration
 - production logging/config loading
 
@@ -271,8 +257,9 @@ Current limitations:
 
 Manual text input
 -> orchestrator
--> route selection
--> local action or local query or mock AI
+-> local reactive cue
+-> turn plan selection
+-> local action/query and optional cloud reply
 -> mock UI update
 -> mock TTS acknowledgement
 -> memory persistence
@@ -290,7 +277,7 @@ Mock STT partial transcript
 Push-to-talk speech input
 -> external recorder command creates WAV
 -> `whisper.cpp` produces final transcript
--> orchestrator route selection and response flow
+-> orchestrator planning and execution flow
 
 ### Not yet available
 
@@ -306,15 +293,18 @@ Live microphone
 Currently covered:
 - app bootstrapping
 - full manual turn execution
-- routing behavior
+- planner behavior
+- plan validation behavior
+- hybrid local/cloud turn execution
 - partial transcript handling
 - memory and vision-backed local query flow
 - cloud fallback behavior
+- reactive behavior timing
 - TTS failure recovery
 - vision failure recovery
 
 Current test status:
-- `8 passed`
+- `76 passed`
 
 ---
 
@@ -322,14 +312,13 @@ Current test status:
 
 ### High priority
 
-- wire `MockSttService` into `OrchestratorService.run()` so runtime can simulate partial plus final transcript streams
-- add a dedicated `ai/` package to architecture docs if not already documented elsewhere
-- add a real event subscription mechanism if UI or other modules should react independently
 - add persistent memory storage on disk
+- add real hardware/vision availability reporting into the capability registry
+- add streaming cloud reply support once the local execution path is stable
 
 ### After that
 
-- integrate a real cloud LLM provider behind the existing interface
+- harden the real OpenAI provider path for deployment usage
 - integrate real TTS
 - integrate real STT
 - add real vision polling/detection
@@ -351,16 +340,16 @@ Use this checklist during each implementation pass.
 
 - [x] Shared typed contracts exist
 - [x] Orchestrator can execute a full mocked turn
-- [x] Rule-based local routing exists
+- [x] Hybrid turn planning exists
+- [x] Capability registry and validation exist
 - [x] Memory mock is integrated
 - [x] Vision mock is integrated
 - [x] Hardware mock is integrated
 - [x] Cloud AI mock is integrated
-- [x] Local AI mock is integrated
 - [x] TTS mock is integrated
 - [x] Partial transcript handling exists
-- [ ] STT mock is wired into runtime loop
-- [ ] Real cloud AI integration exists
+- [x] STT mock is wired into runtime loop
+- [x] Real cloud AI integration exists
 - [ ] Real TTS integration exists
 - [ ] Real STT integration exists
 - [ ] Real vision integration exists

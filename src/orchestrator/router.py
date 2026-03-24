@@ -1,96 +1,152 @@
-"""Intent routing for the AI companion robot."""
+"""Turn planning for the AI companion robot."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
-from shared.models import InteractionContext, RouteDecision, RouteKind, Transcript
+from shared.models import CapabilityDefinition, InteractionContext, PlanStep, RouteKind, Transcript, TurnPlan
 
 
-class IntentRouter(Protocol):
-    """Interface for selecting the execution path for a user utterance."""
+class CloudPlanningService(Protocol):
+    """Interface for cloud-assisted turn planning."""
 
-    async def route(self, transcript: Transcript, context: InteractionContext) -> RouteDecision:
-        """Choose how the orchestrator should handle a final transcript."""
+    async def plan_turn(
+        self,
+        transcript: Transcript,
+        context: InteractionContext,
+        capabilities: tuple[CapabilityDefinition, ...],
+    ) -> TurnPlan:
+        """Return a structured multi-step plan for the current utterance."""
+
+
+class TurnPlanner(Protocol):
+    """Interface for selecting a turn plan from transcript and context."""
+
+    async def plan(
+        self,
+        transcript: Transcript,
+        context: InteractionContext,
+        capabilities: tuple[CapabilityDefinition, ...],
+    ) -> TurnPlan:
+        """Choose how the orchestrator should execute the turn."""
 
 
 @dataclass(slots=True)
-class RuleBasedIntentRouter:
-    """Deterministic first-pass router for local actions, queries, and chat."""
+class LocalShortcutPlanner:
+    """Temporary deterministic shortcuts for obvious safe commands."""
 
-    prefer_local_llm_for_uncertain: bool = False
-
-    async def route(self, transcript: Transcript, context: InteractionContext) -> RouteDecision:
+    async def plan(
+        self,
+        transcript: Transcript,
+        context: InteractionContext,
+        capabilities: tuple[CapabilityDefinition, ...],
+    ) -> TurnPlan | None:
+        del context, capabilities
         text = transcript.text.lower()
 
-        if "open your eyes" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_ACTION,
-                confidence=0.99,
-                action_name="open_eyes",
-                rationale="matched eye-open command",
-            )
-        if "close your eyes" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_ACTION,
-                confidence=0.99,
-                action_name="close_eyes",
-                rationale="matched eye-close command",
-            )
-        if "look at me" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_ACTION,
-                confidence=0.97,
-                action_name="look_at_user",
-                rationale="matched visual attention command",
-            )
-        if "turn your head" in text or "turn left" in text or "turn right" in text:
-            direction = "left" if "left" in text else "right" if "right" in text else "center"
-            return RouteDecision(
-                kind=RouteKind.LOCAL_ACTION,
-                confidence=0.95,
-                action_name="turn_head",
-                arguments={"direction": direction},
-                rationale="matched head-turn command",
-            )
-        if "who do you see" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_QUERY,
+        if _contains_any(text, "look at me") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_ACTION,
                 confidence=0.98,
-                query_name="visible_people",
-                rationale="matched vision query",
-            )
-        if "what do you know about me" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_QUERY,
-                confidence=0.98,
-                query_name="user_summary",
-                rationale="matched memory query",
-            )
-        if "what state are you in" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_QUERY,
-                confidence=0.95,
-                query_name="robot_status",
-                rationale="matched robot-status query",
-            )
-        if "use your local brain" in text or "reason locally" in text:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_LLM,
-                confidence=0.85,
-                rationale="matched explicit local-reasoning request",
+                source="local_shortcut",
+                rationale="matched direct attention command",
+                steps=(PlanStep(capability_id="look_at_user", reason="user asked to be looked at"),),
             )
 
-        if self.prefer_local_llm_for_uncertain:
-            return RouteDecision(
-                kind=RouteKind.LOCAL_LLM,
-                confidence=0.55,
-                rationale="configured uncertain utterances to local LLM",
+        if _contains_any(text, "turn your head left", "turn left") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_ACTION,
+                confidence=0.98,
+                source="local_shortcut",
+                rationale="matched direct head turn command",
+                steps=(
+                    PlanStep(
+                        capability_id="turn_head",
+                        arguments={"direction": "left"},
+                        reason="user requested a left head turn",
+                    ),
+                ),
             )
 
-        return RouteDecision(
-            kind=RouteKind.CLOUD_CHAT,
-            confidence=0.7,
-            rationale="defaulted to cloud conversation",
-        )
+        if _contains_any(text, "turn your head right", "turn right") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_ACTION,
+                confidence=0.98,
+                source="local_shortcut",
+                rationale="matched direct head turn command",
+                steps=(
+                    PlanStep(
+                        capability_id="turn_head",
+                        arguments={"direction": "right"},
+                        reason="user requested a right head turn",
+                    ),
+                ),
+            )
+
+        if _contains_any(text, "turn your head", "look forward", "center your head") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_ACTION,
+                confidence=0.95,
+                source="local_shortcut",
+                rationale="matched direct head-centering command",
+                steps=(
+                    PlanStep(
+                        capability_id="turn_head",
+                        arguments={"direction": "center"},
+                        reason="center the head position",
+                    ),
+                ),
+            )
+
+        if _contains_any(text, "can you see me", "who do you see", "what do you see") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_QUERY,
+                confidence=0.98,
+                source="local_shortcut",
+                rationale="matched direct vision question",
+                steps=(PlanStep(capability_id="visible_people", reason="answer from current detections"),),
+            )
+
+        if _contains_any(text, "what do you know about me") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_QUERY,
+                confidence=0.98,
+                source="local_shortcut",
+                rationale="matched direct memory question",
+                steps=(PlanStep(capability_id="user_summary", reason="answer from user memory"),),
+            )
+
+        if _contains_any(text, "what state are you in", "what is your status") and " and " not in text:
+            return TurnPlan(
+                route_kind=RouteKind.LOCAL_QUERY,
+                confidence=0.95,
+                source="local_shortcut",
+                rationale="matched direct robot-status question",
+                steps=(PlanStep(capability_id="robot_status", reason="answer from orchestrator state"),),
+            )
+
+        return None
+
+
+@dataclass(slots=True)
+class HybridTurnPlanner:
+    """Two-stage turn planner with local shortcuts and cloud fallback."""
+
+    cloud_planner: CloudPlanningService
+    local_shortcuts: LocalShortcutPlanner = field(default_factory=LocalShortcutPlanner)
+
+    async def plan(
+        self,
+        transcript: Transcript,
+        context: InteractionContext,
+        capabilities: tuple[CapabilityDefinition, ...],
+    ) -> TurnPlan:
+        shortcut_plan = await self.local_shortcuts.plan(transcript, context, capabilities)
+        if shortcut_plan is not None:
+            return shortcut_plan
+        return await self.cloud_planner.plan_turn(transcript, context, capabilities)
+
+
+def _contains_any(text: str, *needles: str) -> bool:
+    return any(needle in text for needle in needles)

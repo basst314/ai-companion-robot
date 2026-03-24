@@ -43,12 +43,32 @@ class EmotionState(StrEnum):
 
 
 class RouteKind(StrEnum):
-    """High-level route choices available to the orchestrator."""
+    """High-level route summaries retained for memory and telemetry."""
 
     LOCAL_ACTION = "local_action"
     LOCAL_QUERY = "local_query"
     LOCAL_LLM = "local_llm"
     CLOUD_CHAT = "cloud_chat"
+    HYBRID = "hybrid"
+
+
+class CapabilityKind(StrEnum):
+    """Kinds of local/cloud capabilities that a turn plan may reference."""
+
+    ACTION = "action"
+    QUERY = "query"
+    RESPONSE = "response"
+
+
+class StepPhase(StrEnum):
+    """Execution phases for a planned turn."""
+
+    REACTIVE = "reactive"
+    IMMEDIATE = "immediate"
+    QUERY = "query"
+    REPLY = "reply"
+    SPEAK = "speak"
+    CLEANUP = "cleanup"
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,7 +95,7 @@ class Transcript:
 
 @dataclass(slots=True, frozen=True)
 class RouteDecision:
-    """Result of routing a transcript to the next execution path."""
+    """Legacy routing result kept for backward compatibility during migration."""
 
     kind: RouteKind
     confidence: float
@@ -83,6 +103,54 @@ class RouteDecision:
     query_name: str | None = None
     arguments: dict[str, Any] = field(default_factory=dict)
     rationale: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class CapabilityDefinition:
+    """Registered capability exposed to the planner and executor."""
+
+    capability_id: str
+    description: str
+    kind: CapabilityKind
+    target: ComponentName
+    phase: StepPhase
+    argument_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
+    requires_components: tuple[ComponentName, ...] = ()
+    allow_parallel: bool = False
+    safe_by_default: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class PlanStep:
+    """One executable step within a turn plan."""
+
+    capability_id: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    phase: StepPhase | None = None
+    reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PlanStepResult:
+    """Outcome of executing or skipping a single plan step."""
+
+    capability_id: str
+    success: bool
+    message: str
+    data: dict[str, Any] = field(default_factory=dict)
+    state_changes: dict[str, Any] = field(default_factory=dict)
+    skipped: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class TurnPlan:
+    """Structured multi-step plan produced before a turn is executed."""
+
+    route_kind: RouteKind
+    confidence: float
+    steps: tuple[PlanStep, ...]
+    rationale: str | None = None
+    source: str = "planner"
 
 
 @dataclass(slots=True, frozen=True)
@@ -118,6 +186,7 @@ class AiResponse:
     emotion: EmotionState = EmotionState.NEUTRAL
     intent: str | None = None
     should_speak: bool = True
+    display_text: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -148,6 +217,8 @@ class InteractionRecord:
     timestamp: datetime
     route_kind: RouteKind
     user_id: str | None = None
+    plan_summary: str | None = None
+    executed_steps: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

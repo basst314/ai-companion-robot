@@ -1,4 +1,4 @@
-"""Integration-style tests for the mock orchestrator runtime."""
+"""Integration-style tests for the hybrid orchestrator runtime."""
 
 from __future__ import annotations
 
@@ -6,17 +6,20 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ai.cloud import MockCloudAiService
+from ai.cloud import MockCloudPlanningService, MockCloudResponseService
 from main import build_application, main
-from orchestrator.router import RuleBasedIntentRouter
-from orchestrator.state import LifecycleStage, OrchestratorState
+from orchestrator.capabilities import build_default_capability_registry
+from orchestrator.router import HybridTurnPlanner, LocalShortcutPlanner
+from orchestrator.state import LifecycleStage
 from shared.config import AppConfig
 from shared.events import EventName
 from shared.models import (
     ComponentName,
     Language,
+    PlanStep,
     RouteKind,
     Transcript,
+    TurnPlan,
 )
 from stt.service import AudioWindow, WakeDetectionResult
 from tts.service import MockTtsService
@@ -42,14 +45,14 @@ class StreamingInteractiveSttService:
 
     async def stream_transcripts(self):  # type: ignore[no-untyped-def]
         yield Transcript(
-            text="open your",
+            text="look at",
             language=Language.ENGLISH,
             confidence=0.9,
             is_final=False,
             started_at=datetime.now(UTC),
         )
         yield Transcript(
-            text="open your eyes",
+            text="look at me",
             language=Language.ENGLISH,
             confidence=1.0,
             is_final=True,
@@ -96,7 +99,7 @@ class BlockingWakeWordService:
 
 
 def test_main_returns_success_code() -> None:
-    """The entry point should construct the mock runtime successfully."""
+    """The entry point should construct the hybrid runtime successfully."""
 
     assert main(AppConfig()) == 0
 
@@ -124,20 +127,20 @@ def test_interactive_speech_console_accepts_typed_phrase(monkeypatch) -> None:
     config.runtime.interactive_console = True
     service = build_application(config)
 
-    entries = iter(["open your eyes", "exit"])
+    entries = iter(["look at me", "exit"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(entries))
     service.stt = FailingInteractiveSttService()
 
     asyncio.run(service.run())
 
     assert service.state.lifecycle is LifecycleStage.IDLE
-    assert service.state.eyes_open is True
-    assert service.state.current_response == "Opening my eyes now."
+    assert service.state.head_direction == "user"
+    assert service.state.current_response == "I am looking at you now."
     assert any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
 
 
 def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, capsys) -> None:
-    """Speech mode should show growing transcript text before routing the final turn."""
+    """Speech mode should show growing transcript text before executing the final turn."""
 
     config = AppConfig()
     config.runtime.input_mode = "speech"
@@ -154,10 +157,9 @@ def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, ca
     assert captured.count("[CTRL]") >= 2
     assert "Listening [en]:" in captured
     assert "Final transcript [en]:" in captured
-    assert "open your eyes" in captured
-    assert "[UI] lifecycle=" not in captured
+    assert "look at me" in captured
     assert "[ROUTE]" in captured
-    assert service.state.current_response == "Opening my eyes now."
+    assert service.state.current_response == "I am looking at you now."
 
 
 def test_interactive_speech_console_prioritizes_wake_word_when_input_and_wake_finish_together(
@@ -188,7 +190,7 @@ def test_interactive_speech_console_prioritizes_wake_word_when_input_and_wake_fi
 
     asyncio.run(service.run())
 
-    assert service.state.current_response == "Opening my eyes now."
+    assert service.state.current_response == "I am looking at you now."
     assert service.wake_word.calls >= 1
 
 
@@ -231,11 +233,11 @@ def test_speech_mode_waits_for_wake_word_before_processing() -> None:
     assert service.memory.records == []
 
 
-def test_speech_mode_strips_wake_word_before_routing_and_memory() -> None:
+def test_speech_mode_strips_wake_word_before_planning_and_memory() -> None:
     config = AppConfig()
     config.runtime.input_mode = "speech"
     config.runtime.stt_backend = "mock"
-    config.runtime.manual_inputs = ("Oreo open your eyes",)
+    config.runtime.manual_inputs = ("Oreo look at me",)
     service = build_application(config)
     service.config.runtime.wake_word_enabled = True
     service.config.runtime.wake_word_phrase = "Oreo"
@@ -244,9 +246,9 @@ def test_speech_mode_strips_wake_word_before_routing_and_memory() -> None:
     asyncio.run(service.run())
 
     assert service.state.current_transcript is not None
-    assert service.state.current_transcript.text == "open your eyes"
-    assert service.memory.records[-1].user_text == "open your eyes"
-    assert service.state.current_response == "Opening my eyes now."
+    assert service.state.current_transcript.text == "look at me"
+    assert service.memory.records[-1].user_text == "look at me"
+    assert service.state.current_response == "I am looking at you now."
 
 
 def test_speech_mode_preserves_words_after_wake_boundary() -> None:
@@ -280,6 +282,7 @@ def test_speech_mode_preserves_words_after_wake_boundary() -> None:
     assert service.state.current_transcript is not None
     assert service.state.current_transcript.text == "look at me and tell me a joke"
     assert service.memory.records[-1].user_text == "look at me and tell me a joke"
+    assert service.memory.records[-1].route_kind is RouteKind.HYBRID
 
 
 def test_speech_mode_strips_only_first_wake_phrase_when_repeated() -> None:
@@ -303,22 +306,21 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     """A manual input should complete one full end-to-end turn."""
 
     config = AppConfig()
-    config.runtime.manual_inputs = ("open your eyes",)
+    config.runtime.manual_inputs = ("look at me",)
     service = build_application(config)
 
     asyncio.run(service.run())
 
     assert service.state.lifecycle is LifecycleStage.IDLE
-    assert service.state.eyes_open is True
-    assert service.state.current_response == "Opening my eyes now."
-    assert service.tts.spoken_texts == ["Opening my eyes now."]
+    assert service.state.head_direction == "user"
+    assert service.state.current_response == "I am looking at you now."
+    assert service.tts.spoken_texts == ["I am looking at you now."]
     assert [event.name for event in service.event_history][-1] == EventName.TTS_FINISHED
 
 
-def test_router_classifies_local_and_cloud_paths() -> None:
-    """The rule-based router should distinguish local actions, queries, local LLM, and chat."""
+def test_planners_choose_local_cloud_and_hybrid_paths() -> None:
+    """The shortcut and hybrid planners should distinguish the main path shapes."""
 
-    router = RuleBasedIntentRouter()
     transcript = Transcript(
         text="who do you see",
         language=Language.ENGLISH,
@@ -328,23 +330,12 @@ def test_router_classifies_local_and_cloud_paths() -> None:
         ended_at=datetime.now(UTC),
     )
     context = asyncio.run(build_application(AppConfig())._build_context())
+    shortcut = LocalShortcutPlanner()
+    hybrid = HybridTurnPlanner(cloud_planner=MockCloudPlanningService())
 
-    visible = asyncio.run(router.route(transcript, context))
-    local_llm = asyncio.run(
-        router.route(
-            Transcript(
-                text="please use your local brain",
-                language=Language.ENGLISH,
-                confidence=1.0,
-                is_final=True,
-                started_at=datetime.now(UTC),
-                ended_at=datetime.now(UTC),
-            ),
-            context,
-        )
-    )
+    visible = asyncio.run(shortcut.plan(transcript, context, ()))
     cloud = asyncio.run(
-        router.route(
+        hybrid.plan(
             Transcript(
                 text="tell me a joke",
                 language=Language.ENGLISH,
@@ -354,15 +345,31 @@ def test_router_classifies_local_and_cloud_paths() -> None:
                 ended_at=datetime.now(UTC),
             ),
             context,
+            (),
+        )
+    )
+    mixed = asyncio.run(
+        hybrid.plan(
+            Transcript(
+                text="look at me and tell me a joke",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            ),
+            context,
+            (),
         )
     )
 
-    assert visible.kind is RouteKind.LOCAL_QUERY
-    assert local_llm.kind is RouteKind.LOCAL_LLM
-    assert cloud.kind is RouteKind.CLOUD_CHAT
+    assert visible is not None
+    assert visible.route_kind is RouteKind.LOCAL_QUERY
+    assert cloud.route_kind is RouteKind.CLOUD_CHAT
+    assert mixed.route_kind is RouteKind.HYBRID
 
 
-def test_partial_transcript_updates_state_without_triggering_route() -> None:
+def test_partial_transcript_updates_state_without_triggering_plan() -> None:
     """Partial transcripts should update listening UI without executing a turn."""
 
     service = build_application(AppConfig())
@@ -378,8 +385,37 @@ def test_partial_transcript_updates_state_without_triggering_route() -> None:
 
     assert service.state.lifecycle is LifecycleStage.LISTENING
     assert service.state.current_transcript == partial
-    assert service.state.last_route is None
-    assert service.event_history[-1].name is EventName.TRANSCRIPT_PARTIAL
+    assert service.state.last_plan is None
+    assert service.event_history[-1].name is EventName.STEP_FINISHED
+
+
+def test_capability_registry_rejects_unknown_bad_and_unavailable_steps() -> None:
+    registry = build_default_capability_registry()
+    plan = TurnPlan(
+        route_kind=RouteKind.HYBRID,
+        confidence=1.0,
+        source="test",
+        steps=(
+            PlanStep(capability_id="missing_capability"),
+            PlanStep(capability_id="turn_head", arguments={"direction": "up"}),
+            PlanStep(capability_id="cloud_reply"),
+        ),
+    )
+
+    validated_plan, skipped = registry.validate_plan(
+        plan,
+        available_components={
+            ComponentName.ORCHESTRATOR,
+            ComponentName.HARDWARE,
+            ComponentName.UI,
+        },
+    )
+
+    assert validated_plan.steps == ()
+    assert len(skipped) == 3
+    assert skipped[0].skipped is True
+    assert skipped[1].message.startswith("Capability 'turn_head' argument")
+    assert skipped[2].message == "Capability 'cloud_reply' is currently unavailable."
 
 
 def test_memory_and_vision_context_are_used_for_local_query() -> None:
@@ -403,6 +439,30 @@ def test_memory_and_vision_context_are_used_for_local_query() -> None:
     assert service.state.current_response == "I can currently see Sebastian."
     assert service.state.active_user_id == "sebastian"
     assert service.memory.records[-1].route_kind is RouteKind.LOCAL_QUERY
+    assert service.memory.records[-1].executed_steps == ("visible_people",)
+
+
+def test_hybrid_turn_executes_local_action_and_cloud_reply() -> None:
+    service = build_application(AppConfig())
+
+    asyncio.run(
+        service.run_turn(
+            Transcript(
+                text="look at me and tell me a joke",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+    )
+
+    assert service.state.head_direction == "user"
+    assert service.state.current_response.startswith("Cloud reply:")
+    assert service.state.last_plan is not None
+    assert service.state.last_plan.route_kind is RouteKind.HYBRID
+    assert service.memory.records[-1].executed_steps[-2:] == ("look_at_user", "cloud_reply")
 
 
 def test_cloud_failure_falls_back_to_local_message() -> None:
@@ -410,7 +470,7 @@ def test_cloud_failure_falls_back_to_local_message() -> None:
 
     config = AppConfig()
     service = build_application(config)
-    service.cloud_ai = MockCloudAiService(fail_on_text="fail")
+    service.cloud_response = MockCloudResponseService(fail_on_text="fail")
 
     asyncio.run(
         service.run_turn(
@@ -428,6 +488,36 @@ def test_cloud_failure_falls_back_to_local_message() -> None:
     assert "falling back" in service.state.current_response
     assert service.state.lifecycle is LifecycleStage.IDLE
     assert any(event.name is EventName.ERROR_OCCURRED for event in service.event_history)
+
+
+def test_reactive_step_happens_before_cloud_completion() -> None:
+    service = build_application(AppConfig())
+
+    asyncio.run(
+        service.run_turn(
+            Transcript(
+                text="tell me a joke",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+    )
+
+    step_finished_index = next(
+        index
+        for index, event in enumerate(service.event_history)
+        if event.name is EventName.STEP_FINISHED and event.payload.get("result").capability_id == "set_emotion"
+    )
+    response_ready_index = next(
+        index
+        for index, event in enumerate(service.event_history)
+        if event.name is EventName.RESPONSE_READY
+    )
+
+    assert step_finished_index < response_ready_index
 
 
 def test_tts_failure_does_not_break_interaction_persistence() -> None:

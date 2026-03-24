@@ -249,6 +249,32 @@ choose_custom_wake_model() {
   printf '%s' "$(prompt_with_default "OpenWakeWord model name or path" "/absolute/path/to/custom_model.tflite")"
 }
 
+choose_cloud_ai_mode() {
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    printf '%s' "mock"
+    return 0
+  fi
+
+  if confirm "Enable the real OpenAI backend for planning and replies?"; then
+    printf '%s' "openai"
+    return 0
+  fi
+
+  printf '%s' "mock"
+}
+
+choose_openai_api_key() {
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    printf '%s' ""
+    return 0
+  fi
+
+  local answer
+  read -r -s -p "OpenAI API key (leave blank to add it later) [] " answer
+  printf '\n' >&2
+  printf '%s' "${answer}"
+}
+
 create_virtualenv() {
   local python_cmd="$1"
   local recreate_venv=0
@@ -447,6 +473,8 @@ write_env_file() {
   local wake_setup="$3"
   local wake_phrase="$4"
   local wake_model="$5"
+  local cloud_ai_mode="$6"
+  local openai_api_key="$7"
   local whisper_binary="${WHISPER_REPO_DIR}/build/bin/whisper-cli"
   local whisper_model="${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin"
   local audio_command
@@ -469,6 +497,14 @@ write_env_file() {
 AI_COMPANION_INPUT_MODE=speech
 AI_COMPANION_INTERACTIVE_CONSOLE=true
 AI_COMPANION_STT_BACKEND=whisper_cpp
+AI_COMPANION_USE_MOCK_AI=$([[ "${cloud_ai_mode}" == "openai" ]] && printf '%s' "false" || printf '%s' "true")
+AI_COMPANION_CLOUD_ENABLED=$([[ "${cloud_ai_mode}" == "openai" ]] && printf '%s' "true" || printf '%s' "false")
+AI_COMPANION_CLOUD_PROVIDER_NAME=openai
+AI_COMPANION_OPENAI_API_KEY=${openai_api_key}
+AI_COMPANION_OPENAI_BASE_URL=https://api.openai.com/v1/responses
+AI_COMPANION_OPENAI_PLANNER_MODEL=gpt-5-mini
+AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-5.2
+AI_COMPANION_OPENAI_TIMEOUT_SECONDS=20
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
@@ -539,6 +575,18 @@ main() {
       ;;
   esac
 
+  local cloud_ai_mode
+  cloud_ai_mode="$(choose_cloud_ai_mode)"
+  case "${cloud_ai_mode}" in
+    mock|openai) ;;
+    *) fail "unsupported cloud AI mode '${cloud_ai_mode}'" ;;
+  esac
+
+  local openai_api_key=""
+  if [[ "${cloud_ai_mode}" == "openai" ]]; then
+    openai_api_key="$(choose_openai_api_key)"
+  fi
+
   install_system_packages
 
   local python_cmd
@@ -556,7 +604,14 @@ main() {
   prepare_whisper_repo
   build_whisper
   download_model "${selected_model}"
-  write_env_file "${selected_model}" "${selected_language_mode}" "${wake_setup}" "${wake_phrase}" "${wake_model}"
+  write_env_file \
+    "${selected_model}" \
+    "${selected_language_mode}" \
+    "${wake_setup}" \
+    "${wake_phrase}" \
+    "${wake_model}" \
+    "${cloud_ai_mode}" \
+    "${openai_api_key}"
   run_verification
 
   cat <<EOF
@@ -570,7 +625,7 @@ Whisper model: ${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin
 Next steps:
   1. Run the app with: .venv/bin/python src/main.py
   2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or use the configured wake word
-  3. Edit ${ENV_FILE} if you want to adjust model, language mode, VAD endpoint timing, wake-word settings, or recorder settings
+  3. Edit ${ENV_FILE} if you want to adjust model, language mode, VAD endpoint timing, wake-word settings, recorder settings, or add an OpenAI API key later
 EOF
 }
 

@@ -6,15 +6,23 @@ import asyncio
 import logging
 from pathlib import Path
 
-from ai.cloud import MockCloudAiService
-from ai.local import MockLocalAiService
+from ai.cloud import (
+    MockCloudPlanningService,
+    MockCloudResponseService,
+    OpenAiCloudPlanningService,
+    OpenAiCloudResponseService,
+    OpenAiResponsesClient,
+)
 from hardware.service import MockHardwareService
 from memory.service import InMemoryMemoryService
-from orchestrator.router import RuleBasedIntentRouter
+from orchestrator.capabilities import build_default_capability_registry
+from orchestrator.reactive import ReactivePolicyEngine
+from orchestrator.router import HybridTurnPlanner
 from orchestrator.service import OrchestratorService
 from orchestrator.state import OrchestratorState
 from shared.console import TerminalDebugScreen, configure_console_log, configure_terminal_debug_screen
 from shared.config import AppConfig, load_app_config
+from shared.events import EventBus
 from shared.models import UserIdentity, VisionDetection
 from stt.service import (
     MockSttService,
@@ -34,6 +42,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     """Assemble the default mock runtime used during early development."""
 
     app_config = config or load_app_config()
+    capability_registry = build_default_capability_registry()
     memory = InMemoryMemoryService(
         active_user=UserIdentity(
             user_id=app_config.mocks.active_user_id,
@@ -50,10 +59,14 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     )
     terminal_debug = TerminalDebugScreen() if app_config.runtime.interactive_console else None
     stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
+    cloud_planner, cloud_response = _build_cloud_services(app_config)
     return OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
-        router=RuleBasedIntentRouter(),
+        planner=HybridTurnPlanner(cloud_planner=cloud_planner),
+        capability_registry=capability_registry,
+        reactive_policy=ReactivePolicyEngine(),
+        event_bus=EventBus(),
         memory=memory,
         vision=vision,
         ui=MockUiService(
@@ -61,12 +74,29 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
             echo_text_to_console=True,
         ),
         hardware=MockHardwareService(),
-        local_ai=MockLocalAiService(),
-        cloud_ai=MockCloudAiService(),
+        cloud_response=cloud_response,
         stt=stt,
         wake_word=wake_word,
         tts=MockTtsService(),
         terminal_debug=terminal_debug,
+    )
+
+
+def _build_cloud_services(app_config: AppConfig):
+    if app_config.runtime.use_mock_ai or not app_config.cloud.enabled:
+        return MockCloudPlanningService(), MockCloudResponseService()
+
+    if (app_config.cloud.provider_name or "").strip().lower() != "openai":
+        raise RuntimeError("only the OpenAI cloud provider is currently implemented")
+
+    client = OpenAiResponsesClient(
+        api_key=app_config.cloud.openai_api_key,
+        base_url=app_config.cloud.openai_base_url,
+        timeout_seconds=app_config.cloud.openai_timeout_seconds,
+    )
+    return (
+        OpenAiCloudPlanningService(client=client, model=app_config.cloud.openai_planner_model),
+        OpenAiCloudResponseService(client=client, model=app_config.cloud.openai_response_model),
     )
 
 

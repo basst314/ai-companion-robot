@@ -33,7 +33,8 @@ The orchestrator is the central control loop running on the Raspberry Pi.
 Responsibilities:
 - coordinate all components
 - manage interaction flow
-- route data between modules
+- build and validate turn plans
+- execute local actions, queries, and local reactive behaviors
 - call cloud services when needed
 - maintain conversation state
 - manage personality layer
@@ -68,12 +69,15 @@ Runs primarily in the cloud.
 Input:
 - transcript
 - context (memory, user identity, state)
+- planner-visible capability catalog
 
 Processing:
-- generate response
+- generate a structured turn plan when local shortcuts are not enough
+- generate response text after local actions and queries have run
 - apply personality tone
 
 Output:
+- turn plan
 - response text
 - optional metadata (emotion, intent)
 
@@ -81,14 +85,15 @@ Output:
 
 ### 3.4 Text-to-Speech (TTS)
 
-Runs locally using Piper.
+Runs locally on the robot.
 
 Input:
 - response text
 - language
 
 Processing:
-- generate audio waveform
+- current milestone: mock/local debug acknowledgement
+- next real provider: Piper
 
 Output:
 - audio playback
@@ -147,7 +152,10 @@ User speech
 → Wake-word detection (OpenWakeWord, local)
 → STT (local)
 → Orchestrator
-→ AI (cloud)
+→ local reactive policy
+→ turn planner
+→ local actions / queries
+→ AI response text (cloud)
 → Orchestrator
 → TTS (local)
 → Speaker
@@ -173,6 +181,8 @@ Camera
 - Wake-word detection (OpenWakeWord)
 - STT (whisper.cpp)
 - TTS (Piper)
+- reactive policy execution
+- capability validation and step execution
 - Vision processing
 - UI rendering
 - Orchestrator
@@ -181,9 +191,10 @@ Camera
 
 ### Cloud
 
-- LLM (primary intelligence)
+- LLM-based turn planning
+- LLM-based response text generation
 - optional enhanced STT
-- optional enhanced TTS
+- no cloud speech output in the current design
 
 ---
 
@@ -194,6 +205,8 @@ The system is event-driven.
 Examples:
 - "speech_detected"
 - "face_detected"
+- "plan_created"
+- "step_finished"
 - "response_ready"
 - "audio_finished"
 
@@ -231,7 +244,7 @@ System should degrade gracefully:
 - directional awareness (mic array)
 - multi-user tracking
 - improved memory system
-- local AI fallback
+- local lightweight reasoning fallback
 
 ---
 

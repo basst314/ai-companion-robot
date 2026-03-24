@@ -1,9 +1,9 @@
 """State definitions for the orchestrator."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
-from shared.models import EmotionState, Language, RouteDecision, Transcript, VisionDetection
+from shared.models import EmotionState, Language, PlanStepResult, Transcript, TurnPlan, VisionDetection
 
 
 class LifecycleStage(StrEnum):
@@ -30,7 +30,8 @@ class OrchestratorState:
     last_detections: tuple[VisionDetection, ...] = ()
     last_error: str | None = None
     interaction_id: int = 0
-    last_route: RouteDecision | None = None
+    last_plan: TurnPlan | None = None
+    last_step_results: tuple[PlanStepResult, ...] = field(default_factory=tuple)
     eyes_open: bool = False
     head_direction: str = "center"
 

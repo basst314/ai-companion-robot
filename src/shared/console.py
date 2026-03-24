@@ -90,6 +90,17 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update high-level runtime fields shown in the sticky header."""
 
+    def update_ai_status(
+        self,
+        *,
+        backend: str | None = None,
+        planning_active: bool | None = None,
+        response_active: bool | None = None,
+        plan_preview: str | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        """Update AI backend activity shown in the sticky header."""
+
     def update_audio(
         self,
         *,
@@ -138,6 +149,15 @@ class TerminalDebugState:
     language: str | None = None
     route_summary: str | None = None
     last_error: str | None = None
+    ai_backend: str | None = None
+    ai_planning_active: bool = False
+    ai_response_active: bool = False
+    ai_planning_started_at: datetime | None = None
+    ai_response_started_at: datetime | None = None
+    ai_planning_last_duration: str | None = None
+    ai_response_last_duration: str | None = None
+    ai_plan_preview: str | None = None
+    ai_response_preview: str | None = None
     transcript_text: str = ""
     transcript_language: str | None = None
     transcript_is_final: bool = False
@@ -167,7 +187,7 @@ class TerminalDebugScreen(TerminalDebugSink):
 
     stream: TextIO = field(default_factory=lambda: sys.stdout)
     state: TerminalDebugState = field(default_factory=TerminalDebugState)
-    header_height: int = 4
+    header_height: int = 5
     active: bool = False
     control_enabled: bool = False
     _last_terminal_size: os.terminal_size = field(
@@ -235,6 +255,46 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.trailing_silence_seconds = None
             self.state.speech_started = False
             self.state.vad_active = False
+            self.state.ai_planning_active = False
+            self.state.ai_response_active = False
+            self.state.ai_planning_started_at = None
+            self.state.ai_response_started_at = None
+        self.render()
+
+    def update_ai_status(
+        self,
+        *,
+        backend: str | None = None,
+        planning_active: bool | None = None,
+        response_active: bool | None = None,
+        plan_preview: str | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        if backend is not None:
+            self.state.ai_backend = backend
+        now = datetime.now(UTC)
+        if planning_active is not None:
+            if planning_active and not self.state.ai_planning_active:
+                self.state.ai_planning_started_at = now
+                self.state.ai_planning_last_duration = None
+            elif not planning_active and self.state.ai_planning_active and self.state.ai_planning_started_at is not None:
+                elapsed = max(0.0, (now - self.state.ai_planning_started_at).total_seconds())
+                self.state.ai_planning_last_duration = f"{elapsed:0.2f}s"
+                self.state.ai_planning_started_at = None
+            self.state.ai_planning_active = planning_active
+        if response_active is not None:
+            if response_active and not self.state.ai_response_active:
+                self.state.ai_response_started_at = now
+                self.state.ai_response_last_duration = None
+            elif not response_active and self.state.ai_response_active and self.state.ai_response_started_at is not None:
+                elapsed = max(0.0, (now - self.state.ai_response_started_at).total_seconds())
+                self.state.ai_response_last_duration = f"{elapsed:0.2f}s"
+                self.state.ai_response_started_at = None
+            self.state.ai_response_active = response_active
+        if plan_preview is not None:
+            self.state.ai_plan_preview = plan_preview
+        if response_preview is not None:
+            self.state.ai_response_preview = response_preview
         self.render()
 
     def update_audio(
@@ -392,12 +452,13 @@ class TerminalDebugScreen(TerminalDebugSink):
         rows = max(self._last_terminal_size.lines, self.header_height + 2)
         self.stream.write(f"\033[{self.header_height + 1};{rows}r")
 
-    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str]:
+    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str, str]:
         status_row = self._status_row(width)
         audio_row = self._audio_row(width)
         ring_row = self._ring_row(width)
+        ai_row = self._ai_row(width)
         transcript_row = self._transcript_row(width)
-        return (status_row, audio_row, ring_row, transcript_row)
+        return (status_row, audio_row, ring_row, ai_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
         current_time = datetime.now().strftime("%H:%M:%S")
@@ -475,6 +536,39 @@ class TerminalDebugScreen(TerminalDebugSink):
         else:
             parts.append(self.badge("start", f"{utterance_start:0.1f}s", value_style=self.success_value))
         return self._pad_row("  ".join(parts), width)
+
+    def _ai_row(self, width: int) -> str:
+        backend = self.state.ai_backend or "--"
+        planning_status = "active" if self.state.ai_planning_active else "idle"
+        response_status = "active" if self.state.ai_response_active else "idle"
+        planning_style = self.whisper if self.state.ai_planning_active else self.subtle_value
+        response_style = self.success_value if self.state.ai_response_active else self.subtle_value
+        planning_duration = self._ai_duration(self.state.ai_planning_active, self.state.ai_planning_started_at, self.state.ai_planning_last_duration)
+        response_duration = self._ai_duration(self.state.ai_response_active, self.state.ai_response_started_at, self.state.ai_response_last_duration)
+        plan_preview = self.state.ai_plan_preview or "no plan yet"
+        response_preview = self.state.ai_response_preview or "no reply yet"
+        parts = [
+            self.label("[AI]"),
+            self.badge("backend", backend, value_style=self.value),
+            f"{self.label('[plan')} {planning_style(planning_status)}{self.label(']')}",
+            self.badge("plan-t", planning_duration, value_style=self.value),
+            f"{self.label('[reply')} {response_style(response_status)}{self.label(']')}",
+            self.badge("reply-t", response_duration, value_style=self.value),
+            f"{self.label('plan')} {self.route_value(self._clip_plain(plan_preview, 28))}",
+            f"{self.label('say')} {self.transcript(self._clip_plain(response_preview, 34))}",
+        ]
+        return self._pad_row("  ".join(parts), width)
+
+    def _ai_duration(
+        self,
+        active: bool,
+        started_at: datetime | None,
+        last_duration: str | None,
+    ) -> str:
+        if active and started_at is not None:
+            elapsed = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+            return f"{elapsed:0.2f}s"
+        return last_duration or "--"
 
     def _build_meter(self, *, current_noise: float, peak_energy: float, width: int) -> str:
         current_index = self._meter_index(current_noise, width)
