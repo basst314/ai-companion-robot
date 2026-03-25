@@ -9,6 +9,24 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-24 — Planner Payload Trim And Prompt Cache Readiness
+
+### Highlights
+- Reduced the OpenAI planner structured output to the minimum fields needed for execution: `route_kind` plus ordered steps.
+- Reordered the planner prompt so stable capability definitions come first, with dynamic context and the user transcript at the end for better prompt-cache routing.
+- Hardened planner parsing so invalid extra arguments on no-arg capabilities such as `cloud_reply`, and mismatched route kinds, are normalized before validation/execution.
+
+### Why this matters
+This keeps planner latency lower without changing the overall two-call architecture, and makes the OpenAI planner path more resilient when a fast model returns slightly inconsistent structured output.
+
+### Key decisions & rationale
+- Decision: keep strict structured output while trimming planner metadata.
+  - Why: reliability matters more than preserving optional planner fields like rationale or model-generated confidence.
+- Decision: prefer `gpt-4o-mini` as the current planner default and keep a richer reply model separately.
+  - Why: the planner task is short, schema-bound, and closer to classification/tool selection than open-ended response generation.
+
+---
+
 ## 2026-03-23 — OpenAI Integration Polish And Debug Visibility
 
 ### Highlights

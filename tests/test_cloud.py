@@ -6,7 +6,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from ai.cloud import OpenAiCloudPlanningService, OpenAiCloudResponseService
+from ai.cloud import OpenAiCloudPlanningService, OpenAiCloudResponseService, _turn_plan_from_json
 from shared.models import (
     CapabilityDefinition,
     CapabilityKind,
@@ -39,22 +39,21 @@ class FakeStructuredClient:
         assert model == "gpt-5-mini"
         assert schema_name == "robot_turn_plan"
         assert "planning layer" in instructions
-        assert "User transcript:" in input_text
+        assert input_text.startswith("Available capabilities:\n- look_at_user")
+        assert "\nLanguage: en\nActive user: Basti\nVisible people: Basti\n" in input_text
+        assert input_text.rstrip().endswith("User transcript: look at me and say hi")
         assert schema["type"] == "object"
+        assert schema["required"] == ["route_kind", "steps"]
         return {
             "route_kind": "hybrid",
-            "confidence": 0.91,
-            "rationale": "look first, then reply",
             "steps": [
                 {
                     "capability_id": "look_at_user",
                     "arguments": {"direction": None, "emotion": None},
-                    "reason": "maintain attention",
                 },
                 {
                     "capability_id": "cloud_reply",
                     "arguments": {"direction": None, "emotion": None},
-                    "reason": "answer the user",
                 },
             ],
         }
@@ -113,8 +112,11 @@ def test_openai_planner_logs_exact_request_and_output(caplog) -> None:
         plan = asyncio.run(service.plan_turn(transcript, _context(), capabilities))
 
     assert plan.route_kind is RouteKind.HYBRID
+    assert plan.confidence == 0.6
+    assert plan.rationale is None
     assert plan.steps[0].capability_id == "look_at_user"
     assert plan.steps[0].arguments == {}
+    assert plan.steps[0].reason is None
     log_text = caplog.text
     assert "[AI] planner request" in log_text
     assert "look at me and say hi" in log_text
@@ -161,3 +163,70 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     assert "I can currently see Basti." in log_text
     assert "[AI] reply output" in log_text
     assert "I can see you, and I am looking your way." in log_text
+
+
+def test_openai_planner_normalizes_cloud_reply_arguments_and_route_kind() -> None:
+    payload = {
+        "route_kind": "local_action",
+        "steps": [
+            {
+                "capability_id": "cloud_reply",
+                "arguments": {
+                    "direction": None,
+                    "emotion": "curious",
+                },
+            },
+            {
+                "capability_id": "set_emotion",
+                "arguments": {
+                    "direction": None,
+                    "emotion": "neutral",
+                },
+            },
+            {
+                "capability_id": "look_at_user",
+                "arguments": {
+                    "direction": None,
+                    "emotion": None,
+                },
+            },
+        ],
+    }
+    capabilities = (
+        CapabilityDefinition(
+            capability_id="cloud_reply",
+            description="Generate a conversational response",
+            kind=CapabilityKind.RESPONSE,
+            target=ComponentName.CLOUD,
+            phase=StepPhase.REPLY,
+        ),
+        CapabilityDefinition(
+            capability_id="set_emotion",
+            description="Update emotion",
+            kind=CapabilityKind.ACTION,
+            target=ComponentName.UI,
+            phase=StepPhase.IMMEDIATE,
+            argument_schema={
+                "emotion": {
+                    "type": "string",
+                    "enum": tuple(emotion.value for emotion in EmotionState),
+                    "required": True,
+                }
+            },
+        ),
+        CapabilityDefinition(
+            capability_id="look_at_user",
+            description="Turn toward the active user",
+            kind=CapabilityKind.ACTION,
+            target=ComponentName.HARDWARE,
+            phase=StepPhase.IMMEDIATE,
+        ),
+    )
+
+    turn_plan = _turn_plan_from_json(payload, capabilities=capabilities)
+
+    assert turn_plan.route_kind is RouteKind.HYBRID
+    assert turn_plan.steps[0].capability_id == "cloud_reply"
+    assert turn_plan.steps[0].arguments == {}
+    assert turn_plan.steps[1].arguments == {"emotion": "neutral"}
+    assert turn_plan.steps[2].arguments == {}

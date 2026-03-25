@@ -198,7 +198,6 @@ class OpenAiResponsesClient:
         payload = {
             "model": model,
             "instructions": instructions,
-            "input": input_text,
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -207,6 +206,7 @@ class OpenAiResponsesClient:
                     "schema": schema,
                 }
             },
+            "input": input_text,
         }
         response = await asyncio.to_thread(self._post_json, payload)
         raw_text = _extract_output_text(response)
@@ -245,7 +245,12 @@ class OpenAiCloudPlanningService:
         instructions = (
             "You are the planning layer for a local companion robot. "
             "Choose only from the provided capabilities. "
-            "Return the minimum safe plan needed to satisfy the user."
+            "Return the minimum safe plan needed to satisfy the user. "
+            "If a plan includes cloud_reply plus any local step, route_kind must be 'hybrid'. "
+            "If cloud_reply is the only step, route_kind must be 'cloud_chat'. "
+            "If there is no cloud_reply step, route_kind must be 'local_action' or 'local_query' as appropriate. "
+            "Only include arguments that the chosen capability accepts. "
+            "For capabilities with no arguments, return an empty object for arguments."
         )
         prompt = _build_planning_prompt(transcript, context, capabilities)
         _log_ai_text_block("planner request", f"model={self.model}\nInstructions:\n{instructions}\n\nInput:\n{prompt}")
@@ -257,7 +262,7 @@ class OpenAiCloudPlanningService:
             schema=_TURN_PLAN_SCHEMA,
         )
         _log_ai_text_block("planner output", json.dumps(raw_plan, indent=2, ensure_ascii=True))
-        return _turn_plan_from_json(raw_plan)
+        return _turn_plan_from_json(raw_plan, capabilities=capabilities)
 
 
 @dataclass(slots=True)
@@ -301,12 +306,6 @@ _TURN_PLAN_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": [route_kind.value for route_kind in RouteKind],
         },
-        "confidence": {
-            "type": "number",
-        },
-        "rationale": {
-            "type": ["string", "null"],
-        },
         "steps": {
             "type": "array",
             "items": {
@@ -329,13 +328,12 @@ _TURN_PLAN_SCHEMA: dict[str, Any] = {
                         },
                         "required": ["direction", "emotion"],
                     },
-                    "reason": {"type": ["string", "null"]},
                 },
-                "required": ["capability_id", "arguments", "reason"],
+                "required": ["capability_id", "arguments"],
             },
         },
     },
-    "required": ["route_kind", "confidence", "rationale", "steps"],
+    "required": ["route_kind", "steps"],
 }
 
 
@@ -361,15 +359,15 @@ def _build_planning_prompt(
     active_user = context.active_user.display_name if context.active_user and context.active_user.display_name else "unknown"
 
     return (
-        f"User transcript: {transcript.text}\n"
-        f"Language: {transcript.language.value}\n"
-        f"Active user: {active_user}\n"
-        f"Visible people: {visible_people}\n"
-        f"Robot state: lifecycle={context.robot_state.lifecycle}, "
-        f"emotion={context.robot_state.emotion.value}, eyes_open={context.robot_state.eyes_open}, "
-        f"head_direction={context.robot_state.head_direction}\n"
         "Available capabilities:\n"
         + "\n".join(capability_lines)
+        + f"\nLanguage: {transcript.language.value}\n"
+        + f"Active user: {active_user}\n"
+        + f"Visible people: {visible_people}\n"
+        + f"Robot state: lifecycle={context.robot_state.lifecycle}, "
+        + f"emotion={context.robot_state.emotion.value}, eyes_open={context.robot_state.eyes_open}, "
+        + f"head_direction={context.robot_state.head_direction}\n"
+        + f"\nUser transcript: {transcript.text}"
     )
 
 
@@ -398,10 +396,17 @@ def _build_response_prompt(
     )
 
 
-def _turn_plan_from_json(payload: dict[str, Any]) -> TurnPlan:
+def _turn_plan_from_json(
+    payload: dict[str, Any],
+    *,
+    capabilities: tuple[CapabilityDefinition, ...] = (),
+) -> TurnPlan:
+    definitions = {capability.capability_id: capability for capability in capabilities}
     raw_steps = payload.get("steps", [])
     steps = []
     for raw_step in raw_steps:
+        capability_id = str(raw_step.get("capability_id", "")).strip()
+        definition = definitions.get(capability_id)
         raw_arguments = raw_step.get("arguments", {})
         arguments = (
             {
@@ -412,25 +417,49 @@ def _turn_plan_from_json(payload: dict[str, Any]) -> TurnPlan:
             if isinstance(raw_arguments, dict)
             else {}
         )
+        if definition is not None:
+            allowed_argument_names = set(definition.argument_schema)
+            if not allowed_argument_names:
+                arguments = {}
+            else:
+                arguments = {
+                    name: value
+                    for name, value in arguments.items()
+                    if name in allowed_argument_names
+                }
         steps.append(
             PlanStep(
-                capability_id=str(raw_step.get("capability_id", "")).strip(),
+                capability_id=capability_id,
                 arguments=arguments,
-                reason=str(raw_step.get("reason", "")).strip() or None,
             )
         )
-    try:
-        route_kind = RouteKind(str(payload.get("route_kind", RouteKind.CLOUD_CHAT.value)))
-    except ValueError:
-        route_kind = RouteKind.CLOUD_CHAT
+    route_kind = _normalize_route_kind(payload.get("route_kind"), steps)
 
     return TurnPlan(
         route_kind=route_kind,
-        confidence=float(payload.get("confidence", 0.6)),
-        rationale=str(payload.get("rationale", "")).strip() or None,
+        confidence=0.6,
+        rationale=None,
         source="openai_planner",
         steps=tuple(step for step in steps if step.capability_id),
     )
+
+
+def _normalize_route_kind(raw_route_kind: Any, steps: list[PlanStep]) -> RouteKind:
+    step_ids = {step.capability_id for step in steps if step.capability_id}
+    non_reply_step_ids = step_ids - {"cloud_reply"}
+
+    if "cloud_reply" in step_ids:
+        return RouteKind.HYBRID if non_reply_step_ids else RouteKind.CLOUD_CHAT
+
+    try:
+        route_kind = RouteKind(str(raw_route_kind))
+    except ValueError:
+        route_kind = RouteKind.CLOUD_CHAT
+
+    if route_kind in {RouteKind.HYBRID, RouteKind.CLOUD_CHAT} and "cloud_reply" not in step_ids:
+        return RouteKind.LOCAL_QUERY if any(step_id in {"visible_people", "user_summary", "robot_status"} for step_id in step_ids) else RouteKind.LOCAL_ACTION
+
+    return route_kind
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:

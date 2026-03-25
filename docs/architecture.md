@@ -77,7 +77,7 @@ Processing:
 - apply personality tone
 
 Output:
-- turn plan
+- turn plan (`route_kind` plus ordered executable steps)
 - response text
 - optional metadata (emotion, intent)
 
@@ -195,6 +195,11 @@ Camera
 - LLM-based response text generation
 - optional enhanced STT
 - no cloud speech output in the current design
+
+In the current implementation, the cloud planner is kept intentionally narrow:
+- planner prompts put stable capability definitions before dynamic context and transcript content
+- planner output is minimized to route selection plus ordered steps
+- local validation remains authoritative, and normalizes unsupported step arguments or inconsistent `cloud_reply` routing before execution
 
 ---
 

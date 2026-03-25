@@ -56,6 +56,8 @@ The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{outpu
 `AI_COMPANION_SPEECH_SILENCE_SECONDS` now means the required amount of VAD-confirmed trailing non-speech before the app finalizes an utterance. The `AI_COMPANION_VAD_*` settings control endpoint sensitivity and smoothing.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus planner/response model names. The cloud backend only returns structured turn plans and reply text; speech output still stays local.
+The current recommended cloud split is a fast planner model plus a richer reply model: `gpt-4o-mini` for `AI_COMPANION_OPENAI_PLANNER_MODEL` and `gpt-5.2` for `AI_COMPANION_OPENAI_RESPONSE_MODEL`.
+The planner request is now arranged to keep the most stable content first for better prompt-cache routing: capability definitions first, then dynamic context, then the user transcript last.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
 
 ## Platform-Specific Defaults
@@ -92,6 +94,6 @@ If the script cannot support your environment yet, install manually:
 3. Clone and build `whisper.cpp`.
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
-6. If you want real cloud planning/replies, also fill in the OpenAI settings and set `AI_COMPANION_USE_MOCK_AI=false`.
+6. If you want real cloud planning/replies, also fill in the OpenAI settings, set `AI_COMPANION_USE_MOCK_AI=false`, and prefer `gpt-4o-mini` for the planner plus `gpt-5.2` for replies unless you are intentionally testing a different split.
 7. Run `.venv/bin/pytest -q`.
 8. Launch `.venv/bin/python src/main.py` and then either type a phrase, press Enter on an empty line to start listening immediately, or say the configured wake word.

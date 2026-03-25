@@ -332,6 +332,12 @@ Current test status:
 - animated face UI
 - head tracking and servo coordination
 
+## Recent Notes
+
+- OpenAI planner payload was trimmed to a minimal structured output (`route_kind` + ordered steps) to reduce unnecessary response tokens.
+- Planner prompt ordering now keeps capability definitions first, followed by changing context, with the user transcript last to improve prompt-cache friendliness.
+- The OpenAI planner path now normalizes inconsistent `cloud_reply` plans locally so malformed arguments or mismatched route kinds do not silently drop the reply step.
+
 ---
 
 ## Iteration Checklist
