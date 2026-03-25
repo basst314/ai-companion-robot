@@ -1,4 +1,4 @@
-"""Tests for cloud planning/response logging and parsing."""
+"""Tests for cloud response logging and tool calls."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from ai.cloud import OpenAiCloudPlanningService, OpenAiCloudResponseService, _turn_plan_from_json
+from ai.cloud import (
+    CloudToolRequest,
+    CloudToolResult,
+    OpenAiCloudResponseService,
+)
 from shared.models import (
-    CapabilityDefinition,
-    CapabilityKind,
-    ComponentName,
     EmotionState,
     InteractionContext,
     Language,
@@ -18,7 +19,6 @@ from shared.models import (
     PlanStepResult,
     RobotStateSnapshot,
     RouteKind,
-    StepPhase,
     Transcript,
     TurnPlan,
     UserIdentity,
@@ -26,45 +26,92 @@ from shared.models import (
 )
 
 
-class FakeStructuredClient:
-    async def create_structured_response(  # type: ignore[no-untyped-def]
+class FakeResponseClient:
+    async def create_response(  # type: ignore[no-untyped-def]
         self,
         *,
         model,
         instructions,
-        input_text,
-        schema_name,
-        schema,
+        input_items,
+        tools=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
     ):
-        assert model == "gpt-5-mini"
-        assert schema_name == "robot_turn_plan"
-        assert "planning layer" in instructions
-        assert input_text.startswith("Available capabilities:\n- look_at_user")
-        assert "\nLanguage: en\nActive user: Basti\nVisible people: Basti\n" in input_text
-        assert input_text.rstrip().endswith("User transcript: look at me and say hi")
-        assert schema["type"] == "object"
-        assert schema["required"] == ["route_kind", "steps"]
+        assert model == "gpt-5.2"
+        assert "spoken response layer" in instructions
+        assert "one or two short sentences" in instructions
+        assert tools is None
+        assert previous_response_id is None
+        assert max_output_tokens == 72
+        assert parallel_tool_calls is True
+        assert stream is False
+        prompt = input_items[0]["content"][0]["text"]
+        assert "Executed local step results:" in prompt
         return {
-            "route_kind": "hybrid",
-            "steps": [
-                {
-                    "capability_id": "look_at_user",
-                    "arguments": {"direction": None, "emotion": None},
-                },
-                {
-                    "capability_id": "cloud_reply",
-                    "arguments": {"direction": None, "emotion": None},
-                },
-            ],
+            "id": "resp_1",
+            "output_text": "I can see you, and I am looking your way.",
         }
 
 
-class FakeTextClient:
-    async def create_text_response(self, *, model, instructions, input_text):  # type: ignore[no-untyped-def]
+class FakeToolClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def create_response(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        model,
+        instructions,
+        input_items,
+        tools=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
+    ):
         assert model == "gpt-5.2"
-        assert "spoken response layer" in instructions
-        assert "Executed local step results:" in input_text
-        return "I can see you, and I am looking your way."
+        assert "camera_snapshot" in instructions
+        assert max_output_tokens == 72
+        assert parallel_tool_calls is True
+        assert stream is False
+        self.calls += 1
+        if self.calls == 1:
+            assert tools is not None
+            assert previous_response_id is None
+            return {
+                "id": "resp_tool_1",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "camera_snapshot",
+                        "arguments": "{}",
+                    }
+                ],
+            }
+
+        assert previous_response_id == "resp_tool_1"
+        assert tools is not None
+        assert input_items == [
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    {"type": "input_text", "text": "Snapshot shows Basti."},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=",
+                        "detail": "auto",
+                    },
+                ],
+            }
+        ]
+        return {
+            "id": "resp_tool_2",
+            "output_text": "I took a look. I can see Basti in front of me.",
+        }
 
 
 def _context() -> InteractionContext:
@@ -79,54 +126,8 @@ def _context() -> InteractionContext:
             head_direction="center",
         ),
     )
-
-
-def test_openai_planner_logs_exact_request_and_output(caplog) -> None:
-    service = OpenAiCloudPlanningService(client=FakeStructuredClient(), model="gpt-5-mini")
-    transcript = Transcript(
-        text="look at me and say hi",
-        language=Language.ENGLISH,
-        confidence=0.99,
-        is_final=True,
-        started_at=datetime.now(UTC),
-        ended_at=datetime.now(UTC),
-    )
-    capabilities = (
-        CapabilityDefinition(
-            capability_id="look_at_user",
-            description="Turn toward the active user",
-            kind=CapabilityKind.ACTION,
-            target=ComponentName.HARDWARE,
-            phase=StepPhase.IMMEDIATE,
-        ),
-        CapabilityDefinition(
-            capability_id="cloud_reply",
-            description="Generate a conversational response",
-            kind=CapabilityKind.RESPONSE,
-            target=ComponentName.CLOUD,
-            phase=StepPhase.REPLY,
-        ),
-    )
-
-    with caplog.at_level(logging.INFO, logger="ai.cloud"):
-        plan = asyncio.run(service.plan_turn(transcript, _context(), capabilities))
-
-    assert plan.route_kind is RouteKind.HYBRID
-    assert plan.confidence == 0.6
-    assert plan.rationale is None
-    assert plan.steps[0].capability_id == "look_at_user"
-    assert plan.steps[0].arguments == {}
-    assert plan.steps[0].reason is None
-    log_text = caplog.text
-    assert "[AI] planner request" in log_text
-    assert "look at me and say hi" in log_text
-    assert "Available capabilities:" in log_text
-    assert "[AI] planner output" in log_text
-    assert '"capability_id": "look_at_user"' in log_text
-
-
 def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
-    service = OpenAiCloudResponseService(client=FakeTextClient(), model="gpt-5.2")
+    service = OpenAiCloudResponseService(client=FakeResponseClient(), model="gpt-5.2", max_output_tokens=72)
     transcript = Transcript(
         text="can you see me?",
         language=Language.ENGLISH,
@@ -139,7 +140,7 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
         route_kind=RouteKind.HYBRID,
         confidence=0.9,
         rationale="vision then reply",
-        source="openai_planner",
+        source="local_turn_director",
         steps=(
             PlanStep(capability_id="visible_people"),
             PlanStep(capability_id="cloud_reply"),
@@ -159,74 +160,48 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     assert response.text == "I can see you, and I am looking your way."
     log_text = caplog.text
     assert "[AI] reply request" in log_text
+    assert "max_output_tokens=72" in log_text
     assert "can you see me?" in log_text
     assert "I can currently see Basti." in log_text
     assert "[AI] reply output" in log_text
     assert "I can see you, and I am looking your way." in log_text
 
 
-def test_openai_planner_normalizes_cloud_reply_arguments_and_route_kind() -> None:
-    payload = {
-        "route_kind": "local_action",
-        "steps": [
-            {
-                "capability_id": "cloud_reply",
-                "arguments": {
-                    "direction": None,
-                    "emotion": "curious",
-                },
-            },
-            {
-                "capability_id": "set_emotion",
-                "arguments": {
-                    "direction": None,
-                    "emotion": "neutral",
-                },
-            },
-            {
-                "capability_id": "look_at_user",
-                "arguments": {
-                    "direction": None,
-                    "emotion": None,
-                },
-            },
-        ],
-    }
-    capabilities = (
-        CapabilityDefinition(
-            capability_id="cloud_reply",
-            description="Generate a conversational response",
-            kind=CapabilityKind.RESPONSE,
-            target=ComponentName.CLOUD,
-            phase=StepPhase.REPLY,
-        ),
-        CapabilityDefinition(
-            capability_id="set_emotion",
-            description="Update emotion",
-            kind=CapabilityKind.ACTION,
-            target=ComponentName.UI,
-            phase=StepPhase.IMMEDIATE,
-            argument_schema={
-                "emotion": {
-                    "type": "string",
-                    "enum": tuple(emotion.value for emotion in EmotionState),
-                    "required": True,
-                }
-            },
-        ),
-        CapabilityDefinition(
-            capability_id="look_at_user",
-            description="Turn toward the active user",
-            kind=CapabilityKind.ACTION,
-            target=ComponentName.HARDWARE,
-            phase=StepPhase.IMMEDIATE,
-        ),
+def test_openai_reply_handles_tool_call_round_trip() -> None:
+    service = OpenAiCloudResponseService(client=FakeToolClient(), model="gpt-5.2", max_output_tokens=72)
+    transcript = Transcript(
+        text="what do you see here?",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    plan = TurnPlan(
+        route_kind=RouteKind.CLOUD_CHAT,
+        confidence=0.6,
+        rationale="defaulted to a single cloud reply",
+        source="local_turn_director",
+        steps=(PlanStep(capability_id="cloud_reply"),),
     )
 
-    turn_plan = _turn_plan_from_json(payload, capabilities=capabilities)
+    async def tool_handler(request: CloudToolRequest) -> CloudToolResult:
+        assert request.tool_name == "camera_snapshot"
+        return CloudToolResult(
+            call_id=request.call_id,
+            tool_name=request.tool_name,
+            output_text="Snapshot shows Basti.",
+            image_url="data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=",
+        )
 
-    assert turn_plan.route_kind is RouteKind.HYBRID
-    assert turn_plan.steps[0].capability_id == "cloud_reply"
-    assert turn_plan.steps[0].arguments == {}
-    assert turn_plan.steps[1].arguments == {"emotion": "neutral"}
-    assert turn_plan.steps[2].arguments == {}
+    response = asyncio.run(
+        service.generate_reply(
+            transcript,
+            _context(),
+            plan,
+            (),
+            tool_handler=tool_handler,
+        )
+    )
+
+    assert response.text == "I took a look. I can see Basti in front of me."

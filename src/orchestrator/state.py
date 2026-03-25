@@ -13,6 +13,7 @@ class LifecycleStage(StrEnum):
     LISTENING = "listening"
     PROCESSING = "processing"
     RESPONDING = "responding"
+    SPEAKING = "speaking"
     ERROR = "error"
 
 

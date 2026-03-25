@@ -14,8 +14,8 @@ Update it with every iteration so it stays useful as:
 Status: early working local prototype
 
 Current milestone:
-- the project has a working hybrid turn-planning loop
-- the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and cloud reply generation
+- the project has a working local-first turn-routing loop
+- the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and a single tool-aware cloud reply path
 - responses can be shown in the UI mock and acknowledged by the TTS mock
 - interaction history is stored in memory
 - a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
@@ -35,7 +35,7 @@ Status: functional
 
 Available now:
 - central `OrchestratorService`
-- lifecycle management for `idle`, `listening`, `processing`, `responding`, `error`
+- lifecycle management for `idle`, `listening`, `processing`, `responding`, `speaking`, and `error`
 - typed interaction state
 - multi-step turn execution with plan validation
 - internal event bus plus event history tracking
@@ -43,24 +43,26 @@ Available now:
 - fallback handling for vision, cloud AI, and TTS failures
 
 Current limitations:
-- manual-input-driven runtime
-- no live microphone or camera loop yet
+- real speech input exists, but UI/TTS/vision/hardware are still partly or fully mocked
+- no real camera loop yet
 - no background/idle autonomy yet
 
-### Turn Planning
+### Turn Routing
 
 Status: functional
 
 Available now:
 - typed `TurnPlan`, `PlanStep`, and capability registry
-- local shortcut planner for obvious safe single-purpose turns
-- cloud planner for multi-action or conversational turns
+- local-first turn director with high-precision local shortcuts for obvious safe turns
+- single cloud reply fallback for normal conversation
+- tool-aware cloud replies for requests that need extra evidence such as a camera snapshot
 - validation for unknown capabilities, unavailable subsystems, and bad arguments
 - hybrid execution for turns such as `look at me and tell me a joke`
 
 Current limitations:
-- no streaming cloud planning/reply yet
-- no idle/background behavior planner yet
+- no streaming cloud replies yet
+- local shortcut coverage is intentionally narrow
+- no idle/background autonomy planner yet
 
 ### Shared Contracts
 
@@ -132,17 +134,20 @@ Current limitations:
 
 ### Cloud AI
 
-Status: mock plus first real provider interface
+Status: mock plus real OpenAI reply provider
 
 Available now:
-- mock cloud planner
 - mock cloud conversational responder
-- first OpenAI-specific planner/reply service interfaces
+- OpenAI Responses API-backed reply service
+- single response-model call for normal chat turns
+- optional local tool continuation for `camera_snapshot`
 - context-aware replies using transcript, detections, and local step results
+- configurable spoken reply cap through `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
 - fallback response when cloud generation fails
 
 Current limitations:
 - real OpenAI path requires credentials and is not exercised by CI
+- the default camera tool still uses a mock snapshot payload until real vision is wired in
 - no streaming responses
 
 ### TTS
@@ -191,7 +196,7 @@ Available now:
 - bundled Silero VAD endpointing for noisy-room end-of-utterance detection
 - tunable VAD endpoint controls through runtime config
 - sticky terminal debug rows for mic state, VAD tail state, ring-buffer state, wake status, and transcript preview
-- sticky terminal AI row for backend state, planning/reply durations, compact plan preview, and compact reply preview
+- sticky terminal AI row for backend state, route/reply durations, compact plan preview, and compact reply preview
 - speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
 
 Current limitations:
@@ -226,7 +231,7 @@ Current limitations:
 
 - shared typed contracts
 - orchestrator control flow
-- turn planning and validation logic
+- turn routing and validation logic
 - state transitions
 - event tracking and in-process pub/sub
 - failure handling patterns
@@ -239,14 +244,12 @@ Current limitations:
 - memory persistence
 - vision
 - hardware control
-- cloud AI
 
 ### Not built yet
 
 - real TTS provider integration
 - real camera/vision pipeline
 - real hardware drivers
-- real cloud LLM provider integration
 - production logging/config loading
 
 ---
@@ -258,7 +261,7 @@ Current limitations:
 Manual text input
 -> orchestrator
 -> local reactive cue
--> turn plan selection
+-> local turn routing
 -> local action/query and optional cloud reply
 -> mock UI update
 -> mock TTS acknowledgement
@@ -274,17 +277,16 @@ Mock STT partial transcript
 
 ### New experimental flow
 
-Push-to-talk speech input
--> external recorder command creates WAV
--> `whisper.cpp` produces final transcript
--> orchestrator planning and execution flow
+Push-to-talk or wake-word speech input
+-> external recorder streams PCM
+-> `whisper.cpp` produces the final transcript
+-> orchestrator routing and execution flow
 
 ### Not yet available
 
-Live microphone
--> real streaming STT
--> orchestrator
--> real spoken output
+Real camera frame capture
+-> vision snapshot/detection pipeline
+-> cloud/tool-aware responses from real images
 
 ---
 
@@ -293,9 +295,10 @@ Live microphone
 Currently covered:
 - app bootstrapping
 - full manual turn execution
-- planner behavior
+- local turn-director behavior
 - plan validation behavior
 - hybrid local/cloud turn execution
+- tool-aware cloud reply round-trip
 - partial transcript handling
 - memory and vision-backed local query flow
 - cloud fallback behavior
@@ -304,7 +307,7 @@ Currently covered:
 - vision failure recovery
 
 Current test status:
-- `76 passed`
+- `83 passed`
 
 ---
 
@@ -334,9 +337,9 @@ Current test status:
 
 ## Recent Notes
 
-- OpenAI planner payload was trimmed to a minimal structured output (`route_kind` + ordered steps) to reduce unnecessary response tokens.
-- Planner prompt ordering now keeps capability definitions first, followed by changing context, with the user transcript last to improve prompt-cache friendliness.
-- The OpenAI planner path now normalizes inconsistent `cloud_reply` plans locally so malformed arguments or mismatched route kinds do not silently drop the reply step.
+- The normal turn path is now local-first: deterministic embodiment plus narrow local shortcuts, then one cloud reply call when needed.
+- The cloud reply service can request `camera_snapshot` and continue the same response turn with local tool output.
+- Speech endpoint tuning is now grouped under `AI_COMPANION_SPEECH_LATENCY_PROFILE`, and spoken cloud replies have a configurable hard length cap.
 
 ---
 
@@ -346,7 +349,7 @@ Use this checklist during each implementation pass.
 
 - [x] Shared typed contracts exist
 - [x] Orchestrator can execute a full mocked turn
-- [x] Hybrid turn planning exists
+- [x] Local-first turn routing exists
 - [x] Capability registry and validation exist
 - [x] Memory mock is integrated
 - [x] Vision mock is integrated

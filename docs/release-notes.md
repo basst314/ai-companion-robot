@@ -9,6 +9,25 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-24 — Local-First Reply Pipeline, Tool Calls, And Cleanup
+
+### Highlights
+- Removed the cloud planner from the hot path and cleaned out stale compatibility code and exports around the old two-call planner/reply design.
+- Standardized deterministic local embodiment cues so listening, processing, speaking, and idle transitions stay on-robot instead of being planner decisions.
+- Landed a single OpenAI response-model path with optional local tool continuation for `camera_snapshot`, plus a configurable spoken reply length cap.
+- Added the speech latency profile and refreshed architecture/status docs to match the shipped local-first runtime.
+
+### Why this matters
+This is the wrap-up pass that makes the robot feel faster and the codebase easier to reason about. The normal turn path is now simpler, lower-latency, and better aligned with what the runtime actually does.
+
+### Key decisions & rationale
+- Decision: keep tool use inside the cloud reply loop rather than reintroducing a separate planning call.
+  - Why: it preserves flexibility for image-needed turns without paying extra latency on normal conversation.
+- Decision: keep embodiment and attention choreography deterministic and local.
+  - Why: looking at the user, showing listening/speaking states, and returning to idle should not depend on cloud output quality or speed.
+
+---
+
 ## 2026-03-24 — Planner Payload Trim And Prompt Cache Readiness
 
 ### Highlights

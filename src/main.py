@@ -7,9 +7,7 @@ import logging
 from pathlib import Path
 
 from ai.cloud import (
-    MockCloudPlanningService,
     MockCloudResponseService,
-    OpenAiCloudPlanningService,
     OpenAiCloudResponseService,
     OpenAiResponsesClient,
 )
@@ -17,7 +15,7 @@ from hardware.service import MockHardwareService
 from memory.service import InMemoryMemoryService
 from orchestrator.capabilities import build_default_capability_registry
 from orchestrator.reactive import ReactivePolicyEngine
-from orchestrator.router import HybridTurnPlanner
+from orchestrator.router import LocalTurnDirector
 from orchestrator.service import OrchestratorService
 from orchestrator.state import OrchestratorState
 from shared.console import TerminalDebugScreen, configure_console_log, configure_terminal_debug_screen
@@ -59,11 +57,11 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     )
     terminal_debug = TerminalDebugScreen() if app_config.runtime.interactive_console else None
     stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
-    cloud_planner, cloud_response = _build_cloud_services(app_config)
+    cloud_response = _build_cloud_services(app_config)
     return OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
-        planner=HybridTurnPlanner(cloud_planner=cloud_planner),
+        turn_director=LocalTurnDirector(),
         capability_registry=capability_registry,
         reactive_policy=ReactivePolicyEngine(),
         event_bus=EventBus(),
@@ -84,7 +82,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
 
 def _build_cloud_services(app_config: AppConfig):
     if app_config.runtime.use_mock_ai or not app_config.cloud.enabled:
-        return MockCloudPlanningService(), MockCloudResponseService()
+        return MockCloudResponseService()
 
     if (app_config.cloud.provider_name or "").strip().lower() != "openai":
         raise RuntimeError("only the OpenAI cloud provider is currently implemented")
@@ -94,9 +92,10 @@ def _build_cloud_services(app_config: AppConfig):
         base_url=app_config.cloud.openai_base_url,
         timeout_seconds=app_config.cloud.openai_timeout_seconds,
     )
-    return (
-        OpenAiCloudPlanningService(client=client, model=app_config.cloud.openai_planner_model),
-        OpenAiCloudResponseService(client=client, model=app_config.cloud.openai_response_model),
+    return OpenAiCloudResponseService(
+        client=client,
+        model=app_config.cloud.openai_response_model,
+        max_output_tokens=app_config.cloud.openai_reply_max_output_tokens,
     )
 
 
@@ -137,6 +136,7 @@ def _build_speech_services(
             ring_debug_wake_window_seconds=runtime.wake_lookback_seconds,
             terminal_debug=terminal_debug,
             shared_live_state=shared_live_state,
+            **_speech_latency_kwargs(runtime),
         )
         stt.ensure_endpoint_vad_ready()
         wake_word = _build_wake_word_service(
@@ -151,6 +151,24 @@ def _build_speech_services(
         config,
         terminal_debug=terminal_debug,
     )
+
+
+def _speech_latency_kwargs(runtime) -> dict[str, float]:
+    if runtime.speech_latency_profile == "balanced":
+        return {
+            "poll_interval_seconds": 0.35,
+            "minimum_transcribe_seconds": 0.45,
+            "partial_update_interval_seconds": 1.0,
+            "minimum_utterance_seconds": 2.0,
+            "utterance_end_grace_seconds": 0.25,
+        }
+    return {
+        "poll_interval_seconds": 0.10,
+        "minimum_transcribe_seconds": 0.30,
+        "partial_update_interval_seconds": 0.35,
+        "minimum_utterance_seconds": 0.80,
+        "utterance_end_grace_seconds": 0.05,
+    }
 
 
 def _build_wake_word_service(

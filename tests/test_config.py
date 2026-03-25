@@ -22,10 +22,11 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_CLOUD_PROVIDER_NAME=openai",
                 "AI_COMPANION_OPENAI_API_KEY=test-key",
                 "AI_COMPANION_OPENAI_BASE_URL=https://api.openai.com/v1/responses",
-                "AI_COMPANION_OPENAI_PLANNER_MODEL=gpt-test-planner",
                 "AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-test-response",
                 "AI_COMPANION_OPENAI_TIMEOUT_SECONDS=18.5",
+                "AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=96",
                 "AI_COMPANION_INPUT_MODE=speech",
+                "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
                 "AI_COMPANION_STT_BACKEND=whisper_cpp",
                 "AI_COMPANION_WHISPER_BINARY_PATH=/opt/whisper/whisper-cli",
@@ -56,10 +57,11 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.cloud.provider_name == "openai"
     assert config.cloud.openai_api_key == "test-key"
     assert config.cloud.openai_base_url == "https://api.openai.com/v1/responses"
-    assert config.cloud.openai_planner_model == "gpt-test-planner"
     assert config.cloud.openai_response_model == "gpt-test-response"
     assert config.cloud.openai_timeout_seconds == 18.5
+    assert config.cloud.openai_reply_max_output_tokens == 96
     assert config.runtime.input_mode == "speech"
+    assert config.runtime.speech_latency_profile == "balanced"
     assert config.runtime.interactive_console is True
     assert config.runtime.stt_backend == "whisper_cpp"
     assert config.runtime.whisper_binary_path == Path("/opt/whisper/whisper-cli")
@@ -120,8 +122,46 @@ def test_load_app_config_rejects_real_cloud_without_required_openai_fields(tmp_p
         )
     )
 
-    with pytest.raises(ValueError, match="OPENAI_PLANNER_MODEL"):
+    with pytest.raises(ValueError, match="OPENAI_RESPONSE_MODEL"):
         load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_rejects_non_positive_reply_token_cap(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_CLOUD_ENABLED=true",
+                "AI_COMPANION_USE_MOCK_AI=false",
+                "AI_COMPANION_OPENAI_API_KEY=test-key",
+                "AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-test-response",
+                "AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=0",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="OPENAI_REPLY_MAX_OUTPUT_TOKENS"):
+        load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_applies_fast_speech_profile_defaults(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_INPUT_MODE=speech",
+                "AI_COMPANION_SPEECH_LATENCY_PROFILE=fast",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.runtime.speech_latency_profile == "fast"
+    assert config.runtime.speech_silence_seconds == 0.55
+    assert config.runtime.wake_lookback_seconds == 0.5
+    assert config.runtime.utterance_finalize_timeout_seconds == 0.25
+    assert config.runtime.utterance_tail_stable_polls == 1
 
 
 def test_load_app_config_normalizes_invalid_vad_frame_size(tmp_path: Path) -> None:

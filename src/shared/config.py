@@ -20,15 +20,15 @@ class PathConfig:
 
 @dataclass(slots=True)
 class CloudConfig:
-    """Cloud planner/response configuration."""
+    """Cloud response configuration."""
 
     enabled: bool = False
     provider_name: str | None = "openai"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1/responses"
-    openai_planner_model: str = ""
     openai_response_model: str = ""
     openai_timeout_seconds: float = 20.0
+    openai_reply_max_output_tokens: int = 120
 
 
 @dataclass(slots=True)
@@ -40,6 +40,7 @@ class RuntimeConfig:
     interactive_console: bool = False
     manual_inputs: tuple[str, ...] = ()
     stt_backend: Literal["mock", "whisper_cpp"] = "mock"
+    speech_latency_profile: Literal["fast", "balanced"] = "fast"
     whisper_model_path: Path | None = None
     whisper_binary_path: Path | None = None
     audio_record_command: tuple[str, ...] = ()
@@ -118,10 +119,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     config.cloud.provider_name = env.get(f"{ENV_PREFIX}CLOUD_PROVIDER_NAME", config.cloud.provider_name)
     config.cloud.openai_api_key = env.get(f"{ENV_PREFIX}OPENAI_API_KEY", config.cloud.openai_api_key).strip()
     config.cloud.openai_base_url = env.get(f"{ENV_PREFIX}OPENAI_BASE_URL", config.cloud.openai_base_url).strip()
-    config.cloud.openai_planner_model = env.get(
-        f"{ENV_PREFIX}OPENAI_PLANNER_MODEL",
-        config.cloud.openai_planner_model,
-    ).strip()
     config.cloud.openai_response_model = env.get(
         f"{ENV_PREFIX}OPENAI_RESPONSE_MODEL",
         config.cloud.openai_response_model,
@@ -130,12 +127,20 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}OPENAI_TIMEOUT_SECONDS"),
         default=config.cloud.openai_timeout_seconds,
     )
+    config.cloud.openai_reply_max_output_tokens = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REPLY_MAX_OUTPUT_TOKENS"),
+        default=config.cloud.openai_reply_max_output_tokens,
+    )
 
     runtime = config.runtime
     runtime.auto_run = _parse_bool(env.get(f"{ENV_PREFIX}AUTO_RUN"), default=runtime.auto_run)
     runtime.input_mode = _parse_input_mode(
         env.get(f"{ENV_PREFIX}INPUT_MODE"),
         default=runtime.input_mode,
+    )
+    runtime.speech_latency_profile = _parse_speech_latency_profile(
+        env.get(f"{ENV_PREFIX}SPEECH_LATENCY_PROFILE"),
+        default=runtime.speech_latency_profile,
     )
     runtime.interactive_console = _parse_bool(
         env.get(f"{ENV_PREFIX}INTERACTIVE_CONSOLE"),
@@ -155,6 +160,7 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}AUDIO_RECORD_COMMAND"),
         default=runtime.audio_record_command,
     )
+    _apply_speech_latency_profile(runtime)
     runtime.speech_silence_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
         default=runtime.speech_silence_seconds,
@@ -261,12 +267,12 @@ def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> Non
         raise ValueError("only the 'openai' cloud provider is currently supported for real cloud execution")
     if not cloud.openai_api_key.strip():
         raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_API_KEY is not configured")
-    if not cloud.openai_planner_model.strip():
-        raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_PLANNER_MODEL is not configured")
     if not cloud.openai_response_model.strip():
         raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_RESPONSE_MODEL is not configured")
     if cloud.openai_timeout_seconds <= 0:
         raise ValueError("AI_COMPANION_OPENAI_TIMEOUT_SECONDS must be greater than zero")
+    if cloud.openai_reply_max_output_tokens <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS must be greater than zero")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:
@@ -368,6 +374,15 @@ def _parse_stt_backend(
     return default
 
 
+def _parse_speech_latency_profile(
+    value: str | None,
+    default: Literal["fast", "balanced"],
+) -> Literal["fast", "balanced"]:
+    if value in {"fast", "balanced"}:
+        return value
+    return default
+
+
 def _parse_language_mode(
     value: str | None,
     default: Literal["auto", "en", "de", "id"],
@@ -375,3 +390,25 @@ def _parse_language_mode(
     if value in {"auto", "en", "de", "id"}:
         return value
     return default
+
+
+def _apply_speech_latency_profile(runtime: RuntimeConfig) -> None:
+    if runtime.speech_latency_profile == "balanced":
+        runtime.speech_silence_seconds = 1.2
+        runtime.vad_threshold = 0.45
+        runtime.vad_frame_ms = 30
+        runtime.vad_start_trigger_frames = 2
+        runtime.vad_end_trigger_frames = 5
+        runtime.wake_lookback_seconds = 0.8
+        runtime.utterance_finalize_timeout_seconds = 0.6
+        runtime.utterance_tail_stable_polls = 2
+        return
+
+    runtime.speech_silence_seconds = 0.55
+    runtime.vad_threshold = 0.45
+    runtime.vad_frame_ms = 30
+    runtime.vad_start_trigger_frames = 2
+    runtime.vad_end_trigger_frames = 4
+    runtime.wake_lookback_seconds = 0.5
+    runtime.utterance_finalize_timeout_seconds = 0.25
+    runtime.utterance_tail_stable_polls = 1

@@ -2,18 +2,18 @@
 
 from orchestrator.capabilities import CapabilityRegistry, build_default_capability_registry
 from orchestrator.reactive import ReactivePolicyEngine
-from orchestrator.router import HybridTurnPlanner, LocalShortcutPlanner, TurnPlanner
+from orchestrator.router import LocalShortcutPlanner, LocalTurnDirector, TurnDirector
 from orchestrator.service import OrchestratorService
 from orchestrator.state import LifecycleStage, OrchestratorState
 
 __all__ = [
     "CapabilityRegistry",
-    "HybridTurnPlanner",
     "LifecycleStage",
     "LocalShortcutPlanner",
+    "LocalTurnDirector",
     "OrchestratorService",
     "OrchestratorState",
     "ReactivePolicyEngine",
-    "TurnPlanner",
+    "TurnDirector",
     "build_default_capability_registry",
 ]

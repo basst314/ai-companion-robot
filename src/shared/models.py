@@ -94,20 +94,8 @@ class Transcript:
 
 
 @dataclass(slots=True, frozen=True)
-class RouteDecision:
-    """Legacy routing result kept for backward compatibility during migration."""
-
-    kind: RouteKind
-    confidence: float
-    action_name: str | None = None
-    query_name: str | None = None
-    arguments: dict[str, Any] = field(default_factory=dict)
-    rationale: str | None = None
-
-
-@dataclass(slots=True, frozen=True)
 class CapabilityDefinition:
-    """Registered capability exposed to the planner and executor."""
+    """Registered capability exposed to routing and execution."""
 
     capability_id: str
     description: str
@@ -150,7 +138,7 @@ class TurnPlan:
     confidence: float
     steps: tuple[PlanStep, ...]
     rationale: str | None = None
-    source: str = "planner"
+    source: str = "turn_director"
 
 
 @dataclass(slots=True, frozen=True)
@@ -205,6 +193,15 @@ class VisionDetection:
     label: str
     confidence: float
     user_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class VisionSnapshot:
+    """Minimal camera snapshot payload used for cloud vision follow-ups."""
+
+    image_url: str
+    mime_type: str
+    summary: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -8,15 +8,15 @@ A desktop AI companion robot built on a Raspberry Pi, designed to be conversatio
 
 The system combines voice interaction, computer vision, a screen-based face, and a lightweight local control layer with cloud-based AI to create a responsive and engaging companion.
 
-The current runtime uses a hybrid turn planner: fast local reactive behaviors during listening and thinking, a typed local capability registry for actions and queries, cloud planning/reply text generation, and local speech output on the robot.
+The current runtime uses a local-first turn director: fast local reactive behaviors during listening and thinking, a typed local capability registry for actions and queries, a single cloud reply path with optional tool calls, and local speech output on the robot.
 
 ---
 
 ## Overview
 
-The robot listens, plans, acts, and responds using a pipeline:
+The robot listens, routes, acts, and responds using a pipeline:
 ```
-Microphone → Speech-to-Text → Orchestrator/Planner → Local Actions + Cloud Reply Text → Text-to-Speech → Speaker
+Microphone → Speech-to-Text → Orchestrator/Turn Director → Local Actions + Cloud Reply Text → Text-to-Speech → Speaker
 ```
 It also uses a camera for basic awareness and a display to show animated facial expressions.
 
@@ -39,7 +39,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 ### Runs in the Cloud
 
-- OpenAI-backed turn planning and response text generation
+- OpenAI-backed response text generation with optional tool calls
 - Optional fallback speech-to-text
 - No cloud speech output in the current architecture
 
@@ -71,7 +71,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - STT: whisper.cpp (local)
 - TTS: local output pipeline, with Piper planned as the first real provider
-- AI planning/reply: OpenAI Responses API for the first real cloud backend
+- AI reply/tool-calling: OpenAI Responses API for the first real cloud backend
 - Vision: OpenCV (initial)
 - Orchestrator: Python service running on the Pi
 
@@ -139,12 +139,13 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_CLOUD_PROVIDER_NAME`
 - `AI_COMPANION_OPENAI_API_KEY`
 - `AI_COMPANION_OPENAI_BASE_URL`
-- `AI_COMPANION_OPENAI_PLANNER_MODEL`
 - `AI_COMPANION_OPENAI_RESPONSE_MODEL`
 - `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
+- `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_SPEECH_LATENCY_PROFILE`
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
 - `AI_COMPANION_VAD_THRESHOLD`
 - `AI_COMPANION_VAD_FRAME_MS`
@@ -355,7 +356,7 @@ The sticky terminal header also shows:
 - the wake state (`listening` or `awake`)
 - the live transcript preview
 - the wake ring-buffer state for debugging handoff timing
-- AI backend activity, including planning/reply state, recent durations, proposed plan summary, and a clipped reply preview
+- AI backend activity, including route/reply timing, the current turn-plan summary, and a clipped reply preview
 
 If `.env.local` is not present, the app falls back to the default manual text-mode prompt and you can type messages at `You>`.
 
@@ -368,18 +369,18 @@ Examples:
 - `what do you know about me`
 - `tell me a joke`
 
-To enable the real OpenAI planner/reply path instead of the mock cloud services, set:
+To enable the real OpenAI reply path instead of the mock cloud services, set:
 
 ```env
 AI_COMPANION_USE_MOCK_AI=false
 AI_COMPANION_CLOUD_ENABLED=true
 AI_COMPANION_CLOUD_PROVIDER_NAME=openai
 AI_COMPANION_OPENAI_API_KEY=...
-AI_COMPANION_OPENAI_PLANNER_MODEL=...
 AI_COMPANION_OPENAI_RESPONSE_MODEL=...
+AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=120
 ```
 
-The cloud backend returns plans and reply text only. Audio output remains local and Piper is still a later milestone.
+The cloud backend returns reply text and can request local tools such as a camera snapshot when needed. Audio output remains local and Piper is still a later milestone.
 The setup script can now enable the OpenAI path interactively, asks for the API key when you opt in, and accepts a blank value so you can add the key later in `.env.local`.
 
 Exit with:

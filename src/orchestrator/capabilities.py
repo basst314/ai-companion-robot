@@ -19,7 +19,7 @@ from shared.models import (
 
 @dataclass(slots=True)
 class CapabilityRegistry:
-    """Registry of planner-visible capabilities and local validation rules."""
+    """Registry of orchestrator-visible capabilities and local validation rules."""
 
     definitions: dict[str, CapabilityDefinition]
 
@@ -95,7 +95,7 @@ class CapabilityRegistry:
 
 
 def build_default_capability_registry() -> CapabilityRegistry:
-    """Return the default capability catalog exposed to the planner."""
+    """Return the default capability catalog exposed to the orchestrator."""
 
     definitions = {
         "look_at_user": CapabilityDefinition(

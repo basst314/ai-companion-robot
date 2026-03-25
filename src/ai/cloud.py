@@ -1,27 +1,48 @@
-"""Cloud planning and response services."""
+"""Cloud response services."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib import error, request
 
 from shared.models import (
     AiResponse,
-    CapabilityDefinition,
     EmotionState,
     InteractionContext,
-    PlanStep,
     PlanStepResult,
-    RouteKind,
     Transcript,
     TurnPlan,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class CloudToolRequest:
+    """Machine-readable tool request emitted by the cloud response layer."""
+
+    call_id: str
+    tool_name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class CloudToolResult:
+    """Output returned by the local runtime for a cloud-requested tool."""
+
+    call_id: str
+    tool_name: str
+    output_text: str | None = None
+    image_url: str | None = None
+    image_detail: str = "auto"
+
+
+ToolExecutionHandler = Callable[[CloudToolRequest], Awaitable[CloudToolResult]]
 
 
 class CloudResponseService(Protocol):
@@ -33,106 +54,15 @@ class CloudResponseService(Protocol):
         context: InteractionContext,
         plan: TurnPlan,
         step_results: tuple[PlanStepResult, ...],
+        *,
+        tool_handler: ToolExecutionHandler | None = None,
     ) -> AiResponse:
         """Generate a cloud-backed conversational reply."""
 
 
 @dataclass(slots=True)
-class MockCloudPlanningService:
-    """Deterministic mock planner for tests and local development."""
-
-    async def plan_turn(
-        self,
-        transcript: Transcript,
-        context: InteractionContext,
-        capabilities: tuple[CapabilityDefinition, ...],
-    ) -> TurnPlan:
-        del context, capabilities
-        text = transcript.text.lower()
-        steps: list[PlanStep] = []
-        route_kind = RouteKind.CLOUD_CHAT
-        rationale_parts: list[str] = []
-
-        if "look at me" in text:
-            steps.append(PlanStep(capability_id="look_at_user", reason="maintain visual attention"))
-            rationale_parts.append("look at user")
-
-        if "turn left" in text:
-            steps.append(
-                PlanStep(
-                    capability_id="turn_head",
-                    arguments={"direction": "left"},
-                    reason="user asked for a left turn",
-                )
-            )
-            rationale_parts.append("turn head left")
-        elif "turn right" in text:
-            steps.append(
-                PlanStep(
-                    capability_id="turn_head",
-                    arguments={"direction": "right"},
-                    reason="user asked for a right turn",
-                )
-            )
-            rationale_parts.append("turn head right")
-
-        if "can you see me" in text or "who do you see" in text or "what do you see" in text:
-            steps.append(PlanStep(capability_id="visible_people", reason="answer with current vision state"))
-            rationale_parts.append("use vision context")
-
-        if "what do you know about me" in text:
-            steps.append(PlanStep(capability_id="user_summary", reason="answer from memory"))
-            rationale_parts.append("use memory context")
-
-        if "what state are you in" in text or "what is your status" in text:
-            steps.append(PlanStep(capability_id="robot_status", reason="answer from robot state"))
-            rationale_parts.append("use robot state")
-
-        if "smile" in text or "happy" in text:
-            steps.append(
-                PlanStep(
-                    capability_id="set_emotion",
-                    arguments={"emotion": EmotionState.HAPPY.value},
-                    reason="show a positive expression",
-                )
-            )
-            rationale_parts.append("show a happy expression")
-
-        explicit_local_only = len(steps) == 1 and steps[0].capability_id in {"visible_people", "user_summary", "robot_status"}
-        if explicit_local_only and " and " not in text:
-            route_kind = RouteKind.LOCAL_QUERY
-        elif steps and not any(
-            phrase in text
-            for phrase in (
-                "tell me",
-                "joke",
-                "why",
-                "how",
-                "what do you think",
-                "explain",
-                "say",
-                "chat",
-            )
-        ):
-            route_kind = RouteKind.LOCAL_ACTION
-        else:
-            steps.append(PlanStep(capability_id="cloud_reply", reason="generate final conversational reply"))
-            route_kind = RouteKind.HYBRID if len(steps) > 1 else RouteKind.CLOUD_CHAT
-            rationale_parts.append("generate cloud reply")
-
-        rationale = ", ".join(rationale_parts) if rationale_parts else "defaulted to cloud conversation"
-        return TurnPlan(
-            route_kind=route_kind,
-            confidence=0.82,
-            rationale=rationale,
-            source="mock_cloud_planner",
-            steps=tuple(steps),
-        )
-
-
-@dataclass(slots=True)
 class MockCloudResponseService:
-    """Mock cloud response generator that uses prior observations when available."""
+    """Mock cloud response generator that can request a local camera tool."""
 
     fail_on_text: str | None = None
 
@@ -142,12 +72,32 @@ class MockCloudResponseService:
         context: InteractionContext,
         plan: TurnPlan,
         step_results: tuple[PlanStepResult, ...],
+        *,
+        tool_handler: ToolExecutionHandler | None = None,
     ) -> AiResponse:
         del plan
         if self.fail_on_text and self.fail_on_text in transcript.text.lower():
             raise RuntimeError("mock cloud failure")
 
-        observations = [result.message for result in step_results if result.success and result.capability_id != "cloud_reply"]
+        if _camera_tool_hint(transcript.text) and tool_handler is not None:
+            tool_result = await tool_handler(
+                CloudToolRequest(
+                    call_id="mock_camera_snapshot",
+                    tool_name="camera_snapshot",
+                    arguments={},
+                )
+            )
+            return AiResponse(
+                text=f"Cloud reply: I took a look. {tool_result.output_text or 'I have the snapshot now.'}",
+                emotion=EmotionState.HAPPY,
+                intent="cloud_chat",
+            )
+
+        observations = [
+            result.message
+            for result in step_results
+            if result.success and result.capability_id != "cloud_reply"
+        ]
         visible_people = ", ".join(detection.label for detection in context.current_detections) or "nobody right now"
         if observations:
             return AiResponse(
@@ -171,6 +121,35 @@ class OpenAiResponsesClient:
     base_url: str
     timeout_seconds: float = 20.0
 
+    async def create_response(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        input_items: str | list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        previous_response_id: str | None = None,
+        max_output_tokens: int | None = None,
+        parallel_tool_calls: bool = False,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": input_items,
+        }
+        if tools:
+            payload["tools"] = tools
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
+        if max_output_tokens is not None:
+            payload["max_output_tokens"] = max_output_tokens
+        if parallel_tool_calls:
+            payload["parallel_tool_calls"] = True
+        if stream:
+            payload["stream"] = True
+        return await asyncio.to_thread(self._post_json, payload)
+
     async def create_text_response(
         self,
         *,
@@ -178,12 +157,11 @@ class OpenAiResponsesClient:
         instructions: str,
         input_text: str,
     ) -> str:
-        payload = {
-            "model": model,
-            "instructions": instructions,
-            "input": input_text,
-        }
-        response = await asyncio.to_thread(self._post_json, payload)
+        response = await self.create_response(
+            model=model,
+            instructions=instructions,
+            input_items=input_text,
+        )
         return _extract_output_text(response)
 
     async def create_structured_response(
@@ -230,47 +208,13 @@ class OpenAiResponsesClient:
 
 
 @dataclass(slots=True)
-class OpenAiCloudPlanningService:
-    """Cloud planner backed by OpenAI structured JSON output."""
-
-    client: OpenAiResponsesClient
-    model: str
-
-    async def plan_turn(
-        self,
-        transcript: Transcript,
-        context: InteractionContext,
-        capabilities: tuple[CapabilityDefinition, ...],
-    ) -> TurnPlan:
-        instructions = (
-            "You are the planning layer for a local companion robot. "
-            "Choose only from the provided capabilities. "
-            "Return the minimum safe plan needed to satisfy the user. "
-            "If a plan includes cloud_reply plus any local step, route_kind must be 'hybrid'. "
-            "If cloud_reply is the only step, route_kind must be 'cloud_chat'. "
-            "If there is no cloud_reply step, route_kind must be 'local_action' or 'local_query' as appropriate. "
-            "Only include arguments that the chosen capability accepts. "
-            "For capabilities with no arguments, return an empty object for arguments."
-        )
-        prompt = _build_planning_prompt(transcript, context, capabilities)
-        _log_ai_text_block("planner request", f"model={self.model}\nInstructions:\n{instructions}\n\nInput:\n{prompt}")
-        raw_plan = await self.client.create_structured_response(
-            model=self.model,
-            instructions=instructions,
-            input_text=prompt,
-            schema_name="robot_turn_plan",
-            schema=_TURN_PLAN_SCHEMA,
-        )
-        _log_ai_text_block("planner output", json.dumps(raw_plan, indent=2, ensure_ascii=True))
-        return _turn_plan_from_json(raw_plan, capabilities=capabilities)
-
-
-@dataclass(slots=True)
 class OpenAiCloudResponseService:
-    """Cloud response generator backed by OpenAI text output."""
+    """Cloud response generator backed by the OpenAI Responses API."""
 
     client: OpenAiResponsesClient
     model: str
+    max_output_tokens: int = 120
+    max_tool_rounds: int = 3
 
     async def generate_reply(
         self,
@@ -278,98 +222,93 @@ class OpenAiCloudResponseService:
         context: InteractionContext,
         plan: TurnPlan,
         step_results: tuple[PlanStepResult, ...],
+        *,
+        tool_handler: ToolExecutionHandler | None = None,
     ) -> AiResponse:
         instructions = (
             "You are the spoken response layer for a friendly companion robot. "
-            "Return only the final reply text, not JSON and not stage directions."
+            "Return only the words the robot should say, not JSON and not stage directions. "
+            "Keep replies concise and easy to speak aloud, usually one or two short sentences. "
+            "Unless the user explicitly asks for more detail, avoid long explanations. "
+            "If the user is asking what is visible here, what you see in front of you, or to look at something, "
+            "call camera_snapshot before answering."
         )
         prompt = _build_response_prompt(transcript, context, plan, step_results)
-        _log_ai_text_block("reply request", f"model={self.model}\nInstructions:\n{instructions}\n\nInput:\n{prompt}")
-        text = await self.client.create_text_response(
+        tools = [_camera_snapshot_tool_definition()] if tool_handler is not None else None
+        response_payload = await self.client.create_response(
             model=self.model,
             instructions=instructions,
-            input_text=prompt,
+            input_items=[
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+            tools=tools,
+            max_output_tokens=self.max_output_tokens,
+            parallel_tool_calls=True,
         )
-        _log_ai_text_block("reply output", text)
-        return AiResponse(
-            text=text.strip(),
-            emotion=EmotionState.HAPPY if step_results else EmotionState.CURIOUS,
-            intent="cloud_chat",
+        _log_ai_text_block(
+            "reply request",
+            f"model={self.model}\nmax_output_tokens={self.max_output_tokens}\nInstructions:\n{instructions}\n\nInput:\n{prompt}",
         )
-
-
-_TURN_PLAN_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "route_kind": {
-            "type": "string",
-            "enum": [route_kind.value for route_kind in RouteKind],
-        },
-        "steps": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "capability_id": {"type": "string"},
-                    "arguments": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "direction": {
-                                "type": ["string", "null"],
-                                "enum": ["left", "right", "center", "user", None],
-                            },
-                            "emotion": {
-                                "type": ["string", "null"],
-                                "enum": [emotion.value for emotion in EmotionState] + [None],
-                            },
-                        },
-                        "required": ["direction", "emotion"],
-                    },
-                },
-                "required": ["capability_id", "arguments"],
-            },
-        },
-    },
-    "required": ["route_kind", "steps"],
-}
-
-
-def _build_planning_prompt(
-    transcript: Transcript,
-    context: InteractionContext,
-    capabilities: tuple[CapabilityDefinition, ...],
-) -> str:
-    capability_lines = []
-    for capability in capabilities:
-        schema_summary = ", ".join(
-            f"{name}:{spec.get('type', 'any')}"
-            for name, spec in capability.argument_schema.items()
-        )
-        if not schema_summary:
-            schema_summary = "no arguments"
-        capability_lines.append(
-            f"- {capability.capability_id} [{capability.kind.value}/{capability.phase.value}] "
-            f"{capability.description} ({schema_summary})"
+        _log_ai_text_block("reply output", json.dumps(response_payload, indent=2, ensure_ascii=True))
+        return await self._resolve_response(
+            transcript,
+            context,
+            step_results,
+            instructions=instructions,
+            tools=tools,
+            payload=response_payload,
+            tool_handler=tool_handler,
         )
 
-    visible_people = ", ".join(detection.label for detection in context.current_detections) or "nobody"
-    active_user = context.active_user.display_name if context.active_user and context.active_user.display_name else "unknown"
+    async def _resolve_response(
+        self,
+        transcript: Transcript,
+        context: InteractionContext,
+        step_results: tuple[PlanStepResult, ...],
+        *,
+        instructions: str,
+        tools: list[dict[str, Any]] | None,
+        payload: dict[str, Any],
+        tool_handler: ToolExecutionHandler | None,
+    ) -> AiResponse:
+        current_payload = payload
+        for _round in range(self.max_tool_rounds + 1):
+            tool_calls = _extract_function_calls(current_payload)
+            if not tool_calls:
+                text = _extract_output_text(current_payload)
+                return AiResponse(
+                    text=text.strip(),
+                    emotion=EmotionState.HAPPY if step_results else EmotionState.CURIOUS,
+                    intent="cloud_chat",
+                )
 
-    return (
-        "Available capabilities:\n"
-        + "\n".join(capability_lines)
-        + f"\nLanguage: {transcript.language.value}\n"
-        + f"Active user: {active_user}\n"
-        + f"Visible people: {visible_people}\n"
-        + f"Robot state: lifecycle={context.robot_state.lifecycle}, "
-        + f"emotion={context.robot_state.emotion.value}, eyes_open={context.robot_state.eyes_open}, "
-        + f"head_direction={context.robot_state.head_direction}\n"
-        + f"\nUser transcript: {transcript.text}"
-    )
+            if tool_handler is None:
+                raise RuntimeError("cloud reply requested tools but no local tool handler was provided")
 
+            response_id = str(current_payload.get("id", "")).strip()
+            if not response_id:
+                raise RuntimeError("tool-calling response was missing a response id")
+
+            tool_outputs = []
+            for tool_call in tool_calls:
+                tool_result = await tool_handler(tool_call)
+                tool_outputs.append(_tool_result_input_item(tool_result))
+
+            current_payload = await self.client.create_response(
+                model=self.model,
+                instructions=instructions,
+                input_items=tool_outputs,
+                tools=tools,
+                previous_response_id=response_id,
+                max_output_tokens=self.max_output_tokens,
+                parallel_tool_calls=True,
+            )
+            _log_ai_text_block("reply output", json.dumps(current_payload, indent=2, ensure_ascii=True))
+
+        raise RuntimeError("cloud reply exceeded the maximum number of tool rounds")
 
 def _build_response_prompt(
     transcript: Transcript,
@@ -388,78 +327,12 @@ def _build_response_prompt(
 
     return (
         f"User transcript: {transcript.text}\n"
-        f"Plan route kind: {plan.route_kind.value}\n"
-        f"Plan rationale: {plan.rationale or 'n/a'}\n"
+        f"Route kind: {plan.route_kind.value}\n"
+        f"Route rationale: {plan.rationale or 'n/a'}\n"
         f"Visible people: {visible_people}\n"
         "Executed local step results:\n"
         + "\n".join(result_lines)
     )
-
-
-def _turn_plan_from_json(
-    payload: dict[str, Any],
-    *,
-    capabilities: tuple[CapabilityDefinition, ...] = (),
-) -> TurnPlan:
-    definitions = {capability.capability_id: capability for capability in capabilities}
-    raw_steps = payload.get("steps", [])
-    steps = []
-    for raw_step in raw_steps:
-        capability_id = str(raw_step.get("capability_id", "")).strip()
-        definition = definitions.get(capability_id)
-        raw_arguments = raw_step.get("arguments", {})
-        arguments = (
-            {
-                str(name): value
-                for name, value in dict(raw_arguments).items()
-                if value is not None
-            }
-            if isinstance(raw_arguments, dict)
-            else {}
-        )
-        if definition is not None:
-            allowed_argument_names = set(definition.argument_schema)
-            if not allowed_argument_names:
-                arguments = {}
-            else:
-                arguments = {
-                    name: value
-                    for name, value in arguments.items()
-                    if name in allowed_argument_names
-                }
-        steps.append(
-            PlanStep(
-                capability_id=capability_id,
-                arguments=arguments,
-            )
-        )
-    route_kind = _normalize_route_kind(payload.get("route_kind"), steps)
-
-    return TurnPlan(
-        route_kind=route_kind,
-        confidence=0.6,
-        rationale=None,
-        source="openai_planner",
-        steps=tuple(step for step in steps if step.capability_id),
-    )
-
-
-def _normalize_route_kind(raw_route_kind: Any, steps: list[PlanStep]) -> RouteKind:
-    step_ids = {step.capability_id for step in steps if step.capability_id}
-    non_reply_step_ids = step_ids - {"cloud_reply"}
-
-    if "cloud_reply" in step_ids:
-        return RouteKind.HYBRID if non_reply_step_ids else RouteKind.CLOUD_CHAT
-
-    try:
-        route_kind = RouteKind(str(raw_route_kind))
-    except ValueError:
-        route_kind = RouteKind.CLOUD_CHAT
-
-    if route_kind in {RouteKind.HYBRID, RouteKind.CLOUD_CHAT} and "cloud_reply" not in step_ids:
-        return RouteKind.LOCAL_QUERY if any(step_id in {"visible_people", "user_summary", "robot_status"} for step_id in step_ids) else RouteKind.LOCAL_ACTION
-
-    return route_kind
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:
@@ -479,6 +352,77 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     raise RuntimeError("OpenAI response did not contain any assistant text output")
 
 
+def _extract_function_calls(payload: dict[str, Any]) -> tuple[CloudToolRequest, ...]:
+    tool_calls: list[CloudToolRequest] = []
+    for item in payload.get("output", []):
+        if item.get("type") != "function_call":
+            continue
+        call_id = str(item.get("call_id", "")).strip()
+        tool_name = str(item.get("name", "")).strip()
+        raw_arguments = item.get("arguments", "{}")
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else {}
+        except json.JSONDecodeError:
+            arguments = {}
+        if call_id and tool_name:
+            tool_calls.append(
+                CloudToolRequest(
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+    return tuple(tool_calls)
+
+
+def _tool_result_input_item(tool_result: CloudToolResult) -> dict[str, Any]:
+    output: list[dict[str, Any]] = []
+    if tool_result.output_text:
+        output.append({"type": "input_text", "text": tool_result.output_text})
+    if tool_result.image_url:
+        output.append(
+            {
+                "type": "input_image",
+                "image_url": tool_result.image_url,
+                "detail": tool_result.image_detail,
+            }
+        )
+    if not output:
+        output = [{"type": "input_text", "text": ""}]
+    return {
+        "type": "function_call_output",
+        "call_id": tool_result.call_id,
+        "output": output,
+    }
+
+
+def _camera_snapshot_tool_definition() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": "camera_snapshot",
+        "description": "Capture the robot's current camera view when visual evidence is needed.",
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+            "required": [],
+        },
+    }
+
+
+def _camera_tool_hint(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "what do you see here",
+            "what do you see in front of you",
+            "take a look",
+            "look at this",
+            "can you see this",
+        )
+    )
 def _log_ai_text_block(label: str, text: str) -> None:
     """Emit multi-line AI traffic into the runtime log/debug terminal."""
 

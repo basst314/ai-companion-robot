@@ -2,9 +2,9 @@
 
 from ai.cloud import (
     CloudResponseService,
-    MockCloudPlanningService,
+    CloudToolRequest,
+    CloudToolResult,
     MockCloudResponseService,
-    OpenAiCloudPlanningService,
     OpenAiCloudResponseService,
     OpenAiResponsesClient,
 )
@@ -12,11 +12,11 @@ from ai.local import LocalAiService, MockLocalAiService
 
 __all__ = [
     "CloudResponseService",
+    "CloudToolRequest",
+    "CloudToolResult",
     "LocalAiService",
-    "MockCloudPlanningService",
     "MockCloudResponseService",
     "MockLocalAiService",
-    "OpenAiCloudPlanningService",
     "OpenAiCloudResponseService",
     "OpenAiResponsesClient",
 ]

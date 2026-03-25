@@ -6,10 +6,10 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ai.cloud import MockCloudPlanningService, MockCloudResponseService
+from ai.cloud import MockCloudResponseService
 from main import build_application, main
 from orchestrator.capabilities import build_default_capability_registry
-from orchestrator.router import HybridTurnPlanner, LocalShortcutPlanner
+from orchestrator.router import LocalShortcutPlanner, LocalTurnDirector
 from orchestrator.state import LifecycleStage
 from shared.config import AppConfig
 from shared.events import EventName
@@ -318,8 +318,8 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     assert [event.name for event in service.event_history][-1] == EventName.TTS_FINISHED
 
 
-def test_planners_choose_local_cloud_and_hybrid_paths() -> None:
-    """The shortcut and hybrid planners should distinguish the main path shapes."""
+def test_turn_director_chooses_local_cloud_and_hybrid_paths() -> None:
+    """The local-first director should distinguish the main path shapes."""
 
     transcript = Transcript(
         text="who do you see",
@@ -331,11 +331,11 @@ def test_planners_choose_local_cloud_and_hybrid_paths() -> None:
     )
     context = asyncio.run(build_application(AppConfig())._build_context())
     shortcut = LocalShortcutPlanner()
-    hybrid = HybridTurnPlanner(cloud_planner=MockCloudPlanningService())
+    director = LocalTurnDirector()
 
     visible = asyncio.run(shortcut.plan(transcript, context, ()))
     cloud = asyncio.run(
-        hybrid.plan(
+        director.direct_turn(
             Transcript(
                 text="tell me a joke",
                 language=Language.ENGLISH,
@@ -349,7 +349,7 @@ def test_planners_choose_local_cloud_and_hybrid_paths() -> None:
         )
     )
     mixed = asyncio.run(
-        hybrid.plan(
+        director.direct_turn(
             Transcript(
                 text="look at me and tell me a joke",
                 language=Language.ENGLISH,
@@ -442,6 +442,31 @@ def test_memory_and_vision_context_are_used_for_local_query() -> None:
     assert service.memory.records[-1].executed_steps == ("visible_people",)
 
 
+def test_local_only_turn_does_not_call_cloud() -> None:
+    class FailingCloudResponse:
+        async def generate_reply(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("cloud reply should not run for explicit local-only turns")
+
+    service = build_application(AppConfig())
+    service.cloud_response = FailingCloudResponse()
+
+    asyncio.run(
+        service.run_turn(
+            Transcript(
+                text="who do you see",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+    )
+
+    assert service.state.current_response == "I can currently see Sebastian."
+    assert service.memory.records[-1].route_kind is RouteKind.LOCAL_QUERY
+
+
 def test_hybrid_turn_executes_local_action_and_cloud_reply() -> None:
     service = build_application(AppConfig())
 
@@ -463,6 +488,30 @@ def test_hybrid_turn_executes_local_action_and_cloud_reply() -> None:
     assert service.state.last_plan is not None
     assert service.state.last_plan.route_kind is RouteKind.HYBRID
     assert service.memory.records[-1].executed_steps[-2:] == ("look_at_user", "cloud_reply")
+
+
+def test_camera_tool_turn_speaks_ack_then_final_reply() -> None:
+    service = build_application(AppConfig())
+
+    asyncio.run(
+        service.run_turn(
+            Transcript(
+                text="what do you see here",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+    )
+
+    assert service.tts.spoken_texts == [
+        "Let me take a look.",
+        "Cloud reply: I took a look. Mock camera snapshot with Sebastian.",
+    ]
+    assert service.state.current_response == "Cloud reply: I took a look. Mock camera snapshot with Sebastian."
+    assert service.memory.records[-1].route_kind is RouteKind.CLOUD_CHAT
 
 
 def test_cloud_failure_falls_back_to_local_message() -> None:

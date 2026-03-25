@@ -64,21 +64,23 @@ Output:
 
 ### 3.3 AI Layer
 
-Runs primarily in the cloud.
+Runs as a local-first split between the orchestrator and the cloud reply service.
 
 Input:
 - transcript
 - context (memory, user identity, state)
-- planner-visible capability catalog
+- local query/action results when available
 
 Processing:
-- generate a structured turn plan when local shortcuts are not enough
-- generate response text after local actions and queries have run
+- select a local-first turn route through the orchestrator turn director
+- generate spoken response text after local actions and queries have run
+- optionally request local tools such as a camera snapshot when more evidence is needed
 - apply personality tone
 
 Output:
 - turn plan (`route_kind` plus ordered executable steps)
 - response text
+- optional tool-call requests
 - optional metadata (emotion, intent)
 
 ---
@@ -153,9 +155,9 @@ User speech
 → STT (local)
 → Orchestrator
 → local reactive policy
-→ turn planner
+→ local turn director
 → local actions / queries
-→ AI response text (cloud)
+→ AI response text (cloud, optional local tools)
 → Orchestrator
 → TTS (local)
 → Speaker
@@ -191,15 +193,15 @@ Camera
 
 ### Cloud
 
-- LLM-based turn planning
 - LLM-based response text generation
+- optional tool selection for extra data such as camera snapshots
 - optional enhanced STT
 - no cloud speech output in the current design
 
-In the current implementation, the cloud planner is kept intentionally narrow:
-- planner prompts put stable capability definitions before dynamic context and transcript content
-- planner output is minimized to route selection plus ordered steps
-- local validation remains authoritative, and normalizes unsupported step arguments or inconsistent `cloud_reply` routing before execution
+In the current implementation, normal chat takes a single cloud response-model call:
+- the orchestrator handles deterministic embodiment and narrow local-only shortcuts first
+- the cloud reply call sees transcript, current context, and any local step results
+- when the model requests a local tool such as `camera_snapshot`, the orchestrator runs it and resumes the same response turn with the tool output
 
 ---
 

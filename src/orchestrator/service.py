@@ -13,12 +13,12 @@ import termios
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from ai.cloud import CloudResponseService
+from ai.cloud import CloudResponseService, CloudToolRequest, CloudToolResult
 from hardware.service import HardwareService
 from memory.service import MemoryService
 from orchestrator.capabilities import CapabilityRegistry
 from orchestrator.reactive import ReactivePolicyEngine
-from orchestrator.router import TurnPlanner
+from orchestrator.router import TurnDirector
 from orchestrator.state import LifecycleStage, OrchestratorState
 from shared.config import AppConfig
 from shared.console import ConsoleFormatter, TerminalDebugSink, configure_terminal_debug_screen
@@ -53,7 +53,7 @@ class OrchestratorService:
 
     config: AppConfig
     state: OrchestratorState
-    planner: TurnPlanner
+    turn_director: TurnDirector
     capability_registry: CapabilityRegistry
     reactive_policy: ReactivePolicyEngine
     event_bus: EventBus
@@ -316,7 +316,7 @@ class OrchestratorService:
         await self._apply_reactive_steps(self.reactive_policy.partial_transcript(self.state, transcript))
 
     async def run_turn(self, transcript: Transcript) -> None:
-        """Process a final transcript through planning, execution, and response."""
+        """Process a final transcript through local routing, execution, and response."""
 
         self._debug_transcript(transcript, kind="final")
         self.state.last_error = None
@@ -337,17 +337,18 @@ class OrchestratorService:
         await self._apply_reactive_steps(self.reactive_policy.processing_started(self.state))
 
         context = await self._build_context()
+        await self._apply_turn_attention(context)
         available_components = self._available_components()
         available_capabilities = self.capability_registry.list_available(available_components)
 
         try:
             self._update_ai_debug(
-                planning_active=True,
+                planning_active=False,
                 response_active=False,
-                plan_preview="planning...",
+                plan_preview="routing...",
                 response_preview=None,
             )
-            plan = await self.planner.plan(transcript, context, available_capabilities)
+            plan = await self.turn_director.direct_turn(transcript, context, available_capabilities)
             await self.handle_event(
                 Event(
                     name=EventName.PLAN_CREATED,
@@ -401,14 +402,14 @@ class OrchestratorService:
             )
             response, step_results = await self.execute_plan(validated_plan, context, transcript, skipped_results)
         except Exception as exc:
-            logger.exception("turn planning/execution failed")
+            logger.exception("turn routing/execution failed")
             self.state.last_error = str(exc)
             self.state.last_plan = None
             step_results = ()
             self._update_ai_debug(
                 planning_active=False,
                 response_active=False,
-                plan_preview="planning failed",
+                plan_preview="routing failed",
                 response_preview="error",
             )
             await self.handle_event(
@@ -511,10 +512,12 @@ class OrchestratorService:
         logger.info("event=%s source=%s", event.name.value, event.source.value)
         await self.event_bus.publish(event)
 
-    async def _build_context(self) -> InteractionContext:
-        active_user = await self.memory.get_active_user()
-        detections = await self._safe_get_detections()
-        history = await self.memory.get_recent_history()
+    async def _build_context(self, *, include_history: bool = False) -> InteractionContext:
+        active_user, detections = await asyncio.gather(
+            self.memory.get_active_user(),
+            self._safe_get_detections(),
+        )
+        history = await self.memory.get_recent_history() if include_history else ()
         self.state.active_user_id = active_user.user_id if active_user else None
         self.state.last_detections = detections
         return InteractionContext(
@@ -748,7 +751,7 @@ class OrchestratorService:
         context: InteractionContext,
     ) -> QueryResult:
         if query_name == "visible_people":
-            detections = await self._safe_get_detections()
+            detections = context.current_detections
             if not detections:
                 return QueryResult(answer_text="I do not see anyone right now.")
 
@@ -756,7 +759,11 @@ class OrchestratorService:
             return QueryResult(answer_text=f"I can currently see {names}.", data={"detections": names})
 
         if query_name == "user_summary":
-            summary = await self.memory.get_user_summary(self.state.active_user_id)
+            if context.active_user is None:
+                return QueryResult(answer_text="I do not know much about you yet.")
+            summary = context.active_user.summary or (
+                f"I know you as {context.active_user.display_name or context.active_user.user_id}."
+            )
             return QueryResult(answer_text=summary)
 
         if query_name == "robot_status":
@@ -778,7 +785,13 @@ class OrchestratorService:
         prior_results: tuple[PlanStepResult, ...],
     ) -> AiResponse:
         try:
-            return await self.cloud_response.generate_reply(transcript, context, plan, prior_results)
+            return await self.cloud_response.generate_reply(
+                transcript,
+                context,
+                plan,
+                prior_results,
+                tool_handler=self._handle_cloud_tool_request,
+            )
         except Exception as exc:
             logger.exception("cloud response failed")
             self.state.last_error = str(exc)
@@ -793,6 +806,99 @@ class OrchestratorService:
                 text="My cloud brain is unavailable, so I am falling back to a simple local reply.",
                 emotion=EmotionState.CURIOUS,
                 intent="cloud_fallback",
+            )
+
+    async def _handle_cloud_tool_request(self, request: CloudToolRequest) -> CloudToolResult:
+        if request.tool_name == "camera_snapshot":
+            try:
+                await self.ui.show_text("Let me take a look.")
+                await self._speak_text(
+                    "Let me take a look.",
+                    preview_text="Let me take a look.",
+                    record_events=False,
+                )
+                snapshot = await self.vision.capture_snapshot()
+                summary = snapshot.summary or "I captured the current camera view."
+                await self._set_lifecycle(
+                    LifecycleStage.PROCESSING,
+                    EmotionState.CURIOUS,
+                    self.state.current_transcript.text if self.state.current_transcript else None,
+                )
+                return CloudToolResult(
+                    call_id=request.call_id,
+                    tool_name=request.tool_name,
+                    output_text=summary,
+                    image_url=snapshot.image_url,
+                )
+            except Exception as exc:
+                logger.exception("tool request failed")
+                self.state.last_error = str(exc)
+                await self.handle_event(
+                    Event(
+                        name=EventName.ERROR_OCCURRED,
+                        source=ComponentName.VISION,
+                        payload={"error": str(exc), "tool": request.tool_name},
+                    )
+                )
+                await self._set_lifecycle(
+                    LifecycleStage.PROCESSING,
+                    EmotionState.CURIOUS,
+                    self.state.current_transcript.text if self.state.current_transcript else None,
+                )
+                return CloudToolResult(
+                    call_id=request.call_id,
+                    tool_name=request.tool_name,
+                    output_text="I could not capture a photo right now.",
+                )
+
+        return CloudToolResult(
+            call_id=request.call_id,
+            tool_name=request.tool_name,
+            output_text=f"The tool '{request.tool_name}' is not available on this robot.",
+        )
+
+    async def _apply_turn_attention(self, context: InteractionContext) -> None:
+        has_attention_target = bool(context.current_detections or context.active_user)
+        if not has_attention_target or self.state.head_direction == "user":
+            return
+        await self._apply_reactive_steps(
+            (
+                PlanStep(
+                    capability_id="look_at_user",
+                    phase=StepPhase.REACTIVE,
+                    reason="maintain visual attention before replying",
+                ),
+            )
+        )
+
+    async def _speak_text(
+        self,
+        text: str,
+        *,
+        preview_text: str | None = None,
+        record_events: bool = True,
+    ) -> None:
+        await self._set_lifecycle(
+            LifecycleStage.SPEAKING,
+            EmotionState.SPEAKING,
+            preview_text or text,
+        )
+        if record_events:
+            await self.handle_event(
+                Event(
+                    name=EventName.TTS_STARTED,
+                    source=ComponentName.TTS,
+                    payload={"text": text},
+                )
+            )
+        await self.tts.speak(text)
+        if record_events:
+            await self.handle_event(
+                Event(
+                    name=EventName.TTS_FINISHED,
+                    source=ComponentName.TTS,
+                    payload={"text": text},
+                )
             )
 
     def _derive_response_from_results(self, results: list[PlanStepResult]) -> AiResponse:
@@ -840,21 +946,7 @@ class OrchestratorService:
 
         if response.should_speak:
             try:
-                await self.handle_event(
-                    Event(
-                        name=EventName.TTS_STARTED,
-                        source=ComponentName.TTS,
-                        payload={"text": response.text},
-                    )
-                )
-                await self.tts.speak(response.text)
-                await self.handle_event(
-                    Event(
-                        name=EventName.TTS_FINISHED,
-                        source=ComponentName.TTS,
-                        payload={"text": response.text},
-                    )
-                )
+                await self._speak_text(response.text, preview_text=display_text)
             except Exception as exc:
                 logger.exception("tts failed")
                 self.state.last_error = str(exc)
