@@ -96,6 +96,7 @@ def _build_cloud_services(app_config: AppConfig):
         client=client,
         model=app_config.cloud.openai_response_model,
         max_output_tokens=app_config.cloud.openai_reply_max_output_tokens,
+        wake_word_phrase=app_config.runtime.wake_word_phrase,
     )
 
 

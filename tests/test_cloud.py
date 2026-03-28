@@ -42,12 +42,16 @@ class FakeResponseClient:
         assert model == "gpt-5.2"
         assert "spoken response layer" in instructions
         assert "one or two short sentences" in instructions
+        assert "leftover wake-word audio" in instructions
+        assert "The robot's wake-word/name is 'Oreo'." in instructions
         assert tools is None
         assert previous_response_id is None
         assert max_output_tokens == 72
         assert parallel_tool_calls is True
         assert stream is False
         prompt = input_items[0]["content"][0]["text"]
+        assert "Robot wake-word/name: 'Oreo'" in prompt
+        assert "'Oreo'" in prompt
         assert "Executed local step results:" in prompt
         return {
             "id": "resp_1",
@@ -127,7 +131,12 @@ def _context() -> InteractionContext:
         ),
     )
 def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
-    service = OpenAiCloudResponseService(client=FakeResponseClient(), model="gpt-5.2", max_output_tokens=72)
+    service = OpenAiCloudResponseService(
+        client=FakeResponseClient(),
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
     transcript = Transcript(
         text="can you see me?",
         language=Language.ENGLISH,
@@ -163,12 +172,19 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     assert "max_output_tokens=72" in log_text
     assert "can you see me?" in log_text
     assert "I can currently see Basti." in log_text
+    assert "Robot wake-word/name: 'Oreo'" in log_text
+    assert "leftover wake-word audio" in log_text
     assert "[AI] reply output" in log_text
     assert "I can see you, and I am looking your way." in log_text
 
 
 def test_openai_reply_handles_tool_call_round_trip() -> None:
-    service = OpenAiCloudResponseService(client=FakeToolClient(), model="gpt-5.2", max_output_tokens=72)
+    service = OpenAiCloudResponseService(
+        client=FakeToolClient(),
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
     transcript = Transcript(
         text="what do you see here?",
         language=Language.ENGLISH,

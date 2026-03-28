@@ -215,6 +215,7 @@ class OpenAiCloudResponseService:
     model: str
     max_output_tokens: int = 120
     max_tool_rounds: int = 3
+    wake_word_phrase: str | None = None
 
     async def generate_reply(
         self,
@@ -225,15 +226,14 @@ class OpenAiCloudResponseService:
         *,
         tool_handler: ToolExecutionHandler | None = None,
     ) -> AiResponse:
-        instructions = (
-            "You are the spoken response layer for a friendly companion robot. "
-            "Return only the words the robot should say, not JSON and not stage directions. "
-            "Keep replies concise and easy to speak aloud, usually one or two short sentences. "
-            "Unless the user explicitly asks for more detail, avoid long explanations. "
-            "If the user is asking what is visible here, what you see in front of you, or to look at something, "
-            "call camera_snapshot before answering."
+        instructions = _build_reply_instructions(self.wake_word_phrase)
+        prompt = _build_response_prompt(
+            transcript,
+            context,
+            plan,
+            step_results,
+            wake_word_phrase=self.wake_word_phrase,
         )
-        prompt = _build_response_prompt(transcript, context, plan, step_results)
         tools = [_camera_snapshot_tool_definition()] if tool_handler is not None else None
         response_payload = await self.client.create_response(
             model=self.model,
@@ -315,6 +315,8 @@ def _build_response_prompt(
     context: InteractionContext,
     plan: TurnPlan,
     step_results: tuple[PlanStepResult, ...],
+    *,
+    wake_word_phrase: str | None = None,
 ) -> str:
     visible_people = ", ".join(detection.label for detection in context.current_detections) or "nobody"
     result_lines = [
@@ -326,6 +328,7 @@ def _build_response_prompt(
         result_lines = ["- no prior local action/query output"]
 
     return (
+        f"{_build_wake_word_context_line(wake_word_phrase)}\n"
         f"User transcript: {transcript.text}\n"
         f"Route kind: {plan.route_kind.value}\n"
         f"Route rationale: {plan.rationale or 'n/a'}\n"
@@ -333,6 +336,42 @@ def _build_response_prompt(
         "Executed local step results:\n"
         + "\n".join(result_lines)
     )
+
+
+def _build_reply_instructions(wake_word_phrase: str | None) -> str:
+    wake_phrase = _normalize_wake_word_phrase(wake_word_phrase)
+    parts = [
+        "You are the spoken response layer for a friendly companion robot.",
+        "Return only the words the robot should say, not JSON and not stage directions.",
+        "Keep replies concise and easy to speak aloud, usually one or two short sentences.",
+        "Unless the user explicitly asks for more detail, avoid long explanations.",
+        "If the transcript starts with leftover wake-word audio or a mis-transcribed near-sounding phrase, "
+        "ignore that leading fragment when a clear request follows.",
+    ]
+    if wake_phrase:
+        parts.append(
+            f"The robot's wake-word/name is '{wake_phrase}'. A leading fragment may be an imperfect transcription "
+            f"of '{wake_phrase}' rather than part of the request."
+        )
+    parts.append(
+        "If the user is asking what is visible here, what you see in front of you, or to look at something, "
+        "call camera_snapshot before answering."
+    )
+    return " ".join(parts)
+
+
+def _build_wake_word_context_line(wake_word_phrase: str | None) -> str:
+    wake_phrase = _normalize_wake_word_phrase(wake_word_phrase)
+    if not wake_phrase:
+        return "Robot wake-word/name: n/a"
+    return f"Robot wake-word/name: '{wake_phrase}'"
+
+
+def _normalize_wake_word_phrase(wake_word_phrase: str | None) -> str | None:
+    if wake_word_phrase is None:
+        return None
+    normalized = wake_word_phrase.strip()
+    return normalized or None
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:
