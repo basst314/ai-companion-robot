@@ -9,6 +9,27 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-28 — Local Piper TTS, Queueing, And Setup Provisioning
+
+### Highlights
+- Added a real local TTS path based on Piper HTTP, while keeping the app-side TTS interface provider-pluggable for future cloud or alternative backends.
+- Introduced queued speech requests with append, replace-pending, and interrupt-and-replace behavior, plus explicit synthesis/playback lifecycle events for robot timing.
+- Extended the terminal debug view with dedicated TTS state, voice, style, queue, and timing visibility.
+- Expanded `scripts/setup.sh` and generated config so local TTS can be provisioned end to end: optional dependency install, voice downloads, playback command setup, and managed/external Piper modes.
+- Added explicit reply language propagation through the AI response contract so TTS can reliably select English, German, or Indonesian voices.
+
+### Why this matters
+This is the first real end-to-end spoken reply milestone. The robot can now hear a question, generate a response, and speak it aloud locally with observable queue and playback state, which closes the loop needed for later animation, embodiment timing, and Raspberry Pi deployment.
+
+### Key decisions & rationale
+- Decision: keep Piper behind an HTTP provider boundary instead of coupling the app directly to an in-process synthesis library.
+  - Why: it keeps the runtime pluggable, makes local dev and Raspberry Pi deployment use the same app contract, and leaves room for cloud TTS later without rewriting orchestrator logic.
+- Decision: start Piper lazily on first speech in managed mode.
+  - Why: it keeps startup lighter and avoids paying the process cost when a run never reaches a spoken reply.
+- Decision: keep user barge-in and AEC out of the first delivery, while still supporting app-driven interrupt-and-replace speech.
+  - Why: reliable local playback and event timing were the critical path for this milestone; full duplex audio handling is a separate, riskier layer.
+
+
 ## 2026-03-24 — Local-First Reply Pipeline, Tool Calls, And Cleanup
 
 ### Highlights

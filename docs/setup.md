@@ -14,6 +14,7 @@ The script is designed to be idempotent:
 - it reuses `.venv` when possible
 - it reuses an existing `whisper.cpp` checkout and build unless `--force` is used
 - it reuses downloaded Whisper models unless `--force` is used
+- it can optionally install Piper and download voice packs into `artifacts/piper-voices`
 - it resolves and verifies the selected OpenWakeWord model before writing `.env.local`
 - it asks before overwriting `.env.local`
 
@@ -33,6 +34,21 @@ Current supported variables:
 - `AI_COMPANION_OPENAI_RESPONSE_MODEL`
 - `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
 - `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
+- `AI_COMPANION_TTS_BACKEND`
+- `AI_COMPANION_TTS_PIPER_BASE_URL`
+- `AI_COMPANION_TTS_PIPER_SERVICE_MODE`
+- `AI_COMPANION_TTS_PIPER_DATA_DIR`
+- `AI_COMPANION_TTS_PIPER_COMMAND`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_EN`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_DE`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_ID`
+- `AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE`
+- `AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED`
+- `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_TTS_QUEUE_MAX`
+- `AI_COMPANION_TTS_SAVE_ARTIFACTS`
+- `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
+- `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -58,6 +74,7 @@ The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{outpu
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output still stays local.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
+If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.
 
 ## Platform-Specific Defaults
 
@@ -79,6 +96,7 @@ Use these when you want repeatable automation:
 ```bash
 ./scripts/setup.sh --yes
 ./scripts/setup.sh --yes --platform rpi --model base --language-mode auto
+./scripts/setup.sh --yes --tts-backend piper --tts-languages en,de,id
 ./scripts/setup.sh --yes --skip-system-packages
 ```
 
@@ -89,7 +107,7 @@ Use these when you want repeatable automation:
 If the script cannot support your environment yet, install manually:
 
 1. Install Python 3.11+, Git, CMake, and a recorder tool.
-2. Create `.venv` and run `python -m pip install -e ".[dev]"`.
+2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS.
 3. Clone and build `whisper.cpp`.
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.

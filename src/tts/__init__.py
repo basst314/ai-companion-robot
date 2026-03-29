@@ -1,5 +1,5 @@
-"""Text-to-speech package for future local speech synthesis."""
+"""Text-to-speech package for local and mock speech synthesis."""
 
-from tts.service import MockTtsService, TtsService
+from tts.service import MockTtsService, QueuedTtsService, TtsService, build_piper_tts_service
 
-__all__ = ["MockTtsService", "TtsService"]
+__all__ = ["MockTtsService", "QueuedTtsService", "TtsService", "build_piper_tts_service"]

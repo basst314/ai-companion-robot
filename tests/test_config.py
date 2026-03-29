@@ -25,6 +25,20 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-test-response",
                 "AI_COMPANION_OPENAI_TIMEOUT_SECONDS=18.5",
                 "AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=96",
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_PIPER_SERVICE_MODE=external",
+                "AI_COMPANION_TTS_PIPER_DATA_DIR=/opt/piper/voices",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE=de_DE-thorsten_emotional-medium",
+                "AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=true",
+                "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+                "AI_COMPANION_TTS_QUEUE_MAX=3",
+                "AI_COMPANION_TTS_SAVE_ARTIFACTS=true",
+                "AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=11.5",
+                "AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=21.0",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
@@ -60,6 +74,20 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.cloud.openai_response_model == "gpt-test-response"
     assert config.cloud.openai_timeout_seconds == 18.5
     assert config.cloud.openai_reply_max_output_tokens == 96
+    assert config.tts.backend == "piper"
+    assert config.tts.piper_base_url == "http://127.0.0.1:5001"
+    assert config.tts.piper_service_mode == "external"
+    assert config.tts.piper_data_dir == Path("/opt/piper/voices")
+    assert config.tts.default_voice_en == "en_US-hfc_female-medium"
+    assert config.tts.default_voice_de == "de_DE-thorsten-medium"
+    assert config.tts.default_voice_id == "id_ID-news_tts-medium"
+    assert config.tts.expressive_de_voice == "de_DE-thorsten_emotional-medium"
+    assert config.tts.expressive_de_enabled is True
+    assert config.tts.audio_play_command == ("aplay", "{input_path}")
+    assert config.tts.queue_max == 3
+    assert config.tts.save_artifacts is True
+    assert config.tts.synthesis_timeout_seconds == 11.5
+    assert config.tts.playback_timeout_seconds == 21.0
     assert config.runtime.input_mode == "speech"
     assert config.runtime.speech_latency_profile == "balanced"
     assert config.runtime.interactive_console is True
@@ -190,4 +218,6 @@ def test_setup_script_help_is_available() -> None:
     assert result.returncode == 0
     assert "--platform <macos|rpi>" in result.stdout
     assert "--model <tiny|base|small>" in result.stdout
+    assert "--tts-backend <mock|piper>" in result.stdout
+    assert "--tts-languages <en,de,id>" in result.stdout
     assert "--skip-system-packages" in result.stdout

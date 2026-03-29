@@ -16,7 +16,7 @@ Status: early working local prototype
 Current milestone:
 - the project has a working local-first turn-routing loop
 - the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and a single tool-aware cloud reply path
-- responses can be shown in the UI mock and acknowledged by the TTS mock
+- responses can be shown in the UI mock and spoken through queued mock or Piper-backed TTS
 - interaction history is stored in memory
 - a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
 
@@ -43,7 +43,7 @@ Available now:
 - fallback handling for vision, cloud AI, and TTS failures
 
 Current limitations:
-- real speech input exists, but UI/TTS/vision/hardware are still partly or fully mocked
+- real speech input exists, but UI/vision/hardware are still partly or fully mocked
 - no real camera loop yet
 - no background/idle autonomy yet
 
@@ -152,18 +152,20 @@ Current limitations:
 
 ### TTS
 
-Status: functional mock
+Status: working local + mock prototype
 
 Available now:
 - `MockTtsService`
+- queued TTS requests with append/replace policies
+- mock and Piper-backed synthesis/playback adapters
+- precise queue/synthesis/playback events
 - printed `[TTS] ...` acknowledgement
-- TTS started/finished events
 - graceful failure handling
+- terminal debug row for TTS backend/voice/phase/queue timing
 
 Current limitations:
-- no audio synthesis
-- no playback queue
-- Piper integration is still pending
+- cloud TTS provider is not implemented yet
+- direct user barge-in during TTS is still intentionally out of scope
 
 ### UI
 
@@ -215,13 +217,13 @@ Available now:
 - Python-version-aware `.venv` recreation when the existing environment is incompatible
 - `whisper.cpp` clone/build plus default model download
 - OpenWakeWord runtime resolution plus built-in wake-model verification during setup
+- optional Piper dependency install plus English/German/Indonesian voice provisioning
 - generated `.env.local` runtime configuration
 - optional interactive OpenAI enablement plus API-key prompt with blank-later support
 
 Current limitations:
 - only macOS and Raspberry Pi are first-class setup targets
-- no Piper/TTS automation yet
-- no hardware, vision, or cloud credential setup yet
+- no hardware or vision setup yet
 
 ---
 
@@ -235,11 +237,11 @@ Current limitations:
 - state transitions
 - event tracking and in-process pub/sub
 - failure handling patterns
+- local speech synthesis/playback with Piper
 - integration tests for the main interaction loop
 
 ### Mocked subsystems
 
-- TTS
 - UI rendering
 - memory persistence
 - vision
@@ -247,7 +249,7 @@ Current limitations:
 
 ### Not built yet
 
-- real TTS provider integration
+- cloud TTS provider integration
 - real camera/vision pipeline
 - real hardware drivers
 - production logging/config loading
@@ -264,7 +266,7 @@ Manual text input
 -> local turn routing
 -> local action/query and optional cloud reply
 -> mock UI update
--> mock TTS acknowledgement
+-> queued TTS synthesis/playback
 -> memory persistence
 
 See `README.md` for current setup and run commands.
@@ -359,7 +361,7 @@ Use this checklist during each implementation pass.
 - [x] Partial transcript handling exists
 - [x] STT mock is wired into runtime loop
 - [x] Real cloud AI integration exists
-- [ ] Real TTS integration exists
+- [x] Real TTS integration exists
 - [ ] Real STT integration exists
 - [ ] Real vision integration exists
 - [ ] Real hardware integration exists

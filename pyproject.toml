@@ -20,6 +20,9 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
 ]
+tts = [
+  "piper-tts[http]>=1.4,<2",
+]
 
 [project.scripts]
 ai-companion-robot = "main:main"

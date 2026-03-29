@@ -139,6 +139,19 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update the shared wake/utterance ring buffer indicator."""
 
+    def update_tts_status(
+        self,
+        *,
+        backend: str | None = None,
+        phase: str | None = None,
+        voice: str | None = None,
+        style: str | None = None,
+        speaker: str | None = None,
+        queue_depth: int | None = None,
+        preview: str | None = None,
+    ) -> None:
+        """Update TTS playback state shown in the sticky header."""
+
 
 @dataclass(slots=True)
 class TerminalDebugState:
@@ -179,6 +192,17 @@ class TerminalDebugState:
     ring_wake_window_seconds: float | None = None
     ring_utterance_start_seconds: float | None = None
     ring_write_head_seconds: float | None = None
+    tts_backend: str | None = None
+    tts_phase: str = "idle"
+    tts_voice: str | None = None
+    tts_style: str | None = None
+    tts_speaker: str | None = None
+    tts_queue_depth: int = 0
+    tts_preview: str | None = None
+    tts_synth_started_at: datetime | None = None
+    tts_play_started_at: datetime | None = None
+    tts_last_synth_duration: str | None = None
+    tts_last_play_duration: str | None = None
 
 
 @dataclass(slots=True)
@@ -187,7 +211,7 @@ class TerminalDebugScreen(TerminalDebugSink):
 
     stream: TextIO = field(default_factory=lambda: sys.stdout)
     state: TerminalDebugState = field(default_factory=TerminalDebugState)
-    header_height: int = 5
+    header_height: int = 6
     active: bool = False
     control_enabled: bool = False
     _last_terminal_size: os.terminal_size = field(
@@ -393,6 +417,50 @@ class TerminalDebugScreen(TerminalDebugSink):
         self.state.ring_write_head_seconds = write_head_seconds
         self.render()
 
+    def update_tts_status(
+        self,
+        *,
+        backend: str | None = None,
+        phase: str | None = None,
+        voice: str | None = None,
+        style: str | None = None,
+        speaker: str | None = None,
+        queue_depth: int | None = None,
+        preview: str | None = None,
+    ) -> None:
+        now = datetime.now(UTC)
+        if backend is not None:
+            self.state.tts_backend = backend
+        if voice is not None:
+            self.state.tts_voice = voice
+        if style is not None:
+            self.state.tts_style = style
+        if speaker is not None:
+            self.state.tts_speaker = speaker
+        if queue_depth is not None:
+            self.state.tts_queue_depth = max(0, queue_depth)
+        if preview is not None:
+            self.state.tts_preview = preview
+        if phase is not None and phase != self.state.tts_phase:
+            previous_phase = self.state.tts_phase
+            if previous_phase == "synth" and self.state.tts_synth_started_at is not None:
+                elapsed = max(0.0, (now - self.state.tts_synth_started_at).total_seconds())
+                self.state.tts_last_synth_duration = f"{elapsed:0.2f}s"
+                self.state.tts_synth_started_at = None
+            if previous_phase == "play" and self.state.tts_play_started_at is not None:
+                elapsed = max(0.0, (now - self.state.tts_play_started_at).total_seconds())
+                self.state.tts_last_play_duration = f"{elapsed:0.2f}s"
+                self.state.tts_play_started_at = None
+
+            if phase == "synth":
+                self.state.tts_synth_started_at = now
+                self.state.tts_last_synth_duration = None
+            if phase == "play":
+                self.state.tts_play_started_at = now
+                self.state.tts_last_play_duration = None
+            self.state.tts_phase = phase
+        self.render()
+
     def emit_log(self, styled_text: str, *, plain_text: str, end: str, flush: bool) -> None:
         """Write a scrolling log message while preserving the sticky header."""
 
@@ -452,13 +520,14 @@ class TerminalDebugScreen(TerminalDebugSink):
         rows = max(self._last_terminal_size.lines, self.header_height + 2)
         self.stream.write(f"\033[{self.header_height + 1};{rows}r")
 
-    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str, str]:
+    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str, str, str]:
         status_row = self._status_row(width)
         audio_row = self._audio_row(width)
         ring_row = self._ring_row(width)
         ai_row = self._ai_row(width)
+        tts_row = self._tts_row(width)
         transcript_row = self._transcript_row(width)
-        return (status_row, audio_row, ring_row, ai_row, transcript_row)
+        return (status_row, audio_row, ring_row, ai_row, tts_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
         current_time = datetime.now().strftime("%H:%M:%S")
@@ -559,7 +628,58 @@ class TerminalDebugScreen(TerminalDebugSink):
         ]
         return self._pad_row("  ".join(parts), width)
 
+    def _tts_row(self, width: int) -> str:
+        backend = self.state.tts_backend or "--"
+        phase = self.state.tts_phase
+        voice = self.state.tts_voice or "--"
+        style = self.state.tts_style or "neutral"
+        speaker = self.state.tts_speaker or "--"
+        queue_depth = str(self.state.tts_queue_depth)
+        preview = self.state.tts_preview or "no speech queued"
+        phase_style = {
+            "idle": self.subtle_value,
+            "queued": self.warning_value,
+            "synth": self.whisper,
+            "play": self.success_value,
+            "interrupted": self.warning_value,
+            "failed": self.error,
+        }.get(phase, self.value)
+        synth_duration = self._tts_duration(
+            phase == "synth",
+            self.state.tts_synth_started_at,
+            self.state.tts_last_synth_duration,
+        )
+        play_duration = self._tts_duration(
+            phase == "play",
+            self.state.tts_play_started_at,
+            self.state.tts_last_play_duration,
+        )
+        parts = [
+            self.label("[TTS]"),
+            self.badge("backend", backend, value_style=self.value),
+            f"{self.label('[phase')} {phase_style(phase)}{self.label(']')}",
+            self.badge("queue", queue_depth, value_style=self.value),
+            self.badge("synth-t", synth_duration, value_style=self.value),
+            self.badge("play-t", play_duration, value_style=self.value),
+            f"{self.label('voice')} {self.route_value(self._clip_plain(voice, 24))}",
+            f"{self.label('style')} {self.value(style)}",
+            f"{self.label('spk')} {self.value(self._clip_plain(speaker, 12))}",
+            f"{self.label('say')} {self.transcript(self._clip_plain(preview, 26))}",
+        ]
+        return self._pad_row("  ".join(parts), width)
+
     def _ai_duration(
+        self,
+        active: bool,
+        started_at: datetime | None,
+        last_duration: str | None,
+    ) -> str:
+        if active and started_at is not None:
+            elapsed = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+            return f"{elapsed:0.2f}s"
+        return last_duration or "--"
+
+    def _tts_duration(
         self,
         active: bool,
         started_at: datetime | None,

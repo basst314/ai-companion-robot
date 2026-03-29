@@ -94,8 +94,10 @@ Input:
 - language
 
 Processing:
-- current milestone: mock/local debug acknowledgement
-- next real provider: Piper
+- queued local speech playback
+- Piper HTTP synthesis with language-aware voice selection
+- queue/interrupt/replace handling for robot speech
+- playback lifecycle events for animation and embodiment timing
 
 Output:
 - audio playback

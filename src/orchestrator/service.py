@@ -30,11 +30,13 @@ from shared.models import (
     EmotionState,
     InteractionContext,
     InteractionRecord,
+    Language,
     PlanStep,
     PlanStepResult,
     QueryResult,
     RobotStateSnapshot,
     RouteKind,
+    SpeechRequest,
     StepPhase,
     Transcript,
     TurnPlan,
@@ -85,6 +87,8 @@ class OrchestratorService:
             await self.stt.shutdown()
         elif self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
+        if hasattr(self.tts, "shutdown"):
+            await self.tts.shutdown()
         if self.terminal_debug is not None:
             self.terminal_debug.close()
             configure_terminal_debug_screen(None)
@@ -421,6 +425,7 @@ class OrchestratorService:
             )
             response = AiResponse(
                 text="I hit a problem, but I am still here and ready for the next turn.",
+                language=transcript.language,
                 emotion=EmotionState.CURIOUS,
                 intent="error_recovery",
             )
@@ -804,6 +809,7 @@ class OrchestratorService:
             )
             return AiResponse(
                 text="My cloud brain is unavailable, so I am falling back to a simple local reply.",
+                language=transcript.language,
                 emotion=EmotionState.CURIOUS,
                 intent="cloud_fallback",
             )
@@ -877,29 +883,20 @@ class OrchestratorService:
         *,
         preview_text: str | None = None,
         record_events: bool = True,
+        language: Language | None = None,
     ) -> None:
+        del record_events
         await self._set_lifecycle(
             LifecycleStage.SPEAKING,
             EmotionState.SPEAKING,
             preview_text or text,
         )
-        if record_events:
-            await self.handle_event(
-                Event(
-                    name=EventName.TTS_STARTED,
-                    source=ComponentName.TTS,
-                    payload={"text": text},
-                )
+        await self.tts.speak(
+            SpeechRequest(
+                text=text,
+                language=language or self.state.active_language,
             )
-        await self.tts.speak(text)
-        if record_events:
-            await self.handle_event(
-                Event(
-                    name=EventName.TTS_FINISHED,
-                    source=ComponentName.TTS,
-                    payload={"text": text},
-                )
-            )
+        )
 
     def _derive_response_from_results(self, results: list[PlanStepResult]) -> AiResponse:
         for result in reversed(results):
@@ -908,24 +905,28 @@ class OrchestratorService:
             if result.capability_id in {"look_at_user", "turn_head"}:
                 return AiResponse(
                     text=result.message,
+                    language=self.state.active_language,
                     emotion=EmotionState.HAPPY,
                     intent=result.capability_id,
                 )
             if result.capability_id == "set_emotion":
                 return AiResponse(
                     text=result.message,
+                    language=self.state.active_language,
                     emotion=self.state.emotion,
                     intent=result.capability_id,
                     should_speak=False,
                 )
             return AiResponse(
                 text=result.message,
+                language=self.state.active_language,
                 emotion=EmotionState.CURIOUS,
                 intent=result.capability_id,
             )
 
         return AiResponse(
             text="I am ready for the next turn.",
+            language=self.state.active_language,
             emotion=EmotionState.NEUTRAL,
             intent="noop",
             should_speak=False,
@@ -941,12 +942,14 @@ class OrchestratorService:
         step_results: tuple[PlanStepResult, ...],
     ) -> None:
         display_text = response.display_text or response.text
+        response_language = response.language or transcript.language
+        self.state.active_language = response_language
         await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
         await self.ui.show_text(display_text)
 
         if response.should_speak:
             try:
-                await self._speak_text(response.text, preview_text=display_text)
+                await self._speak_text(response.text, preview_text=display_text, language=response_language)
             except Exception as exc:
                 logger.exception("tts failed")
                 self.state.last_error = str(exc)
@@ -962,7 +965,7 @@ class OrchestratorService:
             InteractionRecord(
                 user_text=transcript.text,
                 assistant_text=response.text,
-                language=transcript.language,
+                language=response_language,
                 timestamp=datetime.now(UTC),
                 route_kind=route_kind,
                 user_id=self.state.active_user_id,

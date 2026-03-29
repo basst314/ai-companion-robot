@@ -31,7 +31,7 @@ from stt.service import (
     WakeWordService,
     WhisperCppSttService,
 )
-from tts.service import MockTtsService
+from tts.service import MockTtsService, TtsService, build_piper_tts_service
 from ui.service import MockUiService
 from vision.service import MockVisionService
 
@@ -55,16 +55,18 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
             for name in app_config.mocks.visible_people
         ]
     )
+    event_bus = EventBus()
     terminal_debug = TerminalDebugScreen() if app_config.runtime.interactive_console else None
     stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
     cloud_response = _build_cloud_services(app_config)
-    return OrchestratorService(
+    tts = _build_tts_service(app_config, terminal_debug=terminal_debug)
+    service = OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
         turn_director=LocalTurnDirector(),
         capability_registry=capability_registry,
         reactive_policy=ReactivePolicyEngine(),
-        event_bus=EventBus(),
+        event_bus=event_bus,
         memory=memory,
         vision=vision,
         ui=MockUiService(
@@ -75,9 +77,12 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         cloud_response=cloud_response,
         stt=stt,
         wake_word=wake_word,
-        tts=MockTtsService(),
+        tts=tts,
         terminal_debug=terminal_debug,
     )
+    if hasattr(tts, "bind_event_handler"):
+        tts.bind_event_handler(service.handle_event)
+    return service
 
 
 def _build_cloud_services(app_config: AppConfig):
@@ -98,6 +103,22 @@ def _build_cloud_services(app_config: AppConfig):
         max_output_tokens=app_config.cloud.openai_reply_max_output_tokens,
         wake_word_phrase=app_config.runtime.wake_word_phrase,
     )
+
+
+def _build_tts_service(
+    app_config: AppConfig,
+    *,
+    terminal_debug: TerminalDebugScreen | None = None,
+) -> TtsService:
+    if app_config.tts.backend == "mock":
+        return MockTtsService(terminal_debug=terminal_debug)
+    if app_config.tts.backend == "piper":
+        return build_piper_tts_service(
+            app_config.tts,
+            audio_output_dir=_resolve_runtime_path(app_config.paths.data_dir / "audio" / "tts"),
+            terminal_debug=terminal_debug,
+        )
+    raise RuntimeError("cloud TTS is not implemented yet")
 
 
 def _build_speech_services(

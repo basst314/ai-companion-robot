@@ -315,7 +315,10 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     assert service.state.head_direction == "user"
     assert service.state.current_response == "I am looking at you now."
     assert service.tts.spoken_texts == ["I am looking at you now."]
-    assert [event.name for event in service.event_history][-1] == EventName.TTS_FINISHED
+    event_names = [event.name for event in service.event_history]
+    assert EventName.TTS_PLAYBACK_STARTED in event_names
+    assert EventName.TTS_PLAYBACK_FINISHED in event_names
+    assert event_names[-1] == EventName.AUDIO_FINISHED
 
 
 def test_turn_director_chooses_local_cloud_and_hybrid_paths() -> None:

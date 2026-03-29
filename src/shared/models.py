@@ -71,6 +71,37 @@ class StepPhase(StrEnum):
     CLEANUP = "cleanup"
 
 
+class SpeechStyle(StrEnum):
+    """High-level voice style hints passed into the TTS layer."""
+
+    NEUTRAL = "neutral"
+    PLAYFUL = "playful"
+    SERIOUS = "serious"
+    WHISPER = "whisper"
+    SURPRISED = "surprised"
+
+
+class SpeechQueuePolicy(StrEnum):
+    """Queue handling strategies for speech playback requests."""
+
+    APPEND = "append"
+    INTERRUPT_AND_REPLACE = "interrupt_and_replace"
+    REPLACE_PENDING = "replace_pending"
+    DROP_IF_BUSY = "drop_if_busy"
+
+
+class SpeechJobStatus(StrEnum):
+    """Lifecycle states for a queued speech job."""
+
+    QUEUED = "queued"
+    SYNTHESIS_STARTED = "synthesis_started"
+    SYNTHESIS_FINISHED = "synthesis_finished"
+    PLAYBACK_STARTED = "playback_started"
+    PLAYBACK_FINISHED = "playback_finished"
+    INTERRUPTED = "interrupted"
+    FAILED = "failed"
+
+
 @dataclass(slots=True, frozen=True)
 class UserIdentity:
     """Basic user identity placeholder for future memory integration."""
@@ -171,10 +202,50 @@ class AiResponse:
     """Structured AI response used by local and cloud generators."""
 
     text: str
+    language: Language | None = None
     emotion: EmotionState = EmotionState.NEUTRAL
     intent: str | None = None
     should_speak: bool = True
     display_text: str | None = None
+    speech_style_hint: SpeechStyle | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SpeechRequest:
+    """Typed request submitted to the TTS queue."""
+
+    text: str
+    language: Language
+    policy: SpeechQueuePolicy = SpeechQueuePolicy.APPEND
+    style_hint: SpeechStyle = SpeechStyle.NEUTRAL
+    voice_id: str | None = None
+    speaker_id: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SpeechJob:
+    """Public handle returned when speech is queued."""
+
+    job_id: str
+    text: str
+    language: Language
+    provider_name: str
+    status: SpeechJobStatus = SpeechJobStatus.QUEUED
+    style_hint: SpeechStyle = SpeechStyle.NEUTRAL
+    voice_id: str | None = None
+    speaker_id: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SynthesizedAudio:
+    """Normalized synthesized speech audio ready for playback."""
+
+    audio_bytes: bytes
+    mime_type: str = "audio/wav"
+    sample_rate_hz: int | None = None
+    voice_id: str | None = None
+    speaker_id: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -184,6 +255,13 @@ class SpeechOutput:
     text: str
     acknowledged: bool
     duration_ms: int | None = None
+    error_message: str | None = None
+    job_id: str | None = None
+    provider_name: str | None = None
+    voice_id: str | None = None
+    speaker_id: int | None = None
+    language: Language | None = None
+    status: SpeechJobStatus | None = None
 
 
 @dataclass(slots=True, frozen=True)

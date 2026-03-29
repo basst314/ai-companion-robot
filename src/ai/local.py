@@ -33,6 +33,7 @@ class MockLocalAiService:
             text=(
                 f"Local brain online. I heard '{transcript.text}' and I know you as {active_user}."
             ),
+            language=transcript.language,
             emotion=EmotionState.CURIOUS,
             intent="local_reasoning",
         )

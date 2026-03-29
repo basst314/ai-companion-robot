@@ -78,10 +78,19 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         wake_window_seconds=1.5,
         utterance_start_seconds=0.8,
     )
+    screen.update_tts_status(
+        backend="piper",
+        phase="play",
+        voice="en_US-hfc_female-medium",
+        style="neutral",
+        speaker="--",
+        queue_depth=1,
+        preview="I am looking at you now.",
+    )
 
     rows = screen.snapshot_rows(width=160)
 
-    assert len(rows) == 5
+    assert len(rows) == 6
     assert "[DBG]" in rows[0]
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
@@ -101,8 +110,13 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[reply-t" in rows[3]
     assert "look_at_user -> cloud_reply" in rows[3]
     assert "say" in rows[3]
-    assert "[TXT en/live]" in rows[4]
-    assert "open your eyes please" in rows[4]
+    assert "[TTS]" in rows[4]
+    assert "[backend piper]" in rows[4]
+    assert "[phase play]" in rows[4]
+    assert "[queue 1]" in rows[4]
+    assert "en_US-hfc_female-medium" in rows[4]
+    assert "[TXT en/live]" in rows[5]
+    assert "open your eyes please" in rows[5]
 
 
 def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
@@ -115,10 +129,10 @@ def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
 
     rows = screen.snapshot_rows(width=36)
 
-    assert len(rows[4]) == 36
-    assert rows[4].startswith("[TXT en/live]")
-    assert "..." in rows[4]
-    assert "narrow terminals" in rows[4]
+    assert len(rows[5]) == 36
+    assert rows[5].startswith("[TXT en/live]")
+    assert "..." in rows[5]
+    assert "narrow terminals" in rows[5]
 
 
 def test_terminal_debug_screen_shows_ai_phase_durations() -> None:

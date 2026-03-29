@@ -8,12 +8,17 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PLATFORM=""
 MODEL=""
 LANGUAGE_MODE=""
+TTS_BACKEND=""
+TTS_LANGUAGES=""
+TTS_SERVICE_MODE=""
+TTS_EXPRESSIVE_DE=0
 ASSUME_YES=0
 FORCE=0
 SKIP_SYSTEM_PACKAGES=0
 
 WHISPER_REPO_DIR="${REPO_DIR}/artifacts/whisper.cpp"
 WHISPER_REPO_URL="https://github.com/ggml-org/whisper.cpp.git"
+PIPER_VOICE_DIR="${REPO_DIR}/artifacts/piper-voices"
 ENV_FILE="${REPO_DIR}/.env.local"
 DEFAULT_RECORD_SECONDS=5
 
@@ -29,6 +34,11 @@ Options:
                                Whisper model to download
   --language-mode <auto|en|de|id>
                                Default runtime language mode
+  --tts-backend <mock|piper>   Select local TTS backend
+  --tts-languages <en,de,id>   Comma-separated Piper voice languages to provision
+  --tts-service-mode <managed|external>
+                               Piper runtime mode for generated config
+  --tts-expressive-de          Also download the expressive German Piper pack
   --yes                        Run non-interactively with defaults
   --force                      Rebuild/rewrite generated artifacts when possible
   --skip-system-packages       Skip apt/brew dependency installation
@@ -90,6 +100,22 @@ parse_args() {
       --language-mode)
         LANGUAGE_MODE="${2:-}"
         shift 2
+        ;;
+      --tts-backend)
+        TTS_BACKEND="${2:-}"
+        shift 2
+        ;;
+      --tts-languages)
+        TTS_LANGUAGES="${2:-}"
+        shift 2
+        ;;
+      --tts-service-mode)
+        TTS_SERVICE_MODE="${2:-}"
+        shift 2
+        ;;
+      --tts-expressive-de)
+        TTS_EXPRESSIVE_DE=1
+        shift
         ;;
       --yes)
         ASSUME_YES=1
@@ -249,6 +275,64 @@ choose_custom_wake_model() {
   printf '%s' "$(prompt_with_default "OpenWakeWord model name or path" "/absolute/path/to/custom_model.tflite")"
 }
 
+choose_tts_backend() {
+  if [[ -n "${TTS_BACKEND}" ]]; then
+    printf '%s' "${TTS_BACKEND}"
+    return 0
+  fi
+
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    printf '%s' "mock"
+    return 0
+  fi
+
+  if confirm "Enable local Piper TTS?"; then
+    printf '%s' "piper"
+    return 0
+  fi
+
+  printf '%s' "mock"
+}
+
+choose_tts_languages() {
+  local default_languages="en,de,id"
+  if [[ -n "${TTS_LANGUAGES}" ]]; then
+    printf '%s' "${TTS_LANGUAGES}"
+    return 0
+  fi
+
+  printf '%s' "$(prompt_with_default "Piper voice languages (comma-separated: en,de,id)" "${default_languages}")"
+}
+
+choose_tts_service_mode() {
+  local default_mode="managed"
+  if [[ -n "${TTS_SERVICE_MODE}" ]]; then
+    printf '%s' "${TTS_SERVICE_MODE}"
+    return 0
+  fi
+
+  printf '%s' "$(prompt_with_default "Piper service mode (managed, external)" "${default_mode}")"
+}
+
+choose_tts_expressive_de() {
+  if [[ "${TTS_EXPRESSIVE_DE}" -eq 1 ]]; then
+    printf '%s' "true"
+    return 0
+  fi
+
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    printf '%s' "false"
+    return 0
+  fi
+
+  if confirm "Also provision the expressive German Piper voice pack?"; then
+    printf '%s' "true"
+    return 0
+  fi
+
+  printf '%s' "false"
+}
+
 choose_cloud_ai_mode() {
   if [[ "${ASSUME_YES}" -eq 1 ]]; then
     printf '%s' "mock"
@@ -277,6 +361,7 @@ choose_openai_api_key() {
 
 create_virtualenv() {
   local python_cmd="$1"
+  local tts_backend="$2"
   local recreate_venv=0
   if [[ -x "${REPO_DIR}/.venv/bin/python" ]] && [[ "${FORCE}" -eq 0 ]]; then
     local existing_version
@@ -309,6 +394,10 @@ EOF
 
   log "installing Python package dependencies"
   "${REPO_DIR}/.venv/bin/python" -m pip install --upgrade pip
+  if [[ "${tts_backend}" == "piper" ]]; then
+    "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts]"
+    return 0
+  fi
   "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev]"
 }
 
@@ -467,6 +556,82 @@ download_model() {
   )
 }
 
+download_piper_voice() {
+  local voice_name="$1"
+  mkdir -p "${PIPER_VOICE_DIR}"
+  log "downloading Piper voice ${voice_name}"
+  if ! "${REPO_DIR}/.venv/bin/python" -m piper.download_voices "${voice_name}" --data-dir "${PIPER_VOICE_DIR}"; then
+    log "retrying Piper voice download for ${voice_name} from ${PIPER_VOICE_DIR}"
+    (
+      cd "${PIPER_VOICE_DIR}"
+      "${REPO_DIR}/.venv/bin/python" -m piper.download_voices "${voice_name}"
+    )
+  fi
+}
+
+provision_piper_voices() {
+  local selected_languages="$1"
+  local expressive_de_enabled="$2"
+  IFS=',' read -r -a languages <<< "${selected_languages}"
+  for language_code in "${languages[@]}"; do
+    case "$(printf '%s' "${language_code}" | tr '[:upper:]' '[:lower:]' | xargs)" in
+      en)
+        download_piper_voice "en_US-hfc_female-medium"
+        ;;
+      de)
+        download_piper_voice "de_DE-thorsten-medium"
+        ;;
+      id)
+        download_piper_voice "id_ID-news_tts-medium"
+        ;;
+      "")
+        ;;
+      *)
+        fail "unsupported Piper voice language '${language_code}'"
+        ;;
+    esac
+  done
+
+  if [[ "${expressive_de_enabled}" == "true" ]]; then
+    download_piper_voice "de_DE-thorsten_emotional-medium"
+  fi
+}
+
+verify_piper_setup() {
+  local service_mode="$1"
+  if [[ "${service_mode}" != "managed" ]]; then
+    log "skipping Piper startup verification for external service mode"
+    return 0
+  fi
+
+  local log_file="${REPO_DIR}/logs/piper-setup.log"
+  mkdir -p "$(dirname "${log_file}")"
+  log "verifying Piper startup and installed voices"
+  "${REPO_DIR}/.venv/bin/python" -m piper.http_server \
+    -m "en_US-hfc_female-medium" \
+    --host "127.0.0.1" \
+    --port "5001" \
+    --data-dir "${PIPER_VOICE_DIR}" \
+    >"${log_file}" 2>&1 &
+  local server_pid=$!
+
+  local healthy=0
+  for _attempt in $(seq 1 40); do
+    if curl -fsS "http://127.0.0.1:5001/voices" >/dev/null 2>&1; then
+      healthy=1
+      break
+    fi
+    sleep 0.25
+  done
+
+  kill "${server_pid}" >/dev/null 2>&1 || true
+  wait "${server_pid}" >/dev/null 2>&1 || true
+
+  if [[ "${healthy}" -ne 1 ]]; then
+    fail "Piper verification failed; see ${log_file}"
+  fi
+}
+
 write_env_file() {
   local selected_model="$1"
   local selected_language_mode="$2"
@@ -475,14 +640,21 @@ write_env_file() {
   local wake_model="$5"
   local cloud_ai_mode="$6"
   local openai_api_key="$7"
+  local tts_backend="$8"
+  local tts_languages="$9"
+  local tts_service_mode="${10}"
+  local tts_expressive_de="${11}"
   local whisper_binary="${WHISPER_REPO_DIR}/build/bin/whisper-cli"
   local whisper_model="${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin"
   local audio_command
+  local playback_command
 
   if [[ "${PLATFORM}" == "macos" ]]; then
     audio_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
+    playback_command="afplay {input_path}"
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
+    playback_command='aplay {input_path}'
   fi
 
   if [[ -f "${ENV_FILE}" ]] && [[ "${FORCE}" -eq 0 ]] && ! confirm "Overwrite existing ${ENV_FILE}?"; then
@@ -505,6 +677,22 @@ AI_COMPANION_OPENAI_BASE_URL=https://api.openai.com/v1/responses
 AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-5.2
 AI_COMPANION_OPENAI_TIMEOUT_SECONDS=20
 AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=120
+AI_COMPANION_USE_MOCK_TTS=$([[ "${tts_backend}" == "mock" ]] && printf '%s' "true" || printf '%s' "false")
+AI_COMPANION_TTS_BACKEND=${tts_backend}
+AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001
+AI_COMPANION_TTS_PIPER_SERVICE_MODE=${tts_service_mode}
+AI_COMPANION_TTS_PIPER_DATA_DIR=${PIPER_VOICE_DIR}
+AI_COMPANION_TTS_PIPER_COMMAND=
+AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium
+AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium
+AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium
+AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE=de_DE-thorsten_emotional-medium
+AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=${tts_expressive_de}
+AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=${playback_command}
+AI_COMPANION_TTS_QUEUE_MAX=4
+AI_COMPANION_TTS_SAVE_ARTIFACTS=false
+AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=20
+AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=60
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
@@ -523,6 +711,7 @@ AI_COMPANION_WAKE_LOOKBACK_SECONDS=0.5
 AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.25
 AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=1
 AI_COMPANION_LANGUAGE_MODE=${selected_language_mode}
+# Provisioned Piper voice languages: ${tts_languages}
 EOF
 }
 
@@ -553,6 +742,26 @@ main() {
     auto|en|de|id) ;;
     *) fail "unsupported language mode '${selected_language_mode}'" ;;
   esac
+
+  local selected_tts_backend
+  selected_tts_backend="$(choose_tts_backend)"
+  case "${selected_tts_backend}" in
+    mock|piper) ;;
+    *) fail "unsupported TTS backend '${selected_tts_backend}'" ;;
+  esac
+
+  local selected_tts_languages="en,de,id"
+  local selected_tts_service_mode="managed"
+  local selected_tts_expressive_de="false"
+  if [[ "${selected_tts_backend}" == "piper" ]]; then
+    selected_tts_languages="$(choose_tts_languages)"
+    selected_tts_service_mode="$(choose_tts_service_mode)"
+    selected_tts_expressive_de="$(choose_tts_expressive_de)"
+    case "${selected_tts_service_mode}" in
+      managed|external) ;;
+      *) fail "unsupported Piper service mode '${selected_tts_service_mode}'" ;;
+    esac
+  fi
 
   local wake_setup
   wake_setup="$(choose_wake_setup)"
@@ -594,7 +803,7 @@ main() {
   python_cmd="$(select_python)"
   log "using Python interpreter: ${python_cmd}"
 
-  create_virtualenv "${python_cmd}"
+  create_virtualenv "${python_cmd}" "${selected_tts_backend}"
   if [[ "${wake_setup}" != "off" ]]; then
     log "resolving OpenWakeWord model '${wake_model}'"
     local resolved_wake
@@ -605,6 +814,10 @@ main() {
   prepare_whisper_repo
   build_whisper
   download_model "${selected_model}"
+  if [[ "${selected_tts_backend}" == "piper" ]]; then
+    provision_piper_voices "${selected_tts_languages}" "${selected_tts_expressive_de}"
+    verify_piper_setup "${selected_tts_service_mode}"
+  fi
   write_env_file \
     "${selected_model}" \
     "${selected_language_mode}" \
@@ -612,7 +825,11 @@ main() {
     "${wake_phrase}" \
     "${wake_model}" \
     "${cloud_ai_mode}" \
-    "${openai_api_key}"
+    "${openai_api_key}" \
+    "${selected_tts_backend}" \
+    "${selected_tts_languages}" \
+    "${selected_tts_service_mode}" \
+    "${selected_tts_expressive_de}"
   run_verification
 
   cat <<EOF
@@ -622,11 +839,12 @@ Setup complete.
 Generated config: ${ENV_FILE}
 Whisper binary: ${WHISPER_REPO_DIR}/build/bin/whisper-cli
 Whisper model: ${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin
+TTS backend: ${selected_tts_backend}
 
 Next steps:
   1. Run the app with: .venv/bin/python src/main.py
   2. In interactive speech mode, press Enter to start speaking, type a phrase directly, or use the configured wake word
-  3. Edit ${ENV_FILE} if you want to adjust model, language mode, VAD endpoint timing, wake-word settings, recorder settings, or add an OpenAI API key later
+  3. Edit ${ENV_FILE} if you want to adjust model, language mode, VAD endpoint timing, wake-word settings, TTS voices/settings, recorder settings, or add an OpenAI API key later
 EOF
 }
 

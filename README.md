@@ -30,7 +30,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Audio input (microphone)
 - Speech-to-text (Whisper / whisper.cpp)
-- Text-to-speech (local, Piper later)
+- Text-to-speech (mock or local Piper)
 - Camera processing (face detection)
 - Display rendering (eyes and expressions)
 - Hybrid orchestrator and capability executor
@@ -70,7 +70,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 ## Software Stack
 
 - STT: whisper.cpp (local)
-- TTS: local output pipeline, with Piper planned as the first real provider
+- TTS: local output pipeline with mock and Piper-backed implementations
 - AI reply/tool-calling: OpenAI Responses API for the first real cloud backend
 - Vision: OpenCV (initial)
 - Orchestrator: Python service running on the Pi
@@ -92,11 +92,13 @@ The script:
 - installs system dependencies with `brew` or `apt`
 - creates `.venv`
 - installs Python project dependencies
+- optionally installs the Piper HTTP TTS runtime
 - resolves the OpenWakeWord runtime for the current platform
 - downloads and validates the selected OpenWakeWord runtime models when wake-word mode is enabled
 - clones and builds `whisper.cpp`
 - downloads a default Whisper model
-- generates `.env.local` with the local STT runtime settings
+- optionally downloads Piper voice packs for English/German/Indonesian
+- generates `.env.local` with the local STT/TTS runtime settings
 - runs the test suite
 
 After setup finishes:
@@ -119,6 +121,10 @@ Supported flags:
 - `--platform <macos|rpi>`
 - `--model <tiny|base|small>`
 - `--language-mode <auto|en|de|id>`
+- `--tts-backend <mock|piper>`
+- `--tts-languages <en,de,id>`
+- `--tts-service-mode <managed|external>`
+- `--tts-expressive-de`
 - `--yes`
 - `--force`
 - `--skip-system-packages`
@@ -142,6 +148,21 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_OPENAI_RESPONSE_MODEL`
 - `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
 - `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
+- `AI_COMPANION_TTS_BACKEND`
+- `AI_COMPANION_TTS_PIPER_BASE_URL`
+- `AI_COMPANION_TTS_PIPER_SERVICE_MODE`
+- `AI_COMPANION_TTS_PIPER_DATA_DIR`
+- `AI_COMPANION_TTS_PIPER_COMMAND`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_EN`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_DE`
+- `AI_COMPANION_TTS_DEFAULT_VOICE_ID`
+- `AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE`
+- `AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED`
+- `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_TTS_QUEUE_MAX`
+- `AI_COMPANION_TTS_SAVE_ARTIFACTS`
+- `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
+- `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -151,6 +172,7 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_VAD_FRAME_MS`
 - `AI_COMPANION_VAD_START_TRIGGER_FRAMES`
 - `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
+- `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`

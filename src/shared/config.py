@@ -65,6 +65,27 @@ class RuntimeConfig:
 
 
 @dataclass(slots=True)
+class TtsConfig:
+    """Text-to-speech provider and playback configuration."""
+
+    backend: Literal["mock", "piper", "cloud"] = "mock"
+    piper_base_url: str = "http://127.0.0.1:5001"
+    piper_service_mode: Literal["managed", "external"] = "managed"
+    piper_data_dir: Path = Path("artifacts/piper-voices")
+    piper_command: tuple[str, ...] = ()
+    audio_play_command: tuple[str, ...] = ()
+    default_voice_en: str = "en_US-hfc_female-medium"
+    default_voice_de: str = "de_DE-thorsten-medium"
+    default_voice_id: str = "id_ID-news_tts-medium"
+    expressive_de_voice: str = "de_DE-thorsten_emotional-medium"
+    expressive_de_enabled: bool = False
+    queue_max: int = 4
+    save_artifacts: bool = False
+    synthesis_timeout_seconds: float = 20.0
+    playback_timeout_seconds: float = 60.0
+
+
+@dataclass(slots=True)
 class MockDataConfig:
     """Deterministic mock data used during development and testing."""
 
@@ -82,6 +103,7 @@ class AppConfig:
     paths: PathConfig = field(default_factory=PathConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    tts: TtsConfig = field(default_factory=TtsConfig)
     mocks: MockDataConfig = field(default_factory=MockDataConfig)
 
 
@@ -241,8 +263,58 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}USE_MOCK_HARDWARE"),
         default=runtime.use_mock_hardware,
     )
+    tts = config.tts
+    tts.backend = _parse_tts_backend(
+        env.get(f"{ENV_PREFIX}TTS_BACKEND"),
+        default="mock" if runtime.use_mock_tts else tts.backend,
+    )
+    tts.piper_base_url = env.get(f"{ENV_PREFIX}TTS_PIPER_BASE_URL", tts.piper_base_url).strip() or tts.piper_base_url
+    tts.piper_service_mode = _parse_piper_service_mode(
+        env.get(f"{ENV_PREFIX}TTS_PIPER_SERVICE_MODE"),
+        default=tts.piper_service_mode,
+    )
+    tts.piper_data_dir = _parse_path(
+        env.get(f"{ENV_PREFIX}TTS_PIPER_DATA_DIR"),
+        default=tts.piper_data_dir,
+    )
+    tts.piper_command = _parse_command(
+        env.get(f"{ENV_PREFIX}TTS_PIPER_COMMAND"),
+        default=tts.piper_command,
+    )
+    tts.audio_play_command = _parse_command(
+        env.get(f"{ENV_PREFIX}TTS_AUDIO_PLAY_COMMAND"),
+        default=tts.audio_play_command,
+    )
+    tts.default_voice_en = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_EN", tts.default_voice_en).strip()
+    tts.default_voice_de = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_DE", tts.default_voice_de).strip()
+    tts.default_voice_id = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_ID", tts.default_voice_id).strip()
+    tts.expressive_de_voice = env.get(
+        f"{ENV_PREFIX}TTS_EXPRESSIVE_DE_VOICE",
+        tts.expressive_de_voice,
+    ).strip()
+    tts.expressive_de_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}TTS_EXPRESSIVE_DE_ENABLED"),
+        default=tts.expressive_de_enabled,
+    )
+    tts.queue_max = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_QUEUE_MAX"),
+        default=tts.queue_max,
+    )
+    tts.save_artifacts = _parse_bool(
+        env.get(f"{ENV_PREFIX}TTS_SAVE_ARTIFACTS"),
+        default=tts.save_artifacts,
+    )
+    tts.synthesis_timeout_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}TTS_SYNTHESIS_TIMEOUT_SECONDS"),
+        default=tts.synthesis_timeout_seconds,
+    )
+    tts.playback_timeout_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}TTS_PLAYBACK_TIMEOUT_SECONDS"),
+        default=tts.playback_timeout_seconds,
+    )
     _validate_runtime_config(runtime)
     _validate_cloud_config(config.cloud, runtime=runtime)
+    _validate_tts_config(tts)
 
     return config
 
@@ -273,6 +345,28 @@ def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> Non
         raise ValueError("AI_COMPANION_OPENAI_TIMEOUT_SECONDS must be greater than zero")
     if cloud.openai_reply_max_output_tokens <= 0:
         raise ValueError("AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS must be greater than zero")
+
+
+def _validate_tts_config(tts: TtsConfig) -> None:
+    """Reject obviously incomplete real TTS configuration."""
+
+    if tts.backend == "mock":
+        return
+    if tts.queue_max <= 0:
+        raise ValueError("AI_COMPANION_TTS_QUEUE_MAX must be greater than zero")
+    if tts.synthesis_timeout_seconds <= 0:
+        raise ValueError("AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS must be greater than zero")
+    if tts.playback_timeout_seconds <= 0:
+        raise ValueError("AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS must be greater than zero")
+    if tts.backend == "piper":
+        if not tts.piper_base_url.strip():
+            raise ValueError("AI_COMPANION_TTS_PIPER_BASE_URL must be configured for Piper TTS")
+        if not tts.default_voice_en.strip():
+            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_EN must be configured for Piper TTS")
+        if not tts.default_voice_de.strip():
+            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_DE must be configured for Piper TTS")
+        if not tts.default_voice_id.strip():
+            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_ID must be configured for Piper TTS")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:
@@ -388,6 +482,24 @@ def _parse_language_mode(
     default: Literal["auto", "en", "de", "id"],
 ) -> Literal["auto", "en", "de", "id"]:
     if value in {"auto", "en", "de", "id"}:
+        return value
+    return default
+
+
+def _parse_tts_backend(
+    value: str | None,
+    default: Literal["mock", "piper", "cloud"],
+) -> Literal["mock", "piper", "cloud"]:
+    if value in {"mock", "piper", "cloud"}:
+        return value
+    return default
+
+
+def _parse_piper_service_mode(
+    value: str | None,
+    default: Literal["managed", "external"],
+) -> Literal["managed", "external"]:
+    if value in {"managed", "external"}:
         return value
     return default
 

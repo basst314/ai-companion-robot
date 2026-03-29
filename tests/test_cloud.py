@@ -167,6 +167,7 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
         response = asyncio.run(service.generate_reply(transcript, _context(), plan, step_results))
 
     assert response.text == "I can see you, and I am looking your way."
+    assert response.language is Language.ENGLISH
     log_text = caplog.text
     assert "[AI] reply request" in log_text
     assert "max_output_tokens=72" in log_text
@@ -221,3 +222,4 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
     )
 
     assert response.text == "I took a look. I can see Basti in front of me."
+    assert response.language is Language.ENGLISH

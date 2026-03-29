@@ -89,6 +89,7 @@ class MockCloudResponseService:
             )
             return AiResponse(
                 text=f"Cloud reply: I took a look. {tool_result.output_text or 'I have the snapshot now.'}",
+                language=transcript.language,
                 emotion=EmotionState.HAPPY,
                 intent="cloud_chat",
             )
@@ -102,12 +103,14 @@ class MockCloudResponseService:
         if observations:
             return AiResponse(
                 text=f"Cloud reply: you said '{transcript.text}'. I already did this: {' '.join(observations)}",
+                language=transcript.language,
                 emotion=EmotionState.HAPPY,
                 intent="cloud_chat",
             )
 
         return AiResponse(
             text=f"Cloud reply: you said '{transcript.text}'. I currently see {visible_people}.",
+            language=transcript.language,
             emotion=EmotionState.HAPPY,
             intent="cloud_chat",
         )
@@ -281,6 +284,7 @@ class OpenAiCloudResponseService:
                 text = _extract_output_text(current_payload)
                 return AiResponse(
                     text=text.strip(),
+                    language=transcript.language,
                     emotion=EmotionState.HAPPY if step_results else EmotionState.CURIOUS,
                     intent="cloud_chat",
                 )
