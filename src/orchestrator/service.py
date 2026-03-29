@@ -87,6 +87,8 @@ class OrchestratorService:
         if self.terminal_debug is not None:
             configure_terminal_debug_screen(self.terminal_debug)
             self.terminal_debug.activate()
+        if self.config.tts.backend != "mock" and hasattr(self.tts, "start"):
+            await self.tts.start()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
 
     async def stop(self) -> None:

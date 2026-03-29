@@ -186,10 +186,57 @@ class BlockingWakeWordService:
         return WakeDetectionResult(detected=False)
 
 
+class StartupSpyTtsService:
+    """Record whether orchestrator startup tries to prewarm TTS."""
+
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.shutdown_calls = 0
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
 def test_main_returns_success_code() -> None:
     """The entry point should construct the hybrid runtime successfully."""
 
     assert main(AppConfig()) == 0
+
+
+def test_orchestrator_start_skips_tts_prewarm_when_tts_is_mock() -> None:
+    config = AppConfig()
+    service = build_application(config)
+    startup_spy = StartupSpyTtsService()
+    service.tts = startup_spy  # type: ignore[assignment]
+
+    async def run() -> None:
+        await service.start()
+        await service.stop()
+
+    asyncio.run(run())
+
+    assert startup_spy.start_calls == 0
+    assert startup_spy.shutdown_calls == 1
+
+
+def test_orchestrator_start_prewarms_tts_when_backend_is_enabled() -> None:
+    config = AppConfig()
+    service = build_application(config)
+    service.config.tts.backend = "piper"
+    startup_spy = StartupSpyTtsService()
+    service.tts = startup_spy  # type: ignore[assignment]
+
+    async def run() -> None:
+        await service.start()
+        await service.stop()
+
+    asyncio.run(run())
+
+    assert startup_spy.start_calls == 1
+    assert startup_spy.shutdown_calls == 1
 
 
 def test_interactive_console_handles_eof_cleanly(monkeypatch) -> None:

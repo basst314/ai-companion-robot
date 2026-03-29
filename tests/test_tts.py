@@ -114,6 +114,18 @@ class _HangingProcess:
         return 0
 
 
+@dataclass(slots=True)
+class _ProcessManagerSpy:
+    ensure_running_calls: int = 0
+    shutdown_calls: int = 0
+
+    async def ensure_running(self) -> None:
+        self.ensure_running_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
 def test_piper_voice_resolver_applies_single_speaker_style_fallback() -> None:
     resolver = PiperVoiceResolver(TtsConfig())
 
@@ -236,6 +248,25 @@ def test_queued_tts_service_marks_queue_overflow_as_failed() -> None:
         assert first.job_id != second.job_id
 
     asyncio.run(run())
+
+
+def test_queued_tts_service_start_prewarms_process_manager() -> None:
+    process_manager = _ProcessManagerSpy()
+    service = QueuedTtsService(
+        synthesizer=MockSpeechSynthesizer(),
+        playback=_ImmediatePlaybackService(),
+        process_manager=process_manager,  # type: ignore[arg-type]
+        queue_max=4,
+    )
+
+    async def run() -> None:
+        await service.start()
+        await service.shutdown()
+
+    asyncio.run(run())
+
+    assert process_manager.ensure_running_calls == 1
+    assert process_manager.shutdown_calls == 1
 
 
 def test_piper_managed_process_shutdown_kills_stuck_process() -> None:

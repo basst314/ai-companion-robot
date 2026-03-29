@@ -42,6 +42,9 @@ EventHandler = Callable[[Event], Awaitable[None]]
 class TtsService(Protocol):
     """Interface for queued robot speech playback."""
 
+    async def start(self) -> None:
+        """Prepare any background dependencies needed before the first speech turn."""
+
     async def enqueue(self, request: SpeechRequest) -> SpeechJob:
         """Queue a request for synthesis/playback and return its job handle."""
 
@@ -527,6 +530,10 @@ class QueuedTtsService:
     def bind_event_handler(self, handler: EventHandler) -> None:
         self._event_handler = handler
 
+    async def start(self) -> None:
+        if self.process_manager is not None:
+            await self.process_manager.ensure_running()
+
     async def enqueue(self, request: SpeechRequest) -> SpeechJob:
         await self._ensure_worker()
         result_future: asyncio.Future[SpeechOutput] = asyncio.get_running_loop().create_future()
@@ -981,6 +988,9 @@ class MockTtsService(TtsService):
 
     def bind_event_handler(self, handler: EventHandler) -> None:
         self._delegate.bind_event_handler(handler)
+
+    async def start(self) -> None:
+        await self._delegate.start()
 
     async def enqueue(self, request: SpeechRequest) -> SpeechJob:
         return await self._delegate.enqueue(request)
