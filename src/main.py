@@ -155,6 +155,7 @@ def _build_speech_services(
             max_recording_seconds=runtime.max_recording_seconds,
             utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
             utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
+            follow_up_listen_timeout_seconds=runtime.follow_up_listen_timeout_seconds,
             ring_debug_wake_window_seconds=runtime.wake_lookback_seconds,
             terminal_debug=terminal_debug,
             shared_live_state=shared_live_state,

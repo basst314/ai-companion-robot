@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ai.cloud import MockCloudResponseService
+from ai.cloud import CloudReplyResult, MockCloudResponseService
 from main import build_application, main
 from orchestrator.capabilities import build_default_capability_registry
 from orchestrator.router import LocalShortcutPlanner, LocalTurnDirector
@@ -90,6 +90,94 @@ class FakeWakeWordService:
         return self.result
 
 
+class ScriptedSpeechLoopSttService:
+    """Return deterministic final transcripts and record explicit utterance triggers."""
+
+    def __init__(self, transcripts: list[str]) -> None:
+        self._transcripts = transcripts
+        self.stream_calls = 0
+        self.begin_triggers: list[str] = []
+
+    def begin_utterance(self, *, trigger: str, detection=None) -> None:  # type: ignore[no-untyped-def]
+        del detection
+        self.begin_triggers.append(trigger)
+
+    async def stream_transcripts(self):  # type: ignore[no-untyped-def]
+        if self.stream_calls >= len(self._transcripts):
+            raise RuntimeError("mock STT has no remaining utterances configured")
+        transcript_text = self._transcripts[self.stream_calls]
+        self.stream_calls += 1
+        yield Transcript(
+            text=transcript_text,
+            language=Language.ENGLISH,
+            confidence=1.0,
+            is_final=True,
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
+        )
+
+
+class SilentReplyCloudService:
+    """Return a valid text response that should not be spoken."""
+
+    async def generate_reply(  # type: ignore[no-untyped-def]
+        self,
+        transcript,
+        context,
+        plan,
+        step_results,
+        *,
+        previous_response_id=None,
+        tool_handler=None,
+    ):
+        del transcript, context, plan, step_results, previous_response_id, tool_handler
+        from shared.models import AiResponse
+
+        return CloudReplyResult(
+            response=AiResponse(
+                text="Quiet response",
+                language=Language.ENGLISH,
+                should_speak=False,
+            )
+        )
+
+
+class CapturingCloudResponseService:
+    """Record previous_response_id usage and return deterministic response ids."""
+
+    def __init__(self, response_ids: list[str], *, fail_on_call: int | None = None) -> None:
+        self.response_ids = response_ids
+        self.fail_on_call = fail_on_call
+        self.previous_response_ids: list[str | None] = []
+        self.calls = 0
+
+    async def generate_reply(  # type: ignore[no-untyped-def]
+        self,
+        transcript,
+        context,
+        plan,
+        step_results,
+        *,
+        previous_response_id=None,
+        tool_handler=None,
+    ):
+        del context, plan, step_results, tool_handler
+        self.calls += 1
+        self.previous_response_ids.append(previous_response_id)
+        if self.fail_on_call == self.calls:
+            raise RuntimeError("captured cloud failure")
+        response_id = self.response_ids[min(self.calls - 1, len(self.response_ids) - 1)]
+        from shared.models import AiResponse
+
+        return CloudReplyResult(
+            response=AiResponse(
+                text=f"Cloud reply: {transcript.text}",
+                language=Language.ENGLISH,
+            ),
+            response_id=response_id,
+        )
+
+
 class BlockingWakeWordService:
     """Never detect a wake phrase within the test timeout."""
 
@@ -145,6 +233,7 @@ def test_interactive_speech_console_shows_incremental_transcript(monkeypatch, ca
     config = AppConfig()
     config.runtime.input_mode = "speech"
     config.runtime.interactive_console = True
+    config.runtime.follow_up_mode_enabled = False
     service = build_application(config)
 
     entries = iter(["", "exit"])
@@ -170,6 +259,7 @@ def test_interactive_speech_console_prioritizes_wake_word_when_input_and_wake_fi
     config = AppConfig()
     config.runtime.input_mode = "speech"
     config.runtime.interactive_console = True
+    config.runtime.follow_up_mode_enabled = False
     service = build_application(config)
     service.stt = StreamingInteractiveSttService()
 
@@ -194,10 +284,41 @@ def test_interactive_speech_console_prioritizes_wake_word_when_input_and_wake_fi
     assert service.wake_word.calls >= 1
 
 
+def test_interactive_speech_console_chains_follow_up_without_second_wake_word(monkeypatch) -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.interactive_console = True
+    config.runtime.follow_up_mode_enabled = True
+    service = build_application(config)
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke", ""])
+
+    class OneShotWakeWordService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def wait_for_wake_word(self) -> WakeDetectionResult:
+            self.calls += 1
+            if self.calls == 1:
+                return WakeDetectionResult(detected=True)
+            await asyncio.sleep(60)
+            return WakeDetectionResult(detected=False)
+
+    service.wake_word = OneShotWakeWordService()
+
+    monkeypatch.setattr("orchestrator.service._read_console_line_ready", lambda _timeout: "exit")
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 2
+    assert service.stt.stream_calls == 3
+    assert service.stt.begin_triggers == ["wake", "follow_up", "follow_up"]
+
+
 def test_enter_started_turn_does_not_strip_mid_sentence_wake_word(monkeypatch) -> None:
     config = AppConfig()
     config.runtime.input_mode = "speech"
     config.runtime.interactive_console = True
+    config.runtime.follow_up_mode_enabled = False
     service = build_application(config)
     service.config.runtime.wake_word_enabled = True
     service.config.runtime.wake_word_phrase = "Hello"
@@ -319,6 +440,122 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     assert EventName.TTS_PLAYBACK_STARTED in event_names
     assert EventName.TTS_PLAYBACK_FINISHED in event_names
     assert event_names[-1] == EventName.AUDIO_FINISHED
+
+
+def test_speech_mode_follow_up_turn_runs_without_second_wake_word() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = True
+    config.runtime.manual_inputs = ("look at me", "tell me a joke")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke"])
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 1
+    assert service.stt.stream_calls == 2
+    assert service.stt.begin_triggers == ["wake", "follow_up"]
+    assert len(service.memory.records) == 2
+    assert service.memory.records[0].user_text == "look at me"
+    assert service.memory.records[1].user_text == "tell me a joke"
+
+
+def test_speech_mode_follow_up_chains_until_user_is_silent() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = True
+    config.runtime.manual_inputs = ("look at me", "tell me a joke", "")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke", ""])
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 1
+    assert service.stt.stream_calls == 3
+    assert service.stt.begin_triggers == ["wake", "follow_up", "follow_up"]
+    assert len(service.memory.records) == 2
+    assert service.state.current_transcript is not None
+    assert service.state.current_transcript.text == ""
+    assert service.state.lifecycle is LifecycleStage.IDLE
+
+
+def test_speech_mode_follow_up_stops_when_reply_is_not_spoken() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = True
+    config.runtime.manual_inputs = ("tell me a joke", "look at me")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["tell me a joke", "look at me"])
+    service.cloud_response = SilentReplyCloudService()
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 2
+    assert service.stt.stream_calls == 2
+    assert service.stt.begin_triggers == ["wake", "wake"]
+    assert service.tts.spoken_texts == ["I am looking at you now."]
+
+
+def test_speech_mode_follow_up_stops_when_tts_fails() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = True
+    config.runtime.manual_inputs = ("look at me", "tell me a joke")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke"])
+    failing_tts = MockTtsService(should_fail=True)
+    failing_tts.bind_event_handler(service.handle_event)
+    service.tts = failing_tts
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 2
+    assert service.stt.stream_calls == 2
+    assert service.stt.begin_triggers == ["wake", "wake"]
+    assert service.state.last_error == "mock tts failure"
+
+
+def test_speech_mode_follow_up_stops_when_feature_flag_disabled() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = False
+    config.runtime.manual_inputs = ("look at me", "tell me a joke")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke"])
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 2
+    assert service.stt.stream_calls == 2
+    assert service.stt.begin_triggers == ["wake", "wake"]
+
+
+def test_speech_mode_follow_up_stops_after_configured_max_turns() -> None:
+    config = AppConfig()
+    config.runtime.input_mode = "speech"
+    config.runtime.stt_backend = "mock"
+    config.runtime.follow_up_mode_enabled = True
+    config.runtime.follow_up_max_turns = 2
+    config.runtime.manual_inputs = ("look at me", "tell me a joke", "who do you see", "turn your head left")
+    service = build_application(config)
+    service.wake_word = FakeWakeWordService(WakeDetectionResult(detected=True))
+    service.stt = ScriptedSpeechLoopSttService(["look at me", "tell me a joke", "who do you see", "turn your head left"])
+
+    asyncio.run(service.run())
+
+    assert service.wake_word.calls == 2
+    assert service.stt.stream_calls == 4
+    assert service.stt.begin_triggers == ["wake", "follow_up", "follow_up", "wake"]
 
 
 def test_turn_director_chooses_local_cloud_and_hybrid_paths() -> None:
@@ -540,6 +777,111 @@ def test_cloud_failure_falls_back_to_local_message() -> None:
     assert "falling back" in service.state.current_response
     assert service.state.lifecycle is LifecycleStage.IDLE
     assert any(event.name is EventName.ERROR_OCCURRED for event in service.event_history)
+
+
+def test_cloud_turn_stores_and_reuses_previous_response_id_within_resume_window() -> None:
+    service = build_application(AppConfig())
+    service.cloud_response = CapturingCloudResponseService(["resp_1", "resp_2"])
+
+    first = Transcript(
+        text="tell me a joke",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    second = Transcript(
+        text="and another one",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+
+    async def run_sequence() -> None:
+        await service.run_turn(first)
+        await service.run_turn(second)
+
+    asyncio.run(run_sequence())
+
+    assert service.cloud_response.previous_response_ids == [None, "resp_1"]
+    assert service.state.last_openai_response_id == "resp_2"
+    assert service.state.last_openai_response_at is not None
+
+
+def test_cloud_turn_does_not_reuse_expired_previous_response_id() -> None:
+    service = build_application(AppConfig())
+    service.cloud_response = CapturingCloudResponseService(["resp_fresh"])
+    service.state.last_openai_response_id = "resp_old"
+    service.state.last_openai_response_at = datetime.now(UTC) - timedelta(minutes=6)
+
+    async def run_once() -> None:
+        await service.run_turn(
+            Transcript(
+                text="tell me a joke",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+
+    asyncio.run(run_once())
+
+    assert service.cloud_response.previous_response_ids == [None]
+    assert service.state.last_openai_response_id == "resp_fresh"
+
+
+def test_local_only_turn_does_not_create_or_refresh_openai_resume_state() -> None:
+    service = build_application(AppConfig())
+    service.state.last_openai_response_id = "resp_keep"
+    original_timestamp = datetime.now(UTC) - timedelta(minutes=1)
+    service.state.last_openai_response_at = original_timestamp
+
+    async def run_once() -> None:
+        await service.run_turn(
+            Transcript(
+                text="who do you see",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+
+    asyncio.run(run_once())
+
+    assert service.state.last_openai_response_id == "resp_keep"
+    assert service.state.last_openai_response_at == original_timestamp
+
+
+def test_cloud_failure_does_not_overwrite_existing_openai_resume_state() -> None:
+    service = build_application(AppConfig())
+    existing_timestamp = datetime.now(UTC) - timedelta(minutes=1)
+    service.state.last_openai_response_id = "resp_keep"
+    service.state.last_openai_response_at = existing_timestamp
+    service.cloud_response = CapturingCloudResponseService(["resp_new"], fail_on_call=1)
+
+    async def run_once() -> None:
+        await service.run_turn(
+            Transcript(
+                text="tell me a joke",
+                language=Language.ENGLISH,
+                confidence=1.0,
+                is_final=True,
+                started_at=datetime.now(UTC),
+                ended_at=datetime.now(UTC),
+            )
+        )
+
+    asyncio.run(run_once())
+
+    assert service.state.last_openai_response_id == "resp_keep"
+    assert service.state.last_openai_response_at == existing_timestamp
 
 
 def test_reactive_step_happens_before_cloud_completion() -> None:

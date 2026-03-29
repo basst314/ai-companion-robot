@@ -38,6 +38,7 @@ Available now:
 - lifecycle management for `idle`, `listening`, `processing`, `responding`, `speaking`, and `error`
 - typed interaction state
 - multi-step turn execution with plan validation
+- short-term OpenAI response-thread continuity across immediate follow-ups and brief wake-word resumptions
 - internal event bus plus event history tracking
 - fast local reactive policies during active turns
 - fallback handling for vision, cloud AI, and TTS failures
@@ -142,6 +143,8 @@ Available now:
 - single response-model call for normal chat turns
 - optional local tool continuation for `camera_snapshot`
 - context-aware replies using transcript, detections, and local step results
+- structured reply metadata that carries spoken reply language for TTS voice selection
+- short-term `previous_response_id` reuse across immediate follow-ups and a brief wake-word resume window
 - configurable spoken reply cap through `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
 - fallback response when cloud generation fails
 
@@ -197,6 +200,9 @@ Available now:
 - configurable built-in or custom wake-word model selection through runtime config
 - bundled Silero VAD endpointing for noisy-room end-of-utterance detection
 - tunable VAD endpoint controls through runtime config
+- wake-free follow-up turns after spoken replies
+- VAD-confirmed speech gating for follow-up turns so TV/music noise does not become a real submitted turn
+- configurable max follow-up-turn cap to prevent endless wake-free loops
 - sticky terminal debug rows for mic state, VAD tail state, ring-buffer state, wake status, and transcript preview
 - sticky terminal AI row for backend state, route/reply durations, compact plan preview, and compact reply preview
 - speech-mode runtime that supports typed phrases, Enter-to-talk, and wake-word activation in the same loop
@@ -219,6 +225,7 @@ Available now:
 - OpenWakeWord runtime resolution plus built-in wake-model verification during setup
 - optional Piper dependency install plus English/German/Indonesian voice provisioning
 - generated `.env.local` runtime configuration
+- generated wake-free follow-up speech settings in `.env.local`
 - optional interactive OpenAI enablement plus API-key prompt with blank-later support
 
 Current limitations:
@@ -283,6 +290,8 @@ Push-to-talk or wake-word speech input
 -> external recorder streams PCM
 -> `whisper.cpp` produces the final transcript
 -> orchestrator routing and execution flow
+-> local TTS reply
+-> optional no-wake follow-up turn if VAD confirms new speech
 
 ### Not yet available
 
@@ -342,6 +351,7 @@ Current test status:
 - The normal turn path is now local-first: deterministic embodiment plus narrow local shortcuts, then one cloud reply call when needed.
 - The cloud reply service can request `camera_snapshot` and continue the same response turn with local tool output.
 - Speech endpoint tuning is now grouped under `AI_COMPANION_SPEECH_LATENCY_PROFILE`, and spoken cloud replies have a configurable hard length cap.
+- Wake-free follow-up speech now stays guarded by VAD-confirmed speech start, and short-term OpenAI thread continuity survives brief pauses between wake-word turns.
 
 ---
 

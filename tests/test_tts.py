@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from shared.config import TtsConfig
 from shared.events import Event, EventName
@@ -18,6 +19,7 @@ from shared.models import (
 )
 from tts.service import (
     MockSpeechSynthesizer,
+    PiperManagedProcess,
     PiperVoiceResolver,
     PlaybackResult,
     QueuedTtsService,
@@ -89,6 +91,27 @@ class _CapturingSynthesizer:
         del request
         self.selections.append(selection)
         return SynthesizedAudio(audio_bytes=b"RIFFfake", voice_id=selection.voice_id, speaker_id=selection.speaker_id)
+
+
+@dataclass(slots=True)
+class _HangingProcess:
+    returncode: int | None = None
+    terminate_calls: int = 0
+    kill_calls: int = 0
+    stderr: object | None = None
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        if self.kill_calls:
+            return self.returncode or -9
+        await asyncio.sleep(3600)
+        return 0
 
 
 def test_piper_voice_resolver_applies_single_speaker_style_fallback() -> None:
@@ -213,3 +236,23 @@ def test_queued_tts_service_marks_queue_overflow_as_failed() -> None:
         assert first.job_id != second.job_id
 
     asyncio.run(run())
+
+
+def test_piper_managed_process_shutdown_kills_stuck_process() -> None:
+    process = _HangingProcess()
+    managed = PiperManagedProcess(
+        base_url="http://127.0.0.1:5001",
+        data_dir=Path("artifacts/piper-voices"),
+        default_voice="en_US-hfc_female-medium",
+        shutdown_timeout_seconds=0.01,
+    )
+    managed.process = process  # type: ignore[assignment]
+
+    async def run() -> None:
+        await managed.shutdown()
+
+    asyncio.run(run())
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert managed.process is None

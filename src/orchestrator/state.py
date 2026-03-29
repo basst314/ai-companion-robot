@@ -1,6 +1,7 @@
 """State definitions for the orchestrator."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 from shared.models import EmotionState, Language, PlanStepResult, Transcript, TurnPlan, VisionDetection
@@ -33,6 +34,8 @@ class OrchestratorState:
     interaction_id: int = 0
     last_plan: TurnPlan | None = None
     last_step_results: tuple[PlanStepResult, ...] = field(default_factory=tuple)
+    last_openai_response_id: str | None = None
+    last_openai_response_at: datetime | None = None
     eyes_open: bool = False
     head_direction: str = "center"
 

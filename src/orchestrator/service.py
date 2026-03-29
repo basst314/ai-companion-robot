@@ -36,6 +36,7 @@ from shared.models import (
     QueryResult,
     RobotStateSnapshot,
     RouteKind,
+    SpeechJobStatus,
     SpeechRequest,
     StepPhase,
     Transcript,
@@ -47,6 +48,15 @@ from ui.service import UiService
 from vision.service import VisionService
 
 logger = logging.getLogger(__name__)
+_OPENAI_RESPONSE_RESUME_WINDOW_SECONDS = 5 * 60
+
+
+@dataclass(slots=True, frozen=True)
+class SpeechTurnOutcome:
+    """Outcome flags used to decide whether the next wake-free turn should open."""
+
+    transcript_empty: bool = False
+    follow_up_eligible: bool = False
 
 
 @dataclass(slots=True)
@@ -127,10 +137,14 @@ class OrchestratorService:
             await self._run_interactive_speech_loop()
             return
 
-        utterance_count = max(1, len(self.config.runtime.manual_inputs))
-        for _ in range(utterance_count):
-            await self._await_wake_word()
-            await self._run_stt_turn()
+        remaining_turn_budget = max(1, len(self.config.runtime.manual_inputs)) if self.config.runtime.stt_backend == "mock" else None
+        while remaining_turn_budget is None or remaining_turn_budget > 0:
+            wake_detected = await self._await_wake_word()
+            if not wake_detected:
+                continue
+            remaining_turn_budget = await self._run_follow_up_session(remaining_turn_budget=remaining_turn_budget)
+            if remaining_turn_budget == 0:
+                return
 
     async def _run_interactive_speech_loop(self) -> None:
         """Allow keyboard input and wake-word activation to coexist in interactive mode."""
@@ -142,7 +156,7 @@ class OrchestratorService:
             await self._run_interactive_speech_loop_non_tty()
             return
 
-        wake_task: asyncio.Task[None] | None = None
+        wake_task: asyncio.Task[bool] | None = None
         input_buffer = ""
         with _stdin_cbreak_mode():
             while True:
@@ -169,7 +183,7 @@ class OrchestratorService:
                             self._clear_wake_handoff()
                             self._begin_manual_utterance()
                             self._mark_manual_listening_awake()
-                            await self._run_stt_turn()
+                            await self._run_follow_up_session()
                         self._show_interactive_speech_hint()
                         continue
 
@@ -183,10 +197,11 @@ class OrchestratorService:
                     continue
 
                 if wake_task is not None and wake_task.done():
-                    await wake_task
+                    wake_detected = await wake_task
                     wake_task = None
-                    await self._run_stt_turn()
-                    self._show_interactive_speech_hint()
+                    if wake_detected:
+                        await self._run_follow_up_session()
+                        self._show_interactive_speech_hint()
 
     async def _run_interactive_speech_loop_non_tty(self) -> None:
         """Preserve test and redirected-stdin behavior without TTY polling."""
@@ -194,7 +209,7 @@ class OrchestratorService:
         while True:
             input_task = asyncio.create_task(asyncio.to_thread(_read_console_line_ready, 0.1))
             tasks: set[asyncio.Task[object]] = {input_task}
-            wake_task: asyncio.Task[None] | None = None
+            wake_task: asyncio.Task[bool] | None = None
             if self.wake_word is not None:
                 wake_task = asyncio.create_task(self._await_wake_word())
                 tasks.add(wake_task)
@@ -202,14 +217,19 @@ class OrchestratorService:
             done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
             if wake_task is not None and wake_task in done:
-                await wake_task
+                wake_detected = await wake_task
+                if wake_detected:
+                    if not input_task.done():
+                        input_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await input_task
+                    await self._run_follow_up_session()
+                    self._show_interactive_speech_hint()
+                    continue
                 if not input_task.done():
                     input_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await input_task
-                await self._run_stt_turn()
-                self._show_interactive_speech_hint()
-                continue
 
             if input_task in done:
                 if wake_task is not None and not wake_task.done():
@@ -226,22 +246,23 @@ class OrchestratorService:
                     self._clear_wake_handoff()
                     self._begin_manual_utterance()
                     self._mark_manual_listening_awake()
-                    await self._run_stt_turn()
+                    await self._run_follow_up_session()
                 self._show_interactive_speech_hint()
 
-    async def _await_wake_word(self) -> None:
+    async def _await_wake_word(self) -> bool:
         """Wait for the configured wake word before starting a speech turn."""
 
         if self.wake_word is None:
-            return
+            return True
         detection = await self.wake_word.wait_for_wake_word()
         if not detection.detected:
-            return
+            return False
         self._active_speech_trigger = "wake"
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="wake", detection=detection)
+        return True
 
-    async def _run_stt_turn(self) -> None:
+    async def _run_stt_turn(self) -> SpeechTurnOutcome:
         """Capture, transcribe, and execute one speech turn."""
 
         if self.stt is None:
@@ -269,7 +290,8 @@ class OrchestratorService:
                     transcript = self._strip_wake_phrase_from_transcript(transcript)
                 if transcript.is_final:
                     final_transcript = transcript
-                    self._show_transcript_update(transcript, is_final=True)
+                    if transcript.text.strip():
+                        self._show_transcript_update(transcript, is_final=True)
                     break
                 await self.handle_partial_transcript(transcript)
                 self._show_transcript_update(transcript, is_final=False)
@@ -287,7 +309,7 @@ class OrchestratorService:
             )
             await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-            return
+            return SpeechTurnOutcome()
         finally:
             self._active_speech_trigger = None
 
@@ -296,9 +318,28 @@ class OrchestratorService:
             self.state.current_transcript = transcript
             self.state.active_language = transcript.language
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-            return
+            return SpeechTurnOutcome(transcript_empty=True)
 
-        await self.run_turn(transcript)
+        follow_up_eligible = await self.run_turn(transcript)
+        return SpeechTurnOutcome(follow_up_eligible=follow_up_eligible)
+
+    async def _run_follow_up_session(self, *, remaining_turn_budget: int | None = None) -> int | None:
+        """Run one active speech session, chaining wake-free follow-up turns when eligible."""
+
+        remaining_follow_up_turns = self.config.runtime.follow_up_max_turns
+        while True:
+            outcome = await self._run_stt_turn()
+            if remaining_turn_budget is not None:
+                remaining_turn_budget -= 1
+            if remaining_turn_budget == 0:
+                return 0
+            if not self._should_continue_follow_up_session(outcome):
+                return remaining_turn_budget
+            if remaining_follow_up_turns <= 0:
+                return remaining_turn_budget
+            remaining_follow_up_turns -= 1
+            self._begin_follow_up_utterance()
+            self._mark_manual_listening_awake()
 
     async def handle_partial_transcript(self, transcript: Transcript) -> None:
         """Accept a partial transcript and update listening state only."""
@@ -319,7 +360,7 @@ class OrchestratorService:
         )
         await self._apply_reactive_steps(self.reactive_policy.partial_transcript(self.state, transcript))
 
-    async def run_turn(self, transcript: Transcript) -> None:
+    async def run_turn(self, transcript: Transcript) -> bool:
         """Process a final transcript through local routing, execution, and response."""
 
         self._debug_transcript(transcript, kind="final")
@@ -454,7 +495,7 @@ class OrchestratorService:
                 payload={"response": response},
             )
         )
-        await self._deliver_response(
+        return await self._deliver_response(
             response,
             transcript,
             self.state.last_plan.route_kind if self.state.last_plan else RouteKind.CLOUD_CHAT,
@@ -789,14 +830,18 @@ class OrchestratorService:
         plan: TurnPlan,
         prior_results: tuple[PlanStepResult, ...],
     ) -> AiResponse:
+        previous_response_id = self._resumable_openai_response_id()
         try:
-            return await self.cloud_response.generate_reply(
+            reply_result = await self.cloud_response.generate_reply(
                 transcript,
                 context,
                 plan,
                 prior_results,
+                previous_response_id=previous_response_id,
                 tool_handler=self._handle_cloud_tool_request,
             )
+            self._record_openai_reply(reply_result.response_id)
+            return reply_result.response
         except Exception as exc:
             logger.exception("cloud response failed")
             self.state.last_error = str(exc)
@@ -813,6 +858,24 @@ class OrchestratorService:
                 emotion=EmotionState.CURIOUS,
                 intent="cloud_fallback",
             )
+
+    def _resumable_openai_response_id(self) -> str | None:
+        response_id = self.state.last_openai_response_id
+        response_at = self.state.last_openai_response_at
+        if response_id is None or response_at is None:
+            return None
+        age_seconds = (datetime.now(UTC) - response_at).total_seconds()
+        if age_seconds > _OPENAI_RESPONSE_RESUME_WINDOW_SECONDS:
+            self.state.last_openai_response_id = None
+            self.state.last_openai_response_at = None
+            return None
+        return response_id
+
+    def _record_openai_reply(self, response_id: str | None) -> None:
+        if not response_id:
+            return
+        self.state.last_openai_response_id = response_id
+        self.state.last_openai_response_at = datetime.now(UTC)
 
     async def _handle_cloud_tool_request(self, request: CloudToolRequest) -> CloudToolResult:
         if request.tool_name == "camera_snapshot":
@@ -884,14 +947,14 @@ class OrchestratorService:
         preview_text: str | None = None,
         record_events: bool = True,
         language: Language | None = None,
-    ) -> None:
+    ):
         del record_events
         await self._set_lifecycle(
             LifecycleStage.SPEAKING,
             EmotionState.SPEAKING,
             preview_text or text,
         )
-        await self.tts.speak(
+        return await self.tts.speak(
             SpeechRequest(
                 text=text,
                 language=language or self.state.active_language,
@@ -940,16 +1003,22 @@ class OrchestratorService:
         *,
         plan: TurnPlan | None,
         step_results: tuple[PlanStepResult, ...],
-    ) -> None:
+    ) -> bool:
         display_text = response.display_text or response.text
         response_language = response.language or transcript.language
         self.state.active_language = response_language
+        spoke_reply_successfully = False
         await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
         await self.ui.show_text(display_text)
 
         if response.should_speak:
             try:
-                await self._speak_text(response.text, preview_text=display_text, language=response_language)
+                speech_output = await self._speak_text(
+                    response.text,
+                    preview_text=display_text,
+                    language=response_language,
+                )
+                spoke_reply_successfully = speech_output.status is SpeechJobStatus.PLAYBACK_FINISHED
             except Exception as exc:
                 logger.exception("tts failed")
                 self.state.last_error = str(exc)
@@ -978,6 +1047,7 @@ class OrchestratorService:
             )
         )
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+        return response.should_speak and spoke_reply_successfully
 
     async def _run_manual_input(self, raw_text: str) -> None:
         text = raw_text.strip()
@@ -1279,6 +1349,18 @@ class OrchestratorService:
         self._active_speech_trigger = "manual"
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="manual")
+
+    def _begin_follow_up_utterance(self) -> None:
+        self._active_speech_trigger = "follow_up"
+        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
+            self.stt.begin_utterance(trigger="follow_up")
+
+    def _should_continue_follow_up_session(self, outcome: SpeechTurnOutcome) -> bool:
+        if outcome.transcript_empty:
+            return False
+        if not self.config.runtime.follow_up_mode_enabled:
+            return False
+        return outcome.follow_up_eligible
 
     def _show_typed_input_preview(self, text: str) -> None:
         if self.terminal_debug is None:

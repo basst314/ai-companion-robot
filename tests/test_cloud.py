@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 
 from ai.cloud import (
+    CloudReplyResult,
     CloudToolRequest,
     CloudToolResult,
     OpenAiCloudResponseService,
@@ -34,6 +36,7 @@ class FakeResponseClient:
         instructions,
         input_items,
         tools=None,
+        text_format=None,
         previous_response_id=None,
         max_output_tokens=None,
         parallel_tool_calls=False,
@@ -42,20 +45,32 @@ class FakeResponseClient:
         assert model == "gpt-5.2"
         assert "spoken response layer" in instructions
         assert "one or two short sentences" in instructions
+        assert "Do not end every reply with a follow-up question." in instructions
+        assert "A brief reciprocal question is fine in a natural social exchange" in instructions
+        assert "If the user is closing the exchange" in instructions
         assert "leftover wake-word audio" in instructions
         assert "The robot's wake-word/name is 'Oreo'." in instructions
         assert tools is None
+        assert text_format is not None
+        assert text_format["type"] == "json_schema"
+        assert text_format["name"] == "spoken_reply"
         assert previous_response_id is None
         assert max_output_tokens == 72
         assert parallel_tool_calls is True
         assert stream is False
         prompt = input_items[0]["content"][0]["text"]
+        assert "Current turn language: en" in prompt
         assert "Robot wake-word/name: 'Oreo'" in prompt
         assert "'Oreo'" in prompt
         assert "Executed local step results:" in prompt
         return {
             "id": "resp_1",
-            "output_text": "I can see you, and I am looking your way.",
+            "output_text": json.dumps(
+                {
+                    "text": "I can see you, and I am looking your way.",
+                    "language": Language.ENGLISH.value,
+                }
+            ),
         }
 
 
@@ -70,6 +85,7 @@ class FakeToolClient:
         instructions,
         input_items,
         tools=None,
+        text_format=None,
         previous_response_id=None,
         max_output_tokens=None,
         parallel_tool_calls=False,
@@ -77,6 +93,8 @@ class FakeToolClient:
     ):
         assert model == "gpt-5.2"
         assert "camera_snapshot" in instructions
+        assert text_format is not None
+        assert text_format["name"] == "spoken_reply"
         assert max_output_tokens == 72
         assert parallel_tool_calls is True
         assert stream is False
@@ -114,7 +132,133 @@ class FakeToolClient:
         ]
         return {
             "id": "resp_tool_2",
-            "output_text": "I took a look. I can see Basti in front of me.",
+            "output_text": json.dumps(
+                {
+                    "text": "I took a look. I can see Basti in front of me.",
+                    "language": Language.ENGLISH.value,
+                }
+            ),
+        }
+
+
+class FakeResponseClientWithPreviousId(FakeResponseClient):
+    def __init__(self) -> None:
+        self.captured_previous_response_id = None
+
+    async def create_response(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        model,
+        instructions,
+        input_items,
+        tools=None,
+        text_format=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
+    ):
+        self.captured_previous_response_id = previous_response_id
+        assert model == "gpt-5.2"
+        assert "spoken response layer" in instructions
+        assert tools is None
+        assert text_format is not None
+        assert max_output_tokens == 72
+        assert parallel_tool_calls is True
+        assert stream is False
+        prompt = input_items[0]["content"][0]["text"]
+        assert "Current turn language: en" in prompt
+        assert "Robot wake-word/name: 'Oreo'" in prompt
+        return {
+            "id": "resp_1",
+            "output_text": json.dumps(
+                {
+                    "text": "I can see you, and I am looking your way.",
+                    "language": Language.ENGLISH.value,
+                }
+            ),
+        }
+
+
+class FakeIndonesianResponseClient:
+    async def create_response(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        model,
+        instructions,
+        input_items,
+        tools=None,
+        text_format=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
+    ):
+        assert model == "gpt-5.2"
+        assert "reply in that language" in instructions
+        assert "current turn language as the default" in instructions
+        assert tools is None
+        assert text_format is not None
+        assert previous_response_id is None
+        assert max_output_tokens == 72
+        assert parallel_tool_calls is True
+        assert stream is False
+        return {
+            "id": "resp_id_indo",
+            "output_text": json.dumps(
+                {
+                    "text": "Ini lelucon untukmu.",
+                    "language": Language.INDONESIAN.value,
+                }
+            ),
+        }
+
+
+class FakeEnglishAfterIndonesianClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def create_response(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        model,
+        instructions,
+        input_items,
+        tools=None,
+        text_format=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
+    ):
+        assert model == "gpt-5.2"
+        assert "current turn" in instructions
+        assert tools is None
+        assert text_format is not None
+        assert max_output_tokens == 72
+        assert parallel_tool_calls is True
+        assert stream is False
+        self.calls += 1
+        if self.calls == 1:
+            assert previous_response_id is None
+            return {
+                "id": "resp_indo",
+                "output_text": json.dumps(
+                    {
+                        "text": "Ini lelucon untukmu.",
+                        "language": Language.INDONESIAN.value,
+                    }
+                ),
+            }
+        assert previous_response_id == "resp_indo"
+        return {
+            "id": "resp_en",
+            "output_text": json.dumps(
+                {
+                    "text": "Glad you liked it.",
+                    "language": Language.ENGLISH.value,
+                }
+            ),
         }
 
 
@@ -164,10 +308,11 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     )
 
     with caplog.at_level(logging.INFO, logger="ai.cloud"):
-        response = asyncio.run(service.generate_reply(transcript, _context(), plan, step_results))
+        result = asyncio.run(service.generate_reply(transcript, _context(), plan, step_results))
 
-    assert response.text == "I can see you, and I am looking your way."
-    assert response.language is Language.ENGLISH
+    assert result.response.text == "I can see you, and I am looking your way."
+    assert result.response.language is Language.ENGLISH
+    assert result.response_id == "resp_1"
     log_text = caplog.text
     assert "[AI] reply request" in log_text
     assert "max_output_tokens=72" in log_text
@@ -211,7 +356,7 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
             image_url="data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=",
         )
 
-    response = asyncio.run(
+    result = asyncio.run(
         service.generate_reply(
             transcript,
             _context(),
@@ -221,5 +366,121 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
         )
     )
 
-    assert response.text == "I took a look. I can see Basti in front of me."
-    assert response.language is Language.ENGLISH
+    assert result.response.text == "I took a look. I can see Basti in front of me."
+    assert result.response.language is Language.ENGLISH
+    assert result.response_id == "resp_tool_2"
+
+
+def test_openai_reply_forwards_previous_response_id_when_provided() -> None:
+    client = FakeResponseClientWithPreviousId()
+    service = OpenAiCloudResponseService(
+        client=client,
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
+    transcript = Transcript(
+        text="and what about now?",
+        language=Language.ENGLISH,
+        confidence=0.98,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    plan = TurnPlan(
+        route_kind=RouteKind.CLOUD_CHAT,
+        confidence=0.9,
+        rationale="follow-up cloud reply",
+        source="local_turn_director",
+        steps=(PlanStep(capability_id="cloud_reply"),),
+    )
+
+    result = asyncio.run(
+        service.generate_reply(
+            transcript,
+            _context(),
+            plan,
+            (),
+            previous_response_id="resp_prev_123",
+        )
+    )
+
+    assert client.captured_previous_response_id == "resp_prev_123"
+    assert result.response_id == "resp_1"
+
+
+def test_openai_reply_can_set_indonesian_language_even_when_transcript_is_english() -> None:
+    service = OpenAiCloudResponseService(
+        client=FakeIndonesianResponseClient(),
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
+    transcript = Transcript(
+        text="tell me an indonesian joke",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    plan = TurnPlan(
+        route_kind=RouteKind.CLOUD_CHAT,
+        confidence=0.7,
+        rationale="language-specific cloud reply",
+        source="local_turn_director",
+        steps=(PlanStep(capability_id="cloud_reply"),),
+    )
+
+    result = asyncio.run(service.generate_reply(transcript, _context(), plan, ()))
+
+    assert result.response.language is Language.INDONESIAN
+    assert result.response.text == "Ini lelucon untukmu."
+    assert result.response_id == "resp_id_indo"
+
+
+def test_openai_reply_can_return_to_current_turn_language_after_prior_foreign_language_turn() -> None:
+    service = OpenAiCloudResponseService(
+        client=FakeEnglishAfterIndonesianClient(),
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
+    indo_request = Transcript(
+        text="tell me an indonesian joke",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    english_follow_up = Transcript(
+        text="that was funny",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    plan = TurnPlan(
+        route_kind=RouteKind.CLOUD_CHAT,
+        confidence=0.7,
+        rationale="language continuity test",
+        source="local_turn_director",
+        steps=(PlanStep(capability_id="cloud_reply"),),
+    )
+
+    first = asyncio.run(service.generate_reply(indo_request, _context(), plan, ()))
+    second = asyncio.run(
+        service.generate_reply(
+            english_follow_up,
+            _context(),
+            plan,
+            (),
+            previous_response_id=first.response_id,
+        )
+    )
+
+    assert first.response.language is Language.INDONESIAN
+    assert second.response.language is Language.ENGLISH
+    assert second.response.text == "Glad you liked it."

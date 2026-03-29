@@ -53,6 +53,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_VAD_END_TRIGGER_FRAMES=6",
                 "AI_COMPANION_MAX_RECORDING_SECONDS=11.5",
                 "AI_COMPANION_WAKE_WORD_ENABLED=true",
+                "AI_COMPANION_FOLLOW_UP_MODE_ENABLED=true",
+                "AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=3.3",
+                "AI_COMPANION_FOLLOW_UP_MAX_TURNS=5",
                 "AI_COMPANION_WAKE_WORD_PHRASE=Oreo",
                 "AI_COMPANION_WAKE_WORD_MODEL=/models/oreo.tflite",
                 "AI_COMPANION_WAKE_WORD_THRESHOLD=0.65",
@@ -102,6 +105,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.vad_end_trigger_frames == 6
     assert config.runtime.max_recording_seconds == 11.5
     assert config.runtime.wake_word_enabled is True
+    assert config.runtime.follow_up_mode_enabled is True
+    assert config.runtime.follow_up_listen_timeout_seconds == 3.3
+    assert config.runtime.follow_up_max_turns == 5
     assert config.runtime.wake_word_phrase == "Oreo"
     assert config.runtime.wake_word_model == "/models/oreo.tflite"
     assert config.runtime.wake_word_threshold == 0.65

@@ -578,7 +578,14 @@ class ShellAudioCaptureService:
         )
         session.stdout_task = asyncio.create_task(self._capture_stdout(process, session, on_chunk=on_chunk))
         session.stderr_task = asyncio.create_task(self._capture_stderr(process, session))
-        await self._wait_for_capture_data(session)
+        try:
+            await self._wait_for_capture_data(session)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await session.stop()
+            with contextlib.suppress(OSError):
+                pcm_path.unlink()
+            raise
         return session
 
     async def capture_wav(self) -> Path:
@@ -948,6 +955,7 @@ class WhisperCppSttService:
     max_recording_seconds: float = 15.0
     no_speech_timeout_seconds: float = 8.0
     quiet_abort_seconds: float = 2.5
+    follow_up_listen_timeout_seconds: float = 3.0
     poll_interval_seconds: float = 0.35
     minimum_transcribe_seconds: float = 0.45
     partial_update_interval_seconds: float = 1.0
@@ -964,6 +972,7 @@ class WhisperCppSttService:
     endpoint_vad_factory: Callable[[], EndpointVadModel] = _default_endpoint_vad_factory
     _primed_audio_window: AudioWindow | None = field(default=None, init=False, repr=False)
     _endpoint_vad_ready: bool = field(default=False, init=False, repr=False)
+    _current_utterance_trigger: str | None = field(default=None, init=False, repr=False)
 
     def prime_wake_audio(self, audio_window: AudioWindow | None) -> None:
         """Seed the next speech turn with audio already captured during wake detection."""
@@ -978,6 +987,7 @@ class WhisperCppSttService:
     ) -> None:
         """Start an utterance on the shared live stream without restarting capture."""
 
+        self._current_utterance_trigger = trigger
         if self.shared_live_state is None:
             if detection is not None and detection.audio_window is not None:
                 self._primed_audio_window = _slice_audio_window(
@@ -1026,12 +1036,13 @@ class WhisperCppSttService:
         raise RuntimeError("stream_transcripts() completed without a final transcript")
 
     async def stream_transcripts(self) -> AsyncIterator[Transcript]:
+        active_trigger = self._consume_utterance_trigger()
         if not hasattr(self.audio_capture, "start_capture"):
             yield await self._transcribe_one_shot()
             return
 
         if self.shared_live_state is not None:
-            async for transcript in self._stream_transcripts_shared():
+            async for transcript in self._stream_transcripts_shared(active_trigger=active_trigger):
                 yield transcript
             return
 
@@ -1039,6 +1050,7 @@ class WhisperCppSttService:
         session = await self.audio_capture.start_capture()
         primed_audio_window = self._primed_audio_window
         self._primed_audio_window = None
+        follow_up_timeout_seconds = self._follow_up_timeout(active_trigger)
         vad_tracker = self._build_endpoint_vad_tracker()
         last_partial_text = ""
         speech_started = False
@@ -1063,7 +1075,7 @@ class WhisperCppSttService:
                 if audio_window is not None:
                     audio_window = self._apply_endpoint_vad(audio_window, vad_tracker)
                 if audio_window is not None:
-                    if audio_window.has_speech and audio_window.peak_energy >= self.speech_start_energy_threshold:
+                    if self._speech_started(audio_window, active_trigger=active_trigger):
                         speech_started = True
 
                     duration_progressed = audio_window.duration_seconds > last_duration_seconds + 0.05
@@ -1074,6 +1086,7 @@ class WhisperCppSttService:
                         audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
+                        and self._allows_follow_up_transcription(audio_window, active_trigger=active_trigger)
                         and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         and (datetime.now(UTC) - started_at).total_seconds() - last_partial_request_at
                         >= self.partial_update_interval_seconds
@@ -1169,7 +1182,8 @@ class WhisperCppSttService:
                     break
 
                 if (
-                    not speech_started
+                    active_trigger != "follow_up"
+                    and not speech_started
                     and audio_window is not None
                     and elapsed_seconds >= self.quiet_abort_seconds
                     and audio_window.peak_energy < self.speech_energy_threshold
@@ -1180,7 +1194,7 @@ class WhisperCppSttService:
                         audio_window.peak_energy,
                     )
                     break
-                if not speech_started and elapsed_seconds >= self.no_speech_timeout_seconds:
+                if not speech_started and elapsed_seconds >= follow_up_timeout_seconds:
                     logger.info("stt stop_reason=no_speech_timeout elapsed=%.2f", elapsed_seconds)
                     break
 
@@ -1197,7 +1211,11 @@ class WhisperCppSttService:
             if final_audio_window is not None:
                 final_audio_window = self._apply_endpoint_vad(final_audio_window, vad_tracker)
             ended_at = datetime.now(UTC)
-            if final_audio_window is None or not final_audio_window.pcm_data:
+            if (
+                final_audio_window is None
+                or not final_audio_window.pcm_data
+                or not self._allows_follow_up_transcription(final_audio_window, active_trigger=active_trigger)
+            ):
                 logger.info("stt final_audio empty=true")
                 self._publish_audio_status(
                     current_noise=0.0,
@@ -1266,7 +1284,7 @@ class WhisperCppSttService:
             )
             self._publish_whisper_status(None)
 
-    async def _stream_transcripts_shared(self) -> AsyncIterator[Transcript]:
+    async def _stream_transcripts_shared(self, *, active_trigger: str | None = None) -> AsyncIterator[Transcript]:
         if self.shared_live_state is None:
             raise RuntimeError("shared transcript streaming requires shared live speech state")
 
@@ -1276,6 +1294,7 @@ class WhisperCppSttService:
         if not self.shared_live_state.utterance_active:
             self.shared_live_state.start_utterance()
         started_at = self.shared_live_state.utterance_started_at or datetime.now(UTC)
+        follow_up_timeout_seconds = self._follow_up_timeout(active_trigger)
         vad_tracker = self._build_endpoint_vad_tracker()
         last_partial_text = ""
         speech_started = False
@@ -1305,13 +1324,14 @@ class WhisperCppSttService:
                 if audio_window is not None:
                     audio_window = self._apply_endpoint_vad(audio_window, vad_tracker)
                 if audio_window is not None:
-                    if audio_window.has_speech and audio_window.peak_energy >= self.speech_start_energy_threshold:
+                    if self._speech_started(audio_window, active_trigger=active_trigger):
                         speech_started = True
 
                     if (
                         audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
+                        and self._allows_follow_up_transcription(audio_window, active_trigger=active_trigger)
                         and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         and elapsed_seconds - last_partial_request_at >= self.partial_update_interval_seconds
                     ):
@@ -1388,13 +1408,14 @@ class WhisperCppSttService:
                     break
 
                 if (
-                    not speech_started
+                    active_trigger != "follow_up"
+                    and not speech_started
                     and audio_window is not None
                     and elapsed_seconds >= self.quiet_abort_seconds
                     and audio_window.peak_energy < self.speech_energy_threshold
                 ):
                     break
-                if not speech_started and elapsed_seconds >= self.no_speech_timeout_seconds:
+                if not speech_started and elapsed_seconds >= follow_up_timeout_seconds:
                     break
 
             partial_task, partial_transcript = await self._collect_partial_task(partial_task, last_partial_text)
@@ -1411,7 +1432,11 @@ class WhisperCppSttService:
             if final_audio_window is not None:
                 final_audio_window = self._apply_endpoint_vad(final_audio_window, vad_tracker)
             ended_at = datetime.now(UTC)
-            if final_audio_window is None or not final_audio_window.pcm_data:
+            if (
+                final_audio_window is None
+                or not final_audio_window.pcm_data
+                or not self._allows_follow_up_transcription(final_audio_window, active_trigger=active_trigger)
+            ):
                 self._publish_audio_status(
                     current_noise=0.0,
                     peak_energy=0.0,
@@ -1466,6 +1491,28 @@ class WhisperCppSttService:
                 partial_pending=False,
             )
             self._publish_whisper_status(None)
+
+    def _consume_utterance_trigger(self) -> str | None:
+        trigger = self._current_utterance_trigger
+        self._current_utterance_trigger = None
+        return trigger
+
+    def _follow_up_timeout(self, trigger: str | None) -> float:
+        if trigger == "follow_up":
+            return self.follow_up_listen_timeout_seconds
+        return self.no_speech_timeout_seconds
+
+    def _allows_follow_up_transcription(self, audio_window: AudioWindow, *, active_trigger: str | None) -> bool:
+        if active_trigger != "follow_up":
+            return True
+        return audio_window.has_vad_speech
+
+    def _speech_started(self, audio_window: AudioWindow, *, active_trigger: str | None) -> bool:
+        if audio_window.peak_energy < self.speech_start_energy_threshold:
+            return False
+        if active_trigger == "follow_up":
+            return audio_window.has_vad_speech
+        return audio_window.has_speech
 
     async def _transcribe_one_shot(self) -> Transcript:
         audio_path = await self.audio_capture.capture_wav()

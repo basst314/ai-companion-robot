@@ -60,6 +60,9 @@ Current supported variables:
 - `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
 - `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
+- `AI_COMPANION_FOLLOW_UP_MODE_ENABLED`
+- `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`
+- `AI_COMPANION_FOLLOW_UP_MAX_TURNS`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
 - `AI_COMPANION_WAKE_WORD_THRESHOLD`
@@ -72,7 +75,9 @@ You can also use `.env` if you want a shared local config, but `.env.local` is t
 The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after the bundled Silero VAD confirms trailing non-speech. Custom recorder commands therefore need to support raw PCM output to standard output.
 `AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
+The generated speech config also enables wake-free follow-up mode by default. After a spoken reply finishes, the robot opens a short follow-up listen window and only continues if VAD confirms real speech inside `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` puts a hard cap on how many wake-free follow-up turns can chain before the robot falls back to ordinary wake-word listening again.
 If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output still stays local.
+That same OpenAI path keeps short-term turn continuity by reusing the previous response thread for immediate follow-ups and for a short wake-word resume window after the conversation pauses.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
 If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.
 

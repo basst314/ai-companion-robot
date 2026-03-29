@@ -94,9 +94,9 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[DBG]" in rows[0]
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
-    assert "[vad 0.35s]" in rows[1]
+    assert "[vad tail 0.35s]" in rows[1]
     assert "[stt standby --]" in rows[1]
-    assert rows[1].index("[wake off") < rows[1].index("[stt standby --]") < rows[1].index("[vad 0.35s]")
+    assert rows[1].index("[wake off") < rows[1].index("[stt standby --]") < rows[1].index("[vad tail 0.35s]")
     assert "[ 180]" in rows[1]
     assert "[BUF]" in rows[2]
     assert "[fill 2.5/3.5s]" in rows[2]
@@ -177,7 +177,7 @@ def test_terminal_debug_screen_shows_inactive_vad_badge_before_speech_starts() -
 
     rows = screen.snapshot_rows(width=120)
 
-    assert "[vad 0.00s]" in rows[1]
+    assert "[vad idle 0.00s]" in rows[1]
 
 
 def test_terminal_debug_screen_shows_active_vad_badge_when_voice_is_live() -> None:
@@ -193,7 +193,7 @@ def test_terminal_debug_screen_shows_active_vad_badge_when_voice_is_live() -> No
 
     rows = screen.snapshot_rows(width=120)
 
-    assert "[vad 0.00s]" in rows[1]
+    assert "[vad live 0.00s]" in rows[1]
 
 
 def test_terminal_debug_screen_colors_vad_badge_by_state() -> None:
@@ -231,10 +231,13 @@ def test_terminal_debug_screen_colors_vad_badge_by_state() -> None:
     trailing_badge = trailing._vad_badge()
 
     assert "\033[90mvad" in inactive_badge
+    assert "\033[90midle" in inactive_badge
     assert "\033[37m0.00s" in inactive_badge
     assert "\033[32mvad" in active_badge
+    assert "\033[32mlive" in active_badge
     assert "\033[37m0.00s" in active_badge
     assert "\033[33mvad" in trailing_badge
+    assert "\033[33mtail" in trailing_badge
     assert "\033[37m0.35s" in trailing_badge
 
 

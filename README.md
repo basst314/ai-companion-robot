@@ -174,6 +174,9 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
 - `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
+- `AI_COMPANION_FOLLOW_UP_MODE_ENABLED`
+- `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`
+- `AI_COMPANION_FOLLOW_UP_MAX_TURNS`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
 - `AI_COMPANION_WAKE_WORD_THRESHOLD`
@@ -270,6 +273,8 @@ With the generated speech config in place, the interactive console supports type
 
 The bootstrap script now configures the current local speech path automatically: `whisper.cpp` for STT, `OpenWakeWord` for wake-word detection, shared live-stream handoff, and typed/Enter/manual fallback in the interactive console.
 
+Speech mode also supports wake-free follow-up turns. After the robot finishes a spoken reply, it opens a short follow-up listen window so you can continue naturally without repeating the wake word. That follow-up path only proceeds when VAD confirms real speech, which makes it much less likely that TV audio, music, or placeholder Whisper outputs such as `[BLANK AUDIO]` accidentally trigger a second turn.
+
 The interaction layer now supports multi-step turns. A single utterance can trigger local actions or queries before the cloud reply is generated, for example turning toward the user and then speaking a cloud-generated answer with local TTS.
 
 You need:
@@ -304,6 +309,9 @@ To wire this into the app, configure:
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - `AI_COMPANION_MAX_RECORDING_SECONDS`
 - `AI_COMPANION_WAKE_WORD_ENABLED=true`
+- `AI_COMPANION_FOLLOW_UP_MODE_ENABLED=true`
+- `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=3.0`
+- `AI_COMPANION_FOLLOW_UP_MAX_TURNS=10`
 - `AI_COMPANION_WAKE_WORD_PHRASE=Hey Jarvis`
 - `AI_COMPANION_WAKE_WORD_MODEL=hey jarvis`
 - `AI_COMPANION_WAKE_WORD_THRESHOLD=0.5`
@@ -366,6 +374,8 @@ The `{output_path}` placeholder is expected and is filled in by the runtime when
 
 `AI_COMPANION_MAX_RECORDING_SECONDS` adds a simple hard stop for each utterance so the recorder cannot run forever if the endpoint detector never settles.
 
+`AI_COMPANION_FOLLOW_UP_MODE_ENABLED` controls whether the robot automatically opens a no-wake follow-up listen after a spoken reply. `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS` is the VAD-confirmed speech-start window for that follow-up turn. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` limits how many wake-free follow-up turns can chain after the initial wake/manual turn before the robot requires the wake word again.
+
 When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
 
 - type a phrase and press Enter
@@ -374,7 +384,7 @@ When `interactive_console` is enabled in speech mode, the runtime supports all o
 - type `exit` to quit
 
 The sticky terminal header also shows:
-- microphone level and VAD tail progress
+- microphone level plus explicit VAD idle/live/tail state
 - the wake state (`listening` or `awake`)
 - the live transcript preview
 - the wake ring-buffer state for debugging handoff timing
@@ -403,6 +413,7 @@ AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=120
 ```
 
 The cloud backend returns reply text and can request local tools such as a camera snapshot when needed. Audio output remains local and Piper is still a later milestone.
+For short-term continuity, the OpenAI path also reuses the prior response thread for wake-free follow-ups and for fresh wake-word turns that happen again within a short in-memory resume window.
 The setup script can now enable the OpenAI path interactively, asks for the API key when you opt in, and accepts a blank value so you can add the key later in `.env.local`.
 
 Exit with:
@@ -439,4 +450,4 @@ For more detailed setup notes and troubleshooting, see `docs/setup.md`.
 
 ## Status
 
-Early working prototype with OpenWakeWord wake detection, local `whisper.cpp` STT, shared live-stream handoff, and interactive terminal debugging available for experimentation
+Early working prototype with OpenWakeWord wake detection, local `whisper.cpp` STT, wake-free multi-turn follow-ups with VAD gating, short-term OpenAI thread continuity, and interactive terminal debugging available for experimentation

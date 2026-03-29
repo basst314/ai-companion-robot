@@ -16,6 +16,7 @@ from stt.service import (
     AudioWindow,
     CommandResult,
     OpenWakeWordWakeWordService,
+    ShellAudioCaptureService,
     SharedLiveSpeechState,
     StreamingWakeWordDetector,
     WhisperCppSttService,
@@ -193,6 +194,31 @@ class FakeEndpointVadModel:
     def reset(self) -> None:
         self.calls = 0
         self.reset_calls += 1
+
+
+class _ImmediateStream:
+    async def read(self, _count: int = -1) -> bytes:
+        return b""
+
+
+@dataclass(slots=True)
+class _FakeSubprocess:
+    returncode: int | None = None
+    terminate_calls: int = 0
+    kill_calls: int = 0
+    stdout: _ImmediateStream = field(default_factory=_ImmediateStream)
+    stderr: _ImmediateStream = field(default_factory=_ImmediateStream)
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        return self.returncode or 0
 
 
 @dataclass(slots=True)
@@ -767,6 +793,68 @@ def test_whisper_cpp_stt_service_returns_empty_final_transcript_when_user_never_
     assert transcripts[0].is_final is True
 
 
+def test_whisper_cpp_stt_service_uses_single_follow_up_listen_timeout(tmp_path: Path) -> None:
+    """Follow-up turns should use a dedicated listen timeout keyed off speech start."""
+
+    wav_path = tmp_path / "ai-companion-recording-follow-up.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[None],
+        transcript_texts=[""],
+        quiet_abort_seconds=2.5,
+        no_speech_timeout_seconds=8.0,
+        follow_up_listen_timeout_seconds=3.0,
+    )
+
+    assert service._follow_up_timeout("wake") == 8.0
+    assert service._follow_up_timeout("follow_up") == 3.0
+
+
+def test_whisper_cpp_stt_service_follow_up_requires_vad_speech_before_transcribing(tmp_path: Path) -> None:
+    """Follow-up turns should ignore speech-like noise unless VAD confirms speech."""
+
+    wav_path = tmp_path / "ai-companion-recording-follow-up-noise.wav"
+    wav_path.write_bytes(b"fake")
+    service = ScriptedStreamingWhisperService(
+        audio_capture=FakeStreamingAudioCaptureService(output_path=wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(
+                wav_path,
+                duration_seconds=0.8,
+                trailing_silence_seconds=0.0,
+                has_speech=True,
+                peak_energy=180.0,
+                has_vad_speech=False,
+                vad_active=False,
+            ),
+            _audio_window(
+                wav_path,
+                duration_seconds=1.2,
+                trailing_silence_seconds=0.0,
+                has_speech=True,
+                peak_energy=180.0,
+                has_vad_speech=False,
+                vad_active=False,
+            ),
+        ],
+        transcript_texts=["(MUSIC)"],
+        poll_interval_seconds=0.0,
+        follow_up_listen_timeout_seconds=0.0,
+    )
+    service.begin_utterance(trigger="follow_up")
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == [""]
+    assert transcripts[0].is_final is True
+    assert service.captured_is_final == []
+
+
 def test_whisper_cpp_stt_service_publishes_initial_silence_progress(tmp_path: Path) -> None:
     """Terminal debug should show silence growing even before speech starts."""
 
@@ -1201,6 +1289,38 @@ def test_speech_mode_silent_transcript_returns_to_idle_without_error() -> None:
     assert service.state.current_transcript.text == ""
     assert not any(event.name is EventName.ERROR_OCCURRED for event in service.event_history)
     assert not any(event.name is EventName.TRANSCRIPT_FINAL for event in service.event_history)
+
+
+def test_shell_audio_capture_service_stops_process_when_startup_fails(monkeypatch, tmp_path) -> None:
+    process = _FakeSubprocess()
+    service = ShellAudioCaptureService(
+        command_template=("fake-recorder", "{output_path}"),
+        output_dir=tmp_path,
+    )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return process
+
+    async def fake_wait_for_capture_data(self, session):  # type: ignore[no-untyped-def]
+        del self, session
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(ShellAudioCaptureService, "_wait_for_capture_data", fake_wait_for_capture_data)
+
+    async def run() -> None:
+        try:
+            await service.start_capture()
+        except RuntimeError as exc:
+            assert str(exc) == "startup failed"
+        else:
+            raise AssertionError("expected startup failure")
+
+    asyncio.run(run())
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
 
 
 async def _collect_transcripts(stream: AsyncIterator[Transcript]) -> list[Transcript]:

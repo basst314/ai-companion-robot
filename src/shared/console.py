@@ -819,18 +819,22 @@ class TerminalDebugScreen(TerminalDebugSink):
     def _vad_badge(self) -> str:
         silence = self.state.trailing_silence_seconds
         if not self.state.speech_started:
-            vad_value = 0.0
+            vad_label = "idle"
             label_style = self.subtle_value
+            value_text = "0.00s"
         elif self.state.vad_active:
-            vad_value = 0.0
+            vad_label = "live"
             label_style = self.success_value
+            value_text = "0.00s"
         else:
-            vad_value = max(0.0, silence or 0.0)
+            vad_label = "tail"
             label_style = self.warning_value
+            value_text = f"{max(0.0, silence or 0.0):0.2f}s"
         return (
             f"{self.label('[')}"
             f"{label_style('vad')}"
-            f" {self.value(f'{vad_value:0.2f}s')}"
+            f" {label_style(vad_label)}"
+            f" {self.value(value_text)}"
             f"{self.label(']')}"
         )
 

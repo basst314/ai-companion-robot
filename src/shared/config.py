@@ -51,6 +51,9 @@ class RuntimeConfig:
     vad_end_trigger_frames: int = 5
     max_recording_seconds: float = 15.0
     wake_word_enabled: bool = False
+    follow_up_mode_enabled: bool = True
+    follow_up_listen_timeout_seconds: float = 3.0
+    follow_up_max_turns: int = 10
     wake_word_phrase: str = ""
     wake_word_model: str = ""
     wake_word_threshold: float = 0.5
@@ -211,6 +214,18 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}WAKE_WORD_ENABLED"),
         default=runtime.wake_word_enabled,
     )
+    runtime.follow_up_mode_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}FOLLOW_UP_MODE_ENABLED"),
+        default=runtime.follow_up_mode_enabled,
+    )
+    runtime.follow_up_listen_timeout_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}FOLLOW_UP_LISTEN_TIMEOUT_SECONDS"),
+        default=runtime.follow_up_listen_timeout_seconds,
+    )
+    runtime.follow_up_max_turns = _parse_int(
+        env.get(f"{ENV_PREFIX}FOLLOW_UP_MAX_TURNS"),
+        default=runtime.follow_up_max_turns,
+    )
     runtime.wake_word_phrase = env.get(f"{ENV_PREFIX}WAKE_WORD_PHRASE", runtime.wake_word_phrase).strip()
     runtime.wake_word_model = env.get(f"{ENV_PREFIX}WAKE_WORD_MODEL", runtime.wake_word_model).strip()
     runtime.wake_word_threshold = _parse_float(
@@ -243,6 +258,9 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         runtime.wake_word_threshold = 0.5
     elif runtime.wake_word_threshold > 1.0:
         runtime.wake_word_threshold = 1.0
+    if runtime.follow_up_listen_timeout_seconds <= 0:
+        runtime.follow_up_listen_timeout_seconds = 3.0
+    runtime.follow_up_max_turns = max(1, runtime.follow_up_max_turns)
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
         default=runtime.language_mode,

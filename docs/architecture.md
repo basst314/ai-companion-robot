@@ -36,7 +36,7 @@ Responsibilities:
 - build and validate turn plans
 - execute local actions, queries, and local reactive behaviors
 - call cloud services when needed
-- maintain conversation state
+- maintain short-term conversation state, including resumable cloud thread context
 - manage personality layer
 
 This is the most important component.
@@ -52,6 +52,7 @@ Processing:
 - continuous wake-word detection using OpenWakeWord (local)
 - speech-to-text using whisper.cpp (local)
 - end-of-utterance detection using the Silero VAD bundled with OpenWakeWord
+- stricter VAD-confirmed speech gating for wake-free follow-up turns so ambient audio does not become a real turn
 - shared live audio buffering so wake detection and STT consume the same microphone stream without restarting capture
 
 Output:
@@ -75,11 +76,13 @@ Processing:
 - select a local-first turn route through the orchestrator turn director
 - generate spoken response text after local actions and queries have run
 - optionally request local tools such as a camera snapshot when more evidence is needed
+- preserve short-term OpenAI conversation continuity with `previous_response_id` across immediate follow-ups and brief wake-word resumptions
 - apply personality tone
 
 Output:
 - turn plan (`route_kind` plus ordered executable steps)
 - response text
+- structured reply metadata, including reply language for TTS selection
 - optional tool-call requests
 - optional metadata (emotion, intent)
 
@@ -204,6 +207,7 @@ In the current implementation, normal chat takes a single cloud response-model c
 - the orchestrator handles deterministic embodiment and narrow local-only shortcuts first
 - the cloud reply call sees transcript, current context, and any local step results
 - when the model requests a local tool such as `camera_snapshot`, the orchestrator runs it and resumes the same response turn with the tool output
+- successful cloud turns keep a short in-memory resume window so a fresh wake-word turn shortly afterwards can continue the same thread
 
 ---
 
@@ -226,7 +230,7 @@ The orchestrator reacts to events and triggers actions.
 ## 7. Multilingual Support
 
 - STT detects language automatically
-- responses default to same language
+- responses default to the current turn language unless the user explicitly asks for another language
 - TTS selects voice based on language
 - memory stores language metadata
 

@@ -190,6 +190,8 @@ class PiperManagedProcess:
     data_dir: Path
     default_voice: str
     command_override: tuple[str, ...] = ()
+    startup_timeout_seconds: float = 8.0
+    shutdown_timeout_seconds: float = 3.0
     process: asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
     _stderr_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
@@ -211,23 +213,39 @@ class PiperManagedProcess:
         if self.process.stderr is not None:
             self._stderr_task = asyncio.create_task(self._capture_stderr(self.process))
 
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + self.startup_timeout_seconds
         while time.monotonic() < deadline:
             if await self._healthy():
                 return
             await asyncio.sleep(0.1)
 
+        await self._stop_process()
         raise RuntimeError(f"managed Piper server at {self.base_url} did not become ready in time")
 
     async def shutdown(self) -> None:
-        if self.process is not None and self.process.returncode is None:
-            self.process.terminate()
+        await self._stop_process()
+
+    async def _stop_process(self) -> None:
+        process = self.process
+        stderr_task = self._stderr_task
+        self.process = None
+        self._stderr_task = None
+
+        if process is not None and process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
-                await asyncio.wait_for(self.process.wait(), timeout=3.0)
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=self.shutdown_timeout_seconds)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    await process.wait()
+
+        if stderr_task is not None:
+            stderr_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._stderr_task
+                await stderr_task
 
     async def _healthy(self) -> bool:
         return await asyncio.to_thread(self._check_health)

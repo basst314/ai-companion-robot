@@ -9,6 +9,30 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-03-28 — Multi-Turn Voice Conversations
+
+### Highlights
+- Added wake-free multi-turn voice conversations, so after the initial wake word the robot can keep listening and responding for several turns without requiring the wake phrase again each time.
+- Tightened wake-free follow-up listening so the second turn only proceeds when VAD confirms real speech, which prevents common false positives such as TV audio, music, or placeholder Whisper text like `[BLANK AUDIO]`.
+- Added `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS` to control how long the robot waits for confirmed speech when it opens a wake-free follow-up listen.
+- Added `AI_COMPANION_FOLLOW_UP_MAX_TURNS` as a safety cap so wake-free conversations eventually return to ordinary wake-word listening instead of looping indefinitely. The default is `10`.
+- Added short-term OpenAI conversation continuity so immediate follow-ups, and fresh wake-word turns shortly afterwards, can continue the same thread.
+- Cloud replies now carry explicit reply-language metadata for TTS, so the robot can speak in the requested language and then naturally return to the current turn language afterwards.
+- Updated the terminal debug view to show clearer VAD state.
+
+### Why this matters
+This makes the robot feel like a real conversational partner instead of a single-turn voice command system. After the initial wake word, you can continue naturally for several turns, pause briefly and resume the same thread, and rely on the robot to fall back to wake-word mode instead of getting stuck in an endless loop or reacting to background audio.
+
+### Key decisions & rationale
+- Decision: require VAD-confirmed speech for wake-free follow-up turns instead of trusting non-empty Whisper output alone.
+  - Why: speech-like background audio can still produce text such as `[BLANK AUDIO]` or `(MUSIC)`, so the safer gate is real speech detection before the turn is allowed to continue.
+- Decision: cap wake-free follow-up chains with `AI_COMPANION_FOLLOW_UP_MAX_TURNS`.
+  - Why: it prevents runaway back-and-forth if a TV, music, or another false positive keeps slipping through.
+- Decision: use `previous_response_id` plus a short resume window instead of the Conversations API or a new memory layer.
+  - Why: it preserves context across nearby turns with minimal code and without committing yet to a durable long-term memory architecture.
+- Decision: have the model return structured reply language metadata rather than relying on local language-guess heuristics.
+  - Why: TTS voice selection becomes cleaner, more multilingual, and less brittle than trying to infer the intended reply language from transcript wording.
+
 ## 2026-03-28 — Local Piper TTS, Queueing, And Setup Provisioning
 
 ### Highlights
