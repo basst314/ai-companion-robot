@@ -1,0 +1,1879 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wake-Word Model Visualizer</title>
+  <style>
+    :root {
+      --bg: #f6f5ef;
+      --panel: #fffdf7;
+      --ink: #1d1b18;
+      --muted: #6d675f;
+      --line: #ddd5c8;
+      --accent: #b3541e;
+      --accent-soft: #f4dcc9;
+      --good: #2f7d4a;
+      --warn: #8f5d08;
+      --bad: #9a2f2f;
+      --shadow: 0 14px 40px rgba(42, 31, 17, 0.08);
+      --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+      --sans: "Avenir Next", "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(179, 84, 30, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(74, 123, 107, 0.10), transparent 24%),
+        linear-gradient(180deg, #faf8f2, var(--bg));
+      color: var(--ink);
+      font-family: var(--sans);
+    }
+
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.08;
+      font-weight: 700;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      letter-spacing: -0.04em;
+    }
+
+    h2 {
+      font-size: 1.35rem;
+      margin-bottom: 14px;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.55;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 22px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+
+    .hero-copy {
+      display: grid;
+      gap: 16px;
+    }
+
+    .kicker {
+      display: inline-flex;
+      width: fit-content;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .lede {
+      font-size: 1.05rem;
+      color: var(--muted);
+      max-width: 58ch;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      align-self: start;
+    }
+
+    .meta-card {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.65);
+    }
+
+    .meta-label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .meta-value {
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+
+    .meta-small {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-top: 6px;
+    }
+
+    .path {
+      display: block;
+      margin-top: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #201b16;
+      color: #f3eee4;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      overflow-wrap: anywhere;
+    }
+
+    .status-banner {
+      display: none;
+      margin-top: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .status-banner.show {
+      display: block;
+    }
+
+    .status-banner.success {
+      background: rgba(47, 125, 74, 0.10);
+      border-color: rgba(47, 125, 74, 0.22);
+      color: var(--good);
+    }
+
+    .status-banner.info {
+      background: rgba(179, 84, 30, 0.10);
+      border-color: rgba(179, 84, 30, 0.18);
+      color: var(--accent);
+    }
+
+    .status-banner.error {
+      background: rgba(154, 47, 47, 0.10);
+      border-color: rgba(154, 47, 47, 0.22);
+      color: var(--bad);
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 4px;
+    }
+
+    .config-field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .config-field.wide {
+      grid-column: 1 / -1;
+    }
+
+    .config-field label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+    }
+
+    .config-field input,
+    .config-field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.82);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    .picker-note {
+      color: var(--muted);
+      font-size: 0.88rem;
+      margin-top: 2px;
+    }
+
+    .section {
+      margin-top: 18px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    .flow-card {
+      position: relative;
+      min-height: 180px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247, 243, 235, 0.96));
+    }
+
+    .flow-card:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 18px;
+      right: -10px;
+      color: var(--accent);
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .flow-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .flow-code {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+
+    .flow-text {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .grid-two {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .param-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.94rem;
+    }
+
+    .param-table th,
+    .param-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .param-table th {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .total-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+      padding: 12px 16px;
+      background: #1d1b18;
+      color: #f8f2e9;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .network-shell {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247, 243, 235, 0.96));
+    }
+
+    .network-note {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 12px;
+    }
+
+    .network-stage-row {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr 0.9fr;
+      gap: 12px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+    }
+
+    .network-stage-row span {
+      text-align: center;
+    }
+
+    .network-stage-row span:first-child {
+      text-align: left;
+      padding-left: 20px;
+    }
+
+    .network-frame {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    .network-svg {
+      width: 100%;
+      min-width: 920px;
+      height: 760px;
+      display: block;
+    }
+
+    .node-inspector {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .inspector-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.78);
+    }
+
+    .inspector-kicker {
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .inspector-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .stat-box {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(246, 245, 239, 0.95);
+      border: 1px solid var(--line);
+    }
+
+    .stat-box .label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-box .value {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+
+    .weight-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .weight-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(246, 245, 239, 0.95);
+      border: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-top: 12px;
+    }
+
+    .controls {
+      display: grid;
+      gap: 14px;
+    }
+
+    .control {
+      display: grid;
+      gap: 6px;
+    }
+
+    .control-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      font-size: 0.94rem;
+    }
+
+    .control-label {
+      font-weight: 700;
+    }
+
+    .control-value {
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .viz-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .matrix-wrap {
+      display: grid;
+      gap: 10px;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(16, 1fr);
+      gap: 3px;
+      padding: 12px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #f3eee4;
+    }
+
+    .cell {
+      aspect-ratio: 1 / 1;
+      border-radius: 4px;
+      background: #ddd;
+    }
+
+    .legend {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .bars {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 10px;
+    }
+
+    .bar {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .bar-track {
+      width: 100%;
+      height: 110px;
+      border-radius: 999px;
+      background: #ede6d8;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #d98d55, #b3541e);
+      height: 10%;
+    }
+
+    .bar-label {
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+
+    .score-card {
+      display: grid;
+      gap: 12px;
+    }
+
+    .score-big {
+      font-size: clamp(2.4rem, 7vw, 4rem);
+      font-weight: 800;
+      letter-spacing: -0.05em;
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .status.good {
+      background: rgba(47, 125, 74, 0.12);
+      color: var(--good);
+    }
+
+    .status.bad {
+      background: rgba(154, 47, 47, 0.12);
+      color: var(--bad);
+    }
+
+    .mini-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mini {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .mini .label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .mini .value {
+      display: block;
+      margin-top: 5px;
+      font-size: 1rem;
+      font-weight: 700;
+      font-family: var(--mono);
+    }
+
+    .foot {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.72);
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 1080px) {
+      .hero,
+      .grid-two,
+      .viz-grid,
+      .node-inspector {
+        grid-template-columns: 1fr;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-card:not(:last-child)::after {
+        content: "↓";
+        top: auto;
+        bottom: -14px;
+        left: 18px;
+        right: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="panel hero-copy">
+        <span class="kicker">Wake-Word Model Explorer</span>
+        <h1 id="heroTitle">Wake-Word Model</h1>
+        <p class="lede" id="heroLede">
+          Explore a compact openWakeWord model from three angles: its parsed ONNX
+          architecture, its parameter layout, and an interactive intuition builder
+          for how audio patterns become a wake-word confidence score.
+        </p>
+        <div class="path" id="modelPath">Choose a local `.onnx` file to inspect</div>
+        <div class="status-banner info show" id="loadStatus">Select an ONNX model to parse its graph, layer sizes, parameter count, and dense-node weights.</div>
+        <div class="config-grid">
+          <div class="config-field">
+            <label for="modelFileInput">Model file</label>
+            <input id="modelFileInput" type="file" accept=".onnx" />
+            <div class="picker-note">Select an ONNX wake-word model to parse its graph, tensor shapes, parameter counts, and dense-layer weights directly in the browser.</div>
+          </div>
+          <div class="config-field">
+            <label for="titleInput">Model name</label>
+            <input id="titleInput" type="text" value="Wake-Word Model" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>Architecture</h2>
+      <div class="flow">
+        <div class="flow-card">
+          <div class="flow-title">1. Audio Features</div>
+          <div class="flow-code" id="flowInputShape">16 × 96</div>
+          <div class="flow-text">
+            openWakeWord first turns the raw waveform into a compact feature grid. This is
+            what the classifier actually consumes.
+          </div>
+        </div>
+        <div class="flow-card">
+          <div class="flow-title">2. Flatten</div>
+          <div class="flow-code" id="flowFlatten">1536 values</div>
+          <div class="flow-text">
+            The 16 by 96 feature grid is flattened into one long vector so the dense layers
+            can operate on it.
+          </div>
+        </div>
+        <div class="flow-card">
+          <div class="flow-title">3. Hidden Layer 1</div>
+          <div class="flow-code" id="flowDense1">1536 → 32</div>
+          <div class="flow-text">
+            The network compresses all those feature values into a 32-number internal
+            summary, then applies LayerNorm and ReLU.
+          </div>
+        </div>
+        <div class="flow-card">
+          <div class="flow-title">4. Hidden Layer 2</div>
+          <div class="flow-code" id="flowDense2">32 → 32</div>
+          <div class="flow-text">
+            A second fully connected block refines that summary into a more wake-word-aware
+            internal representation.
+          </div>
+        </div>
+        <div class="flow-card">
+          <div class="flow-title">5. Output Score</div>
+          <div class="flow-code" id="flowOutput">32 → 1 → sigmoid</div>
+          <div class="flow-text">
+            The final layer emits one logit, and sigmoid converts it into the confidence
+            score you see in your live tester.
+          </div>
+        </div>
+      </div>
+      <div class="network-shell">
+        <div class="network-note">
+          The network view below turns the parsed model into a readable graph: a summarized input block, stacked hidden layers, and a final sigmoid output node.
+        </div>
+        <div class="meta-grid" style="margin-bottom: 14px;">
+          <div class="meta-card">
+            <span class="meta-label">Model Type</span>
+            <div class="meta-value" id="metaModelType">DNN</div>
+            <div class="meta-small" id="metaModelTypeDetail">Small dense neural net classifier</div>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Hidden Width</span>
+            <div class="meta-value" id="metaHiddenWidth">32</div>
+            <div class="meta-small" id="metaHiddenWidthDetail">Not 32 layers, but 32 units per hidden layer</div>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Input Shape</span>
+            <div class="meta-value" id="metaInputShape">16 × 96</div>
+            <div class="meta-small" id="metaInputShapeDetail">16 time steps, 96 audio features each</div>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Approx. Parameters</span>
+            <div class="meta-value" id="metaParams">50,401</div>
+            <div class="meta-small" id="metaParamsDetail">Tiny by modern ML standards, great for wake words</div>
+          </div>
+        </div>
+        <div class="network-stage-row">
+          <span id="networkInputLabel">Input / Flattened 1536</span>
+          <span id="networkDense1Label">Dense 1 (32)</span>
+          <span id="networkDense2Label">Dense 2 (32)</span>
+          <span id="networkOutputLabel">Output (1)</span>
+        </div>
+        <div class="network-frame">
+          <svg id="networkSvg" class="network-svg" viewBox="0 0 920 760" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <div class="node-inspector">
+          <div class="inspector-card">
+            <div class="inspector-kicker">Selected Node</div>
+            <div class="inspector-title" id="inspectorTitle">No node selected yet</div>
+            <p class="note" id="inspectorSubtitle">Select any hidden or output node in the graph to inspect its real parsed bias and incoming weight statistics.</p>
+            <div class="stat-grid">
+              <div class="stat-box">
+                <span class="label">Bias</span>
+                <span class="value" id="nodeBias">n/a</span>
+              </div>
+              <div class="stat-box">
+                <span class="label">Incoming Weights</span>
+                <span class="value" id="nodeCount">n/a</span>
+              </div>
+              <div class="stat-box">
+                <span class="label">Mean</span>
+                <span class="value" id="nodeMean">n/a</span>
+              </div>
+              <div class="stat-box">
+                <span class="label">Std Dev</span>
+                <span class="value" id="nodeStd">n/a</span>
+              </div>
+              <div class="stat-box">
+                <span class="label">Min</span>
+                <span class="value" id="nodeMin">n/a</span>
+              </div>
+              <div class="stat-box">
+                <span class="label">Max</span>
+                <span class="value" id="nodeMax">n/a</span>
+              </div>
+            </div>
+          </div>
+          <div class="inspector-card">
+            <div class="inspector-kicker">Strongest Weights</div>
+            <div class="inspector-title">Top positive and negative inputs</div>
+            <div class="weight-list" id="weightList">
+              <div class="weight-item"><span>Select a node</span><span>to inspect its strongest weights</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid-two">
+      <div class="panel">
+        <h2>Parameter Breakdown</h2>
+        <table class="param-table">
+          <thead>
+            <tr>
+              <th>Layer</th>
+              <th>Shape</th>
+              <th>Params</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Dense 1</td>
+              <td id="paramDense1Shape">1536 → 32</td>
+              <td id="paramDense1Count">49,184</td>
+            </tr>
+            <tr>
+              <td>LayerNorm 1</td>
+              <td id="paramNorm1Shape">32 scalars + 32 biases</td>
+              <td id="paramNorm1Count">64</td>
+            </tr>
+            <tr>
+              <td>Dense 2</td>
+              <td id="paramDense2Shape">32 → 32</td>
+              <td id="paramDense2Count">1,056</td>
+            </tr>
+            <tr>
+              <td>LayerNorm 2</td>
+              <td id="paramNorm2Shape">32 scalars + 32 biases</td>
+              <td id="paramNorm2Count">64</td>
+            </tr>
+            <tr>
+              <td>Output</td>
+              <td id="paramOutputShape">32 → 1</td>
+              <td id="paramOutputCount">33</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="total-pill" id="paramTotal">Total trainable parameters: 50,401</div>
+        <p class="note" id="paramNote">
+          Most of the model lives in the first dense layer, because that is where the
+          flattened 1536-value feature vector first gets compressed down to width 32.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>What The Terms Mean</h2>
+        <div class="controls">
+          <div>
+            <strong>Input feature shape</strong>
+            <p class="note" id="termInputShape">The model does not see raw audio samples directly. It sees a 16 × 96 table of learned audio features.</p>
+          </div>
+          <div>
+            <strong>Hidden width</strong>
+            <p class="note" id="termHiddenWidth">The size of each internal dense layer. In your case, each hidden representation contains 32 numbers.</p>
+          </div>
+          <div>
+            <strong>LayerNorm</strong>
+            <p class="note">Keeps the hidden activations in a more stable range while training and inference run.</p>
+          </div>
+          <div>
+            <strong>ReLU</strong>
+            <p class="note">Clips negative activations to zero and keeps positive ones, which helps the network learn non-linear patterns.</p>
+          </div>
+          <div>
+            <strong>Sigmoid</strong>
+            <p class="note">Turns the final raw output into a score between 0 and 1, like 0.12, 0.48, or 0.93.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>Interactive Score Walkthrough</h2>
+      <p class="note">
+        The architecture and parameter counts above are real. The controls and activations below
+        are an educational simulation that helps you build intuition for why the score goes up or down.
+      </p>
+
+      <div class="grid-two" style="margin-top: 16px;">
+        <div class="controls">
+          <div class="control">
+            <div class="control-header">
+              <span class="control-label">Wake-word pronunciation match</span>
+              <span class="control-value" id="matchValue">0.78</span>
+            </div>
+            <input id="match" type="range" min="0" max="1" value="0.78" step="0.01" />
+          </div>
+          <div class="control">
+            <div class="control-header">
+              <span class="control-label">Timing / phrase continuity</span>
+              <span class="control-value" id="timingValue">0.71</span>
+            </div>
+            <input id="timing" type="range" min="0" max="1" value="0.71" step="0.01" />
+          </div>
+          <div class="control">
+            <div class="control-header">
+              <span class="control-label">Background noise level</span>
+              <span class="control-value" id="noiseValue">0.18</span>
+            </div>
+            <input id="noise" type="range" min="0" max="1" value="0.18" step="0.01" />
+          </div>
+          <div class="control">
+            <div class="control-header">
+              <span class="control-label">Sentence embedding / coarticulation</span>
+              <span class="control-value" id="contextValue">0.36</span>
+            </div>
+            <input id="context" type="range" min="0" max="1" value="0.36" step="0.01" />
+          </div>
+          <div class="control">
+            <div class="control-header">
+              <span class="control-label">Decision threshold</span>
+              <span class="control-value" id="thresholdValue">0.50</span>
+            </div>
+            <input id="threshold" type="range" min="0.05" max="0.95" value="0.50" step="0.01" />
+          </div>
+        </div>
+
+        <div class="score-card">
+          <div class="mini-stats">
+            <div class="mini">
+              <span class="label">Raw Logit</span>
+              <span class="value" id="logitOut">0.00</span>
+            </div>
+            <div class="mini">
+              <span class="label">Sigmoid Score</span>
+              <span class="value" id="scoreOut">0.5000</span>
+            </div>
+            <div class="mini">
+              <span class="label">Threshold</span>
+              <span class="value" id="thresholdOut">0.50</span>
+            </div>
+          </div>
+          <div class="score-big" id="scoreBig">0.5000</div>
+          <div class="status bad" id="statusPill">Below threshold</div>
+          <p class="note" id="scoreComment">
+            Borderline. A wake-word detector in this zone may feel inconsistent and threshold-sensitive.
+          </p>
+        </div>
+      </div>
+
+      <div class="viz-grid">
+        <div class="matrix-wrap">
+          <h3>Simulated 16 × 16 Feature Snapshot</h3>
+          <div class="matrix" id="matrix"></div>
+          <div class="legend">
+            <span>cooler colors = weak wake-word evidence</span>
+            <span>warmer colors = stronger wake-word evidence</span>
+          </div>
+        </div>
+        <div>
+          <h3>Hidden Activations</h3>
+          <div class="bars" id="bars"></div>
+          <p class="note">
+            These bars represent a subset of the internal 32-dimensional hidden state. When
+            pronunciation and timing line up, more of these units activate strongly.
+          </p>
+        </div>
+      </div>
+
+      <div class="foot">
+        This page is designed as a compact learning and inspection tool for small openWakeWord-style models:
+        enough to understand the graph, layer sizes, parameter layout, and dense-node weights without leaving the browser.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const formatInt = (value) => new Intl.NumberFormat("en-US").format(value);
+    const params = new URLSearchParams(window.location.search);
+
+    const ids = ["match", "timing", "noise", "context", "threshold"];
+    const state = {};
+    ids.forEach((id) => {
+      state[id] = document.getElementById(id);
+    });
+
+    const labels = {
+      matchValue: document.getElementById("matchValue"),
+      timingValue: document.getElementById("timingValue"),
+      noiseValue: document.getElementById("noiseValue"),
+      contextValue: document.getElementById("contextValue"),
+      thresholdValue: document.getElementById("thresholdValue"),
+      logitOut: document.getElementById("logitOut"),
+      scoreOut: document.getElementById("scoreOut"),
+      thresholdOut: document.getElementById("thresholdOut"),
+      scoreBig: document.getElementById("scoreBig"),
+      statusPill: document.getElementById("statusPill"),
+      scoreComment: document.getElementById("scoreComment"),
+    };
+
+    const modelUi = {
+      title: document.getElementById("heroTitle"),
+      lede: document.getElementById("heroLede"),
+      path: document.getElementById("modelPath"),
+      metaModelType: document.getElementById("metaModelType"),
+      metaModelTypeDetail: document.getElementById("metaModelTypeDetail"),
+      metaHiddenWidth: document.getElementById("metaHiddenWidth"),
+      metaHiddenWidthDetail: document.getElementById("metaHiddenWidthDetail"),
+      metaInputShape: document.getElementById("metaInputShape"),
+      metaInputShapeDetail: document.getElementById("metaInputShapeDetail"),
+      metaParams: document.getElementById("metaParams"),
+      metaParamsDetail: document.getElementById("metaParamsDetail"),
+      flowInputShape: document.getElementById("flowInputShape"),
+      flowFlatten: document.getElementById("flowFlatten"),
+      flowDense1: document.getElementById("flowDense1"),
+      flowDense2: document.getElementById("flowDense2"),
+      flowOutput: document.getElementById("flowOutput"),
+      paramDense1Shape: document.getElementById("paramDense1Shape"),
+      paramDense1Count: document.getElementById("paramDense1Count"),
+      paramNorm1Shape: document.getElementById("paramNorm1Shape"),
+      paramNorm1Count: document.getElementById("paramNorm1Count"),
+      paramDense2Shape: document.getElementById("paramDense2Shape"),
+      paramDense2Count: document.getElementById("paramDense2Count"),
+      paramNorm2Shape: document.getElementById("paramNorm2Shape"),
+      paramNorm2Count: document.getElementById("paramNorm2Count"),
+      paramOutputShape: document.getElementById("paramOutputShape"),
+      paramOutputCount: document.getElementById("paramOutputCount"),
+      paramTotal: document.getElementById("paramTotal"),
+      paramNote: document.getElementById("paramNote"),
+      termInputShape: document.getElementById("termInputShape"),
+      termHiddenWidth: document.getElementById("termHiddenWidth"),
+      modelFileInput: document.getElementById("modelFileInput"),
+      loadStatus: document.getElementById("loadStatus"),
+      titleInput: document.getElementById("titleInput"),
+      inspectorTitle: document.getElementById("inspectorTitle"),
+      inspectorSubtitle: document.getElementById("inspectorSubtitle"),
+      nodeBias: document.getElementById("nodeBias"),
+      nodeCount: document.getElementById("nodeCount"),
+      nodeMean: document.getElementById("nodeMean"),
+      nodeStd: document.getElementById("nodeStd"),
+      nodeMin: document.getElementById("nodeMin"),
+      nodeMax: document.getElementById("nodeMax"),
+      weightList: document.getElementById("weightList"),
+    };
+
+    const matrix = document.getElementById("matrix");
+    const bars = document.getElementById("bars");
+    const networkSvg = document.getElementById("networkSvg");
+    const networkInputLabel = document.getElementById("networkInputLabel");
+    const networkDense1Label = document.getElementById("networkDense1Label");
+    const networkDense2Label = document.getElementById("networkDense2Label");
+    const networkOutputLabel = document.getElementById("networkOutputLabel");
+
+    for (let i = 0; i < 256; i += 1) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      matrix.appendChild(cell);
+    }
+
+    for (let i = 0; i < 16; i += 1) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "bar";
+      wrapper.innerHTML = `
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <div class="bar-label">h${i + 1}</div>
+      `;
+      bars.appendChild(wrapper);
+    }
+
+    const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
+    let parsedMetadata = null;
+    let manualConfig = {
+      modelType: "DNN",
+      hiddenWidth: 32,
+      timeSteps: 16,
+      featureDim: 96,
+    };
+    let selectedNodeInfo = null;
+
+    function deriveTitleFromFile(filename) {
+      const stem = String(filename || "")
+        .replace(/\.[^.]+$/, "")
+        .replace(/[_-]+/g, " ")
+        .trim();
+      return stem
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ") || "Custom Wake-Word Model";
+    }
+
+    function readVarint(bytes, offset) {
+      let result = 0n;
+      let shift = 0n;
+      let pos = offset;
+      while (pos < bytes.length) {
+        const byte = BigInt(bytes[pos]);
+        result |= (byte & 0x7fn) << shift;
+        pos += 1;
+        if ((byte & 0x80n) === 0n) {
+          return [Number(result), pos];
+        }
+        shift += 7n;
+      }
+      throw new Error("Invalid varint");
+    }
+
+    function skipField(bytes, offset, wireType) {
+      if (wireType === 0) {
+        const [, next] = readVarint(bytes, offset);
+        return next;
+      }
+      if (wireType === 1) return offset + 8;
+      if (wireType === 2) {
+        const [len, next] = readVarint(bytes, offset);
+        return next + len;
+      }
+      if (wireType === 5) return offset + 4;
+      throw new Error(`Unsupported wire type: ${wireType}`);
+    }
+
+    function readString(bytes, offset) {
+      const [len, next] = readVarint(bytes, offset);
+      const end = next + len;
+      return [new TextDecoder().decode(bytes.slice(next, end)), end];
+    }
+
+    function readBytes(bytes, offset) {
+      const [len, next] = readVarint(bytes, offset);
+      const end = next + len;
+      return [bytes.slice(next, end), end];
+    }
+
+    function parseTensorShape(bytes) {
+      const dims = [];
+      let offset = 0;
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 2) {
+          const [dimBytes, dimNext] = readBytes(bytes, offset);
+          offset = dimNext;
+          let dimOffset = 0;
+          let dimValue = null;
+          while (dimOffset < dimBytes.length) {
+            const [dimTag, dimTagNext] = readVarint(dimBytes, dimOffset);
+            dimOffset = dimTagNext;
+            const dimField = dimTag >> 3;
+            const dimWire = dimTag & 7;
+            if (dimField === 1 && dimWire === 0) {
+              const [val, valNext] = readVarint(dimBytes, dimOffset);
+              dimOffset = valNext;
+              dimValue = val;
+            } else if (dimField === 2 && dimWire === 2) {
+              const [param, paramNext] = readString(dimBytes, dimOffset);
+              dimOffset = paramNext;
+              dimValue = param || "?";
+            } else {
+              dimOffset = skipField(dimBytes, dimOffset, dimWire);
+            }
+          }
+          dims.push(dimValue ?? "?");
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return dims;
+    }
+
+    function parseTypeProto(bytes) {
+      let offset = 0;
+      const info = { dims: [] };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 2) {
+          const [tensorBytes, tensorNext] = readBytes(bytes, offset);
+          offset = tensorNext;
+          let tensorOffset = 0;
+          while (tensorOffset < tensorBytes.length) {
+            const [tensorTag, tensorTagNext] = readVarint(tensorBytes, tensorOffset);
+            tensorOffset = tensorTagNext;
+            const tensorField = tensorTag >> 3;
+            const tensorWire = tensorTag & 7;
+            if (tensorField === 1 && tensorWire === 0) {
+              const [elemType, elemNext] = readVarint(tensorBytes, tensorOffset);
+              tensorOffset = elemNext;
+              info.elemType = elemType;
+            } else if (tensorField === 2 && tensorWire === 2) {
+              const [shapeBytes, shapeNext] = readBytes(tensorBytes, tensorOffset);
+              tensorOffset = shapeNext;
+              info.dims = parseTensorShape(shapeBytes);
+            } else {
+              tensorOffset = skipField(tensorBytes, tensorOffset, tensorWire);
+            }
+          }
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return info;
+    }
+
+    function parseValueInfo(bytes) {
+      let offset = 0;
+      const info = { name: "", dims: [] };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 2) {
+          [info.name, offset] = readString(bytes, offset);
+        } else if (field === 2 && wire === 2) {
+          const [typeBytes, typeNext] = readBytes(bytes, offset);
+          offset = typeNext;
+          Object.assign(info, parseTypeProto(typeBytes));
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return info;
+    }
+
+    function parseTensor(bytes) {
+      let offset = 0;
+      const tensor = { name: "", dims: [], floatData: [], rawData: null };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 0) {
+          const [dim, dimNext] = readVarint(bytes, offset);
+          offset = dimNext;
+          tensor.dims.push(dim);
+        } else if (field === 2 && wire === 0) {
+          const [dataType, dataTypeNext] = readVarint(bytes, offset);
+          offset = dataTypeNext;
+          tensor.dataType = dataType;
+        } else if (field === 4 && wire === 5) {
+          const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 4);
+          tensor.floatData.push(view.getFloat32(0, true));
+          offset += 4;
+        } else if (field === 9 && wire === 2) {
+          [tensor.rawData, offset] = readBytes(bytes, offset);
+        } else if (field === 8 && wire === 2) {
+          [tensor.name, offset] = readString(bytes, offset);
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return tensor;
+    }
+
+    function parseNode(bytes) {
+      let offset = 0;
+      const node = { input: [], output: [], opType: "" };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 2) {
+          const [value, valueNext] = readString(bytes, offset);
+          offset = valueNext;
+          node.input.push(value);
+        } else if (field === 2 && wire === 2) {
+          const [value, valueNext] = readString(bytes, offset);
+          offset = valueNext;
+          node.output.push(value);
+        } else if (field === 4 && wire === 2) {
+          [node.opType, offset] = readString(bytes, offset);
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return node;
+    }
+
+    function parseGraph(bytes) {
+      let offset = 0;
+      const graph = { nodes: [], initializers: [], inputs: [], outputs: [] };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 1 && wire === 2) {
+          const [nodeBytes, nodeNext] = readBytes(bytes, offset);
+          offset = nodeNext;
+          graph.nodes.push(parseNode(nodeBytes));
+        } else if (field === 5 && wire === 2) {
+          const [tensorBytes, tensorNext] = readBytes(bytes, offset);
+          offset = tensorNext;
+          graph.initializers.push(parseTensor(tensorBytes));
+        } else if (field === 11 && wire === 2) {
+          const [valueBytes, valueNext] = readBytes(bytes, offset);
+          offset = valueNext;
+          graph.inputs.push(parseValueInfo(valueBytes));
+        } else if (field === 12 && wire === 2) {
+          const [valueBytes, valueNext] = readBytes(bytes, offset);
+          offset = valueNext;
+          graph.outputs.push(parseValueInfo(valueBytes));
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return graph;
+    }
+
+    function parseOnnx(bytes) {
+      let offset = 0;
+      const model = { graph: null };
+      while (offset < bytes.length) {
+        const [tag, next] = readVarint(bytes, offset);
+        offset = next;
+        const field = tag >> 3;
+        const wire = tag & 7;
+        if (field === 7 && wire === 2) {
+          const [graphBytes, graphNext] = readBytes(bytes, offset);
+          offset = graphNext;
+          model.graph = parseGraph(graphBytes);
+        } else {
+          offset = skipField(bytes, offset, wire);
+        }
+      }
+      return model;
+    }
+
+    function product(nums) {
+      return nums.reduce((acc, n) => acc * (Number.isFinite(n) ? n : 1), 1);
+    }
+
+    function decodeTensorData(tensor) {
+      if (tensor.rawData && tensor.dataType === 1) {
+        const view = new DataView(tensor.rawData.buffer, tensor.rawData.byteOffset, tensor.rawData.byteLength);
+        const out = [];
+        for (let i = 0; i < tensor.rawData.byteLength; i += 4) {
+          out.push(view.getFloat32(i, true));
+        }
+        return out;
+      }
+      if (tensor.floatData?.length) return tensor.floatData.slice();
+      return [];
+    }
+
+    function summarizeWeights(values) {
+      if (!values.length) {
+        return { count: 0, mean: 0, std: 0, min: 0, max: 0 };
+      }
+      const count = values.length;
+      const mean = values.reduce((a, b) => a + b, 0) / count;
+      const variance = values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / count;
+      return {
+        count,
+        mean,
+        std: Math.sqrt(variance),
+        min: Math.min(...values),
+        max: Math.max(...values),
+      };
+    }
+
+    function topWeights(values, topN = 4) {
+      return values
+        .map((value, index) => ({ index, value }))
+        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+        .slice(0, topN);
+    }
+
+    function inferLayerChain(graph) {
+      const initializers = new Map(graph.initializers.map((t) => [t.name, t]));
+      const chain = [];
+      graph.nodes.forEach((node) => {
+        if (!["Gemm", "MatMul"].includes(node.opType)) return;
+        const weight = node.input.map((name) => initializers.get(name)).find((tensor) => tensor && tensor.dims.length === 2);
+        if (!weight) return;
+        const [a, b] = weight.dims.map(Number);
+        const inDim = Math.max(a, b);
+        const outDim = Math.min(a, b);
+        if (chain.length === 0) chain.push(inDim);
+        chain.push(outDim);
+      });
+      return chain;
+    }
+
+    function inferMetadataFromOnnx(model, fileName) {
+      const graph = model.graph || { nodes: [], initializers: [], inputs: [], outputs: [] };
+      const initializerMap = new Map(graph.initializers.map((t) => [t.name, t]));
+      const parameterCount = graph.initializers.reduce((sum, tensor) => sum + product(tensor.dims.map(Number)), 0);
+      const dataInputs = graph.inputs.filter((input) => !graph.initializers.some((tensor) => tensor.name === input.name));
+      const primaryInput = dataInputs[0] || graph.inputs[0] || { dims: [] };
+      const numericDims = primaryInput.dims.filter((dim) => typeof dim === "number" && dim > 0);
+      const trailing = numericDims.slice(-2);
+      const timeSteps = trailing[0] || 16;
+      const featureDim = trailing[1] || 96;
+      const layerChain = inferLayerChain(graph);
+      const hiddenLayers = layerChain.length >= 3 ? layerChain.slice(1, -1) : [];
+      const hiddenWidth = hiddenLayers[0] || 32;
+      const modelType = graph.nodes.some((n) => n.opType === "Gemm" || n.opType === "MatMul") ? "DNN" : "ONNX";
+      const denseLayers = [];
+
+      graph.nodes.forEach((node) => {
+        if (!["Gemm", "MatMul"].includes(node.opType)) return;
+        const weightTensor = node.input.map((name) => initializerMap.get(name)).find((tensor) => tensor && tensor.dims.length === 2);
+        const biasTensor = node.input.map((name) => initializerMap.get(name)).find((tensor) => tensor && tensor.dims.length === 1);
+        if (!weightTensor) return;
+        const weightData = decodeTensorData(weightTensor);
+        const biasData = biasTensor ? decodeTensorData(biasTensor) : [];
+        const rows = Number(weightTensor.dims[0]);
+        const cols = Number(weightTensor.dims[1]);
+        const outDim = Math.min(rows, cols);
+        const inDim = Math.max(rows, cols);
+        const rowMajorOut = rows === outDim ? rows : cols;
+        const layerNodes = [];
+        for (let outIndex = 0; outIndex < outDim; outIndex += 1) {
+          const incoming = [];
+          for (let inIndex = 0; inIndex < inDim; inIndex += 1) {
+            const idx = rowMajorOut === rows
+              ? outIndex * inDim + inIndex
+              : inIndex * outDim + outIndex;
+            incoming.push(weightData[idx] ?? 0);
+          }
+          layerNodes.push({
+            index: outIndex,
+            bias: biasData[outIndex] ?? 0,
+            weights: incoming,
+            summary: summarizeWeights(incoming),
+            topWeights: topWeights(incoming),
+          });
+        }
+        denseLayers.push({ inDim, outDim, nodes: layerNodes });
+      });
+
+      return {
+        title: deriveTitleFromFile(fileName),
+        modelType,
+        timeSteps,
+        featureDim,
+        hiddenWidth,
+        parameterCount,
+        graphNodeCount: graph.nodes.length,
+        initializerCount: graph.initializers.length,
+        layerChain,
+        denseLayers,
+      };
+    }
+
+    function getConfigFromInputs() {
+      return {
+        title: modelUi.titleInput.value.trim() || "Custom Wake-Word Model",
+        modelType: manualConfig.modelType,
+        hiddenWidth: manualConfig.hiddenWidth,
+        timeSteps: manualConfig.timeSteps,
+        featureDim: manualConfig.featureDim,
+        modelFile: modelUi.modelFileInput.files?.[0]?.name || "model.onnx",
+      };
+    }
+
+    function computeStats(config) {
+      const flattened = config.timeSteps * config.featureDim;
+      const dense1 = flattened * config.hiddenWidth + config.hiddenWidth;
+      const norm1 = config.hiddenWidth * 2;
+      const dense2 = config.hiddenWidth * config.hiddenWidth + config.hiddenWidth;
+      const norm2 = config.hiddenWidth * 2;
+      const output = config.hiddenWidth + 1;
+      const total = dense1 + norm1 + dense2 + norm2 + output;
+
+      return { flattened, dense1, norm1, dense2, norm2, output, total };
+    }
+
+    function setLoadStatus(kind, message) {
+      modelUi.loadStatus.className = `status-banner show ${kind}`;
+      modelUi.loadStatus.textContent = message;
+    }
+
+    function svgEl(name, attrs = {}) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", name);
+      Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, String(value)));
+      return el;
+    }
+
+    function drawLayerNodes(group, x, count, top, bottom, radius, fill) {
+      const positions = [];
+      const span = bottom - top;
+      const step = count > 1 ? span / (count - 1) : 0;
+      for (let i = 0; i < count; i += 1) {
+        const y = top + step * i;
+        positions.push({ x, y });
+        group.appendChild(svgEl("circle", {
+          cx: x,
+          cy: y,
+          r: radius,
+          fill,
+          stroke: "rgba(29,27,24,0.16)",
+          "stroke-width": 1,
+        }));
+      }
+      return positions;
+    }
+
+    function renderNetworkDiagram(config, stats) {
+      networkSvg.innerHTML = "";
+
+      const chain = parsedMetadata?.layerChain?.length >= 2
+        ? parsedMetadata.layerChain
+        : [stats.flattened, config.hiddenWidth, config.hiddenWidth, 1];
+
+      const edgeLayer = svgEl("g");
+      const nodeLayer = svgEl("g");
+      const textLayer = svgEl("g");
+
+      const inputBox = { x: 70, y: 170, w: 140, h: 400 };
+      const layerXs = [360, 590];
+      const outputX = 810;
+      const top = 80;
+      const bottom = 680;
+
+      nodeLayer.appendChild(svgEl("rect", {
+        x: inputBox.x,
+        y: inputBox.y,
+        width: inputBox.w,
+        height: inputBox.h,
+        rx: 20,
+        fill: "rgba(179,84,30,0.08)",
+        stroke: "rgba(179,84,30,0.25)",
+        "stroke-width": 1.5,
+      }));
+
+      nodeLayer.appendChild(svgEl("path", {
+        d: "M95 350 C120 285, 140 420, 165 340 S210 410, 235 345",
+        fill: "none",
+        stroke: "rgba(179,84,30,0.7)",
+        "stroke-width": 4,
+        "stroke-linecap": "round",
+      }));
+
+      const inputLabel1 = svgEl("text", { x: 140, y: 245, "text-anchor": "middle", fill: "#1d1b18", "font-size": 18, "font-weight": 700 });
+      inputLabel1.textContent = `${formatInt(stats.flattened)} inputs`;
+      textLayer.appendChild(inputLabel1);
+      const inputLabel2 = svgEl("text", { x: 140, y: 272, "text-anchor": "middle", fill: "#6d675f", "font-size": 13 });
+      inputLabel2.textContent = `${config.timeSteps} x ${config.featureDim} features`;
+      textLayer.appendChild(inputLabel2);
+      const inputLabel3 = svgEl("text", { x: 140, y: 520, "text-anchor": "middle", fill: "#6d675f", "font-size": 12 });
+      inputLabel3.textContent = "summarized input block";
+      textLayer.appendChild(inputLabel3);
+
+      const hiddenLayers = chain.slice(1, -1);
+      const hidden1Count = hiddenLayers[0] || config.hiddenWidth;
+      const hidden2Count = hiddenLayers[1] || hiddenLayers[0] || config.hiddenWidth;
+      const hidden1 = drawLayerNodes(nodeLayer, layerXs[0], hidden1Count, top, bottom, 6.2, "rgba(179,84,30,0.9)");
+      const hidden2 = drawLayerNodes(nodeLayer, layerXs[1], hidden2Count, top, bottom, 6.2, "rgba(74,123,107,0.9)");
+      const out = drawLayerNodes(nodeLayer, outputX, 1, (top + bottom) / 2, (top + bottom) / 2, 9, "rgba(47,125,74,0.95)");
+
+      hidden1.forEach((node) => {
+        edgeLayer.appendChild(svgEl("line", {
+          x1: inputBox.x + inputBox.w,
+          y1: inputBox.y + inputBox.h / 2,
+          x2: node.x,
+          y2: node.y,
+          stroke: "rgba(179,84,30,0.13)",
+          "stroke-width": 1,
+        }));
+      });
+
+      hidden1.forEach((a) => {
+        hidden2.forEach((b) => {
+          edgeLayer.appendChild(svgEl("line", {
+            x1: a.x,
+            y1: a.y,
+            x2: b.x,
+            y2: b.y,
+            stroke: "rgba(74,123,107,0.08)",
+            "stroke-width": 0.8,
+          }));
+        });
+      });
+
+      hidden2.forEach((node) => {
+        edgeLayer.appendChild(svgEl("line", {
+          x1: node.x,
+          y1: node.y,
+          x2: out[0].x,
+          y2: out[0].y,
+          stroke: "rgba(47,125,74,0.14)",
+          "stroke-width": 1,
+        }));
+      });
+
+      [
+        { x: layerXs[0], y: 42, text: "LayerNorm + ReLU" },
+        { x: layerXs[1], y: 42, text: "LayerNorm + ReLU" },
+        { x: outputX, y: 42, text: "Sigmoid" },
+      ].forEach(({ x, y, text }) => {
+        const t = svgEl("text", { x, y, "text-anchor": "middle", fill: "#6d675f", "font-size": 12, "font-weight": 700 });
+        t.textContent = text;
+        textLayer.appendChild(t);
+      });
+
+      const outLabel = svgEl("text", { x: outputX, y: out[0].y + 32, "text-anchor": "middle", fill: "#1d1b18", "font-size": 14, "font-weight": 700 });
+      outLabel.textContent = "confidence";
+      textLayer.appendChild(outLabel);
+
+      const denseLayers = parsedMetadata?.denseLayers || [];
+      const bindLayer = (positions, layerIndex, color) => {
+        const layer = denseLayers[layerIndex];
+        if (!layer) return;
+        positions.forEach((pos, idx) => {
+          const info = layer.nodes[idx];
+          if (!info) return;
+          const summaryText = svgEl("text", {
+            x: pos.x + 14,
+            y: pos.y + 3,
+            fill: color,
+            "font-size": 8,
+            "font-family": "SFMono-Regular, ui-monospace, Menlo, Consolas, monospace",
+            "font-weight": 700,
+          });
+          summaryText.textContent = `${info.bias >= 0 ? "+" : ""}${info.bias.toFixed(2)}`;
+          textLayer.appendChild(summaryText);
+
+          const hit = svgEl("circle", {
+            cx: pos.x,
+            cy: pos.y,
+            r: 10,
+            fill: "transparent",
+            cursor: "pointer",
+          });
+          hit.addEventListener("click", () => {
+            selectedNodeInfo = { layerIndex, nodeIndex: idx, info };
+            renderNodeInspector();
+          });
+          nodeLayer.appendChild(hit);
+        });
+      };
+      bindLayer(hidden1, 0, "#8f4518");
+      bindLayer(hidden2, 1, "#2f6f63");
+      if (denseLayers[2]?.nodes?.[0]) {
+        const hit = svgEl("circle", {
+          cx: out[0].x,
+          cy: out[0].y,
+          r: 12,
+          fill: "transparent",
+          cursor: "pointer",
+        });
+        hit.addEventListener("click", () => {
+          selectedNodeInfo = { layerIndex: 2, nodeIndex: 0, info: denseLayers[2].nodes[0] };
+          renderNodeInspector();
+        });
+        nodeLayer.appendChild(hit);
+      }
+
+      networkSvg.appendChild(edgeLayer);
+      networkSvg.appendChild(nodeLayer);
+      networkSvg.appendChild(textLayer);
+
+      networkInputLabel.textContent = `Input / Flattened ${formatInt(stats.flattened)}`;
+      networkDense1Label.textContent = `Dense 1 (${formatInt(hidden1Count)})`;
+      networkDense2Label.textContent = `Dense 2 (${formatInt(hidden2Count)})`;
+      networkOutputLabel.textContent = "Output (1)";
+    }
+
+    function renderNodeInspector() {
+      if (!selectedNodeInfo) {
+        modelUi.inspectorTitle.textContent = "No node selected yet";
+        modelUi.inspectorSubtitle.textContent = "Select a hidden or output node in the graph to inspect its real parsed bias and incoming weights.";
+        modelUi.nodeBias.textContent = "n/a";
+        modelUi.nodeCount.textContent = "n/a";
+        modelUi.nodeMean.textContent = "n/a";
+        modelUi.nodeStd.textContent = "n/a";
+        modelUi.nodeMin.textContent = "n/a";
+        modelUi.nodeMax.textContent = "n/a";
+        modelUi.weightList.innerHTML = '<div class="weight-item"><span>Select a node</span><span>to inspect real weights</span></div>';
+        return;
+      }
+
+      const { layerIndex, nodeIndex, info } = selectedNodeInfo;
+      modelUi.inspectorTitle.textContent = `Layer ${layerIndex + 1}, node ${nodeIndex + 1}`;
+      modelUi.inspectorSubtitle.textContent = `Real bias and incoming weights parsed from the selected ONNX dense tensor.`;
+      modelUi.nodeBias.textContent = info.bias.toFixed(6);
+      modelUi.nodeCount.textContent = formatInt(info.summary.count);
+      modelUi.nodeMean.textContent = info.summary.mean.toFixed(6);
+      modelUi.nodeStd.textContent = info.summary.std.toFixed(6);
+      modelUi.nodeMin.textContent = info.summary.min.toFixed(6);
+      modelUi.nodeMax.textContent = info.summary.max.toFixed(6);
+      modelUi.weightList.innerHTML = "";
+      info.topWeights.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "weight-item";
+        row.innerHTML = `<span>w[${item.index}]</span><span>${item.value.toFixed(6)}</span>`;
+        modelUi.weightList.appendChild(row);
+      });
+    }
+
+    function syncConfigUi(config) {
+      const stats = computeStats(config);
+      const modelPath = config.modelFile || "model.onnx";
+      modelUi.title.textContent = config.title;
+      modelUi.path.textContent = modelPath;
+      const effectiveType = parsedMetadata?.modelType || config.modelType;
+      const effectiveHidden = parsedMetadata?.hiddenWidth || config.hiddenWidth;
+      const effectiveTime = parsedMetadata?.timeSteps || config.timeSteps;
+      const effectiveFeature = parsedMetadata?.featureDim || config.featureDim;
+      const effectiveParams = parsedMetadata?.parameterCount || stats.total;
+
+      modelUi.metaModelType.textContent = effectiveType;
+      modelUi.metaModelTypeDetail.textContent = parsedMetadata
+        ? `Parsed from ONNX graph (${parsedMetadata.graphNodeCount} nodes, ${parsedMetadata.initializerCount} tensors)`
+        : (config.modelType.toUpperCase() === "DNN"
+          ? "Small dense neural net classifier"
+          : "Custom wake-word classifier metadata");
+      modelUi.metaHiddenWidth.textContent = formatInt(effectiveHidden);
+      modelUi.metaHiddenWidthDetail.textContent = parsedMetadata
+        ? `Inferred from parsed dense weights`
+        : `Not ${config.hiddenWidth} layers, but ${config.hiddenWidth} units per hidden layer`;
+      modelUi.metaInputShape.textContent = `${effectiveTime} × ${effectiveFeature}`;
+      modelUi.metaInputShapeDetail.textContent = `${effectiveTime} time steps, ${effectiveFeature} audio features each`;
+      modelUi.metaParams.textContent = formatInt(effectiveParams);
+      modelUi.metaParamsDetail.textContent = effectiveParams < 100000
+        ? "Tiny by modern ML standards, great for wake words"
+        : "Still compact, but larger than the current Oreo model";
+
+      modelUi.flowInputShape.textContent = `${effectiveTime} × ${effectiveFeature}`;
+      modelUi.flowFlatten.textContent = `${formatInt(stats.flattened)} values`;
+      const chain = parsedMetadata?.layerChain?.length >= 2
+        ? parsedMetadata.layerChain
+        : [stats.flattened, effectiveHidden, effectiveHidden, 1];
+      const dense1Out = chain[1] || effectiveHidden;
+      const dense2Out = chain[2] || dense1Out;
+      const dense1Count = stats.flattened * dense1Out + dense1Out;
+      const norm1Count = dense1Out * 2;
+      const dense2Count = dense1Out * dense2Out + dense2Out;
+      const norm2Count = dense2Out * 2;
+      const outputCount = dense2Out + 1;
+      modelUi.flowDense1.textContent = `${formatInt(stats.flattened)} → ${formatInt(dense1Out)}`;
+      modelUi.flowDense2.textContent = `${formatInt(dense1Out)} → ${formatInt(dense2Out)}`;
+      modelUi.flowOutput.textContent = `${formatInt(dense2Out)} → 1 → sigmoid`;
+
+      modelUi.paramDense1Shape.textContent = `${formatInt(stats.flattened)} → ${formatInt(dense1Out)}`;
+      modelUi.paramDense1Count.textContent = formatInt(dense1Count);
+      modelUi.paramNorm1Shape.textContent = `${formatInt(dense1Out)} scalars + ${formatInt(dense1Out)} biases`;
+      modelUi.paramNorm1Count.textContent = formatInt(norm1Count);
+      modelUi.paramDense2Shape.textContent = `${formatInt(dense1Out)} → ${formatInt(dense2Out)}`;
+      modelUi.paramDense2Count.textContent = formatInt(dense2Count);
+      modelUi.paramNorm2Shape.textContent = `${formatInt(dense2Out)} scalars + ${formatInt(dense2Out)} biases`;
+      modelUi.paramNorm2Count.textContent = formatInt(norm2Count);
+      modelUi.paramOutputShape.textContent = `${formatInt(dense2Out)} → 1`;
+      modelUi.paramOutputCount.textContent = formatInt(outputCount);
+      modelUi.paramTotal.textContent = `Total trainable parameters: ${formatInt(effectiveParams)}`;
+      modelUi.paramNote.textContent = `Most of the model lives in the first dense layer, because that is where the flattened ${formatInt(stats.flattened)}-value feature vector first gets compressed down to width ${formatInt(effectiveHidden)}.`;
+
+      modelUi.termInputShape.textContent = `The model does not see raw audio samples directly. It sees a ${effectiveTime} × ${effectiveFeature} table of learned audio features.`;
+      modelUi.termHiddenWidth.textContent = `The size of each internal dense layer. In this configuration, each hidden representation contains ${formatInt(effectiveHidden)} numbers.`;
+      renderNetworkDiagram(config, stats);
+      document.title = `${config.title} Model Visualizer`;
+    }
+
+    function fmt(v, digits = 2) {
+      return Number(v).toFixed(digits);
+    }
+
+    function heatColor(v) {
+      const hue = 205 - v * 175;
+      const sat = 68;
+      const light = 88 - v * 38;
+      return `hsl(${hue}, ${sat}%, ${light}%)`;
+    }
+
+    function update() {
+      const match = Number(state.match.value);
+      const timing = Number(state.timing.value);
+      const noise = Number(state.noise.value);
+      const context = Number(state.context.value);
+      const threshold = Number(state.threshold.value);
+
+      labels.matchValue.textContent = fmt(match);
+      labels.timingValue.textContent = fmt(timing);
+      labels.noiseValue.textContent = fmt(noise);
+      labels.contextValue.textContent = fmt(context);
+      labels.thresholdValue.textContent = fmt(threshold);
+
+      const contextPenalty = context * 0.9;
+      const logit =
+        (match * 3.9) +
+        (timing * 2.7) -
+        (noise * 2.1) -
+        contextPenalty -
+        2.1;
+
+      const score = sigmoid(logit);
+
+      labels.logitOut.textContent = fmt(logit, 3);
+      labels.scoreOut.textContent = fmt(score, 4);
+      labels.thresholdOut.textContent = fmt(threshold, 2);
+      labels.scoreBig.textContent = fmt(score, 4);
+
+      const pass = score >= threshold;
+      labels.statusPill.textContent = pass ? "Detected" : "Below threshold";
+      labels.statusPill.className = `status ${pass ? "good" : "bad"}`;
+
+      if (score >= 0.8) {
+        labels.scoreComment.textContent = "Strong match. The model sees pronunciation and timing patterns that align well with the wake word.";
+      } else if (score >= threshold) {
+        labels.scoreComment.textContent = "Usable detection. This is the zone where your app would likely trigger cleanly.";
+      } else if (score >= threshold - 0.1) {
+        labels.scoreComment.textContent = "Borderline. Small changes in pronunciation, sentence context, or threshold can flip the result.";
+      } else {
+        labels.scoreComment.textContent = "Weak match. Either the wake-word pronunciation, timing, or surrounding speech context is too far from what the model learned.";
+      }
+
+      const cells = matrix.querySelectorAll(".cell");
+      cells.forEach((cell, i) => {
+        const x = i % 16;
+        const y = Math.floor(i / 16);
+        const wave = (Math.sin((x / 15) * Math.PI * 2 + match * 3) + 1) / 2;
+        const band = (Math.cos((y / 15) * Math.PI * 1.6 + timing * 2.8) + 1) / 2;
+        const energy = clamp((wave * 0.45) + (band * 0.35) + (match * 0.3) - (noise * 0.28) - (context * 0.2), 0, 1);
+        cell.style.background = heatColor(energy);
+      });
+
+      const barFills = bars.querySelectorAll(".bar-fill");
+      barFills.forEach((fill, i) => {
+        const activation = clamp(
+          0.08 +
+          match * (0.42 + (i % 3) * 0.07) +
+          timing * (0.18 + ((i + 1) % 4) * 0.03) -
+          noise * (0.14 + (i % 5) * 0.015) -
+          context * (0.1 + (i % 4) * 0.02),
+          0.02,
+          0.98
+        );
+        fill.style.height = `${activation * 100}%`;
+        fill.style.background = `linear-gradient(180deg, ${heatColor(clamp(activation + 0.15, 0, 1))}, ${heatColor(clamp(activation + 0.35, 0, 1))})`;
+      });
+    }
+
+    [
+      modelUi.titleInput,
+    ].forEach((el) => el.addEventListener("input", () => {
+      syncConfigUi(getConfigFromInputs());
+    }));
+
+    function init() {
+      if (params.get("title")) modelUi.titleInput.value = params.get("title");
+      if (params.get("modelType")) manualConfig.modelType = params.get("modelType");
+      if (params.get("hiddenWidth")) manualConfig.hiddenWidth = Math.max(1, Number(params.get("hiddenWidth")) || manualConfig.hiddenWidth);
+      if (params.get("timeSteps")) manualConfig.timeSteps = Math.max(1, Number(params.get("timeSteps")) || manualConfig.timeSteps);
+      if (params.get("featureDim")) manualConfig.featureDim = Math.max(1, Number(params.get("featureDim")) || manualConfig.featureDim);
+
+      syncConfigUi(getConfigFromInputs());
+      renderNodeInspector();
+      modelUi.modelFileInput.addEventListener("change", async () => {
+        const file = modelUi.modelFileInput.files?.[0];
+        if (!file) {
+          setLoadStatus("info", "Select an ONNX model to parse its graph, layer sizes, parameter count, and dense-node weights.");
+          return;
+        }
+        if (file && (!modelUi.titleInput.value || modelUi.titleInput.value === "Wake-Word Model")) {
+          modelUi.titleInput.value = deriveTitleFromFile(file.name);
+        }
+        parsedMetadata = null;
+        if (file && file.name.toLowerCase().endsWith(".onnx")) {
+          setLoadStatus("info", `Loading ${file.name}...`);
+          try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const parsed = parseOnnx(bytes);
+            parsedMetadata = inferMetadataFromOnnx(parsed, file.name);
+            manualConfig.modelType = parsedMetadata.modelType || manualConfig.modelType;
+            if (parsedMetadata.hiddenWidth) manualConfig.hiddenWidth = parsedMetadata.hiddenWidth;
+            if (parsedMetadata.timeSteps) manualConfig.timeSteps = parsedMetadata.timeSteps;
+            if (parsedMetadata.featureDim) manualConfig.featureDim = parsedMetadata.featureDim;
+            selectedNodeInfo = null;
+            setLoadStatus(
+              "success",
+              `Loaded ${file.name}. Parsed ${formatInt(parsedMetadata.graphNodeCount)} graph nodes, ${formatInt(parsedMetadata.initializerCount)} tensors, and approximately ${formatInt(parsedMetadata.parameterCount)} parameters.`
+            );
+          } catch (err) {
+            console.error("Failed to parse ONNX file", err);
+            setLoadStatus("error", `Could not parse ${file.name}. The page kept the last valid view, but this file did not decode as a supported ONNX graph.`);
+          }
+        } else {
+          setLoadStatus("error", `Unsupported file type for ${file.name}. Please choose an ONNX model.`);
+        }
+        syncConfigUi(getConfigFromInputs());
+        renderNodeInspector();
+      });
+    }
+
+    /*
+      The architecture, graph, tensor counts, and node statistics are parsed from the ONNX file.
+      The score walkthrough below remains an educational intuition builder rather than a live inference trace.
+    */
+    ids.forEach((id) => state[id].addEventListener("input", update));
+    update();
+    init();
+  </script>
+</body>
+</html>

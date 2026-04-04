@@ -376,6 +376,8 @@ The `{output_path}` placeholder is expected and is filled in by the runtime when
 
 `AI_COMPANION_FOLLOW_UP_MODE_ENABLED` controls whether the robot automatically opens a no-wake follow-up listen after a spoken reply. `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS` is the VAD-confirmed speech-start window for that follow-up turn. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` limits how many wake-free follow-up turns can chain after the initial wake/manual turn before the robot requires the wake word again.
 
+For a quick look at a small openWakeWord model outside the app, open the [wake-word model visualizer](https://basst314.github.io/ai-companion-robot/wakeword-model-visualizer.html) in a browser and choose an `.onnx` wake-word model file. The page parses the model locally and shows its layer layout, parameter counts, and per-node weight summaries.
+
 When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
 
 - type a phrase and press Enter
