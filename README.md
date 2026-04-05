@@ -49,7 +49,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Voice interaction with low latency
 - Multilingual support (English, German, Indonesian)
-- Animated face with expressions and reactions
+- Animated minimalist neon face with expressions and reactions
 - Recognition of known individuals
 - Personality-driven responses (humor, sound effects)
 - Hybrid local/cloud execution
@@ -160,11 +160,29 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_TTS_DEFAULT_VOICE_ID`
 - `AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE`
 - `AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED`
+- `AI_COMPANION_TTS_AUDIO_BACKEND`
 - `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_TTS_ALSA_DEVICE`
+- `AI_COMPANION_TTS_ALSA_SAMPLE_RATE`
+- `AI_COMPANION_TTS_ALSA_PERIOD_FRAMES`
+- `AI_COMPANION_TTS_ALSA_BUFFER_FRAMES`
+- `AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS`
 - `AI_COMPANION_TTS_QUEUE_MAX`
 - `AI_COMPANION_TTS_SAVE_ARTIFACTS`
 - `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
 - `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
+- `AI_COMPANION_UI_BACKEND`
+- `AI_COMPANION_UI_FULLSCREEN`
+- `AI_COMPANION_UI_ACTIVE_FPS`
+- `AI_COMPANION_UI_IDLE_FPS`
+- `AI_COMPANION_UI_IDLE_SLEEP_SECONDS`
+- `AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS`
+- `AI_COMPANION_UI_SHOW_TEXT_OVERLAY`
+- `AI_COMPANION_UI_SLEEP_COMMAND`
+- `AI_COMPANION_UI_WAKE_COMMAND`
+- `AI_COMPANION_UI_SDL_VIDEODRIVER`
+- `AI_COMPANION_UI_THEME_NAME`
+- `AI_COMPANION_UI_FB_PATH`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -197,6 +215,8 @@ On Raspberry Pi:
 
 On macOS:
 - `python@3.11`
+
+The current experimental face theme is `neon_bot`, an ultra-minimal cyan-on-black digital face baseline for the Raspberry Pi display.
 - `cmake`
 - `sox`
 - `git`
@@ -241,7 +261,7 @@ source .venv/bin/activate
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,ui]"
 ```
 
 ### 4. Verify the setup

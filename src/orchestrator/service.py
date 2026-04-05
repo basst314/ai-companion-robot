@@ -87,6 +87,8 @@ class OrchestratorService:
         if self.terminal_debug is not None:
             configure_terminal_debug_screen(self.terminal_debug)
             self.terminal_debug.activate()
+        if hasattr(self.ui, "start"):
+            await self.ui.start()
         if self.config.tts.backend != "mock" and hasattr(self.tts, "start"):
             await self.tts.start()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
@@ -101,6 +103,8 @@ class OrchestratorService:
             await self.wake_word.shutdown()
         if hasattr(self.tts, "shutdown"):
             await self.tts.shutdown()
+        if hasattr(self.ui, "shutdown"):
+            await self.ui.shutdown()
         if self.terminal_debug is not None:
             self.terminal_debug.close()
             configure_terminal_debug_screen(None)
@@ -558,6 +562,7 @@ class OrchestratorService:
         self.event_history.append(event)
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
+        await self._apply_tts_lifecycle_event(event)
         await self.event_bus.publish(event)
 
     async def _build_context(self, *, include_history: bool = False) -> InteractionContext:
@@ -951,11 +956,7 @@ class OrchestratorService:
         language: Language | None = None,
     ):
         del record_events
-        await self._set_lifecycle(
-            LifecycleStage.SPEAKING,
-            EmotionState.SPEAKING,
-            preview_text or text,
-        )
+        del preview_text
         return await self.tts.speak(
             SpeechRequest(
                 text=text,
@@ -1009,6 +1010,7 @@ class OrchestratorService:
         display_text = response.display_text or response.text
         response_language = response.language or transcript.language
         self.state.active_language = response_language
+        self.state.response_emotion = response.emotion
         spoke_reply_successfully = False
         await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
         await self.ui.show_text(display_text)
@@ -1048,8 +1050,33 @@ class OrchestratorService:
                 ),
             )
         )
+        self.state.response_emotion = None
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
         return response.should_speak and spoke_reply_successfully
+
+    async def _apply_tts_lifecycle_event(self, event: Event) -> None:
+        if event.source is not ComponentName.TTS:
+            return
+
+        preview_text = self.state.current_response
+        response_emotion = self.state.response_emotion or EmotionState.NEUTRAL
+
+        if event.name is EventName.TTS_PLAYBACK_STARTED:
+            await self._set_lifecycle(
+                LifecycleStage.SPEAKING,
+                EmotionState.SPEAKING,
+                preview_text,
+            )
+            return
+
+        if event.name in {EventName.TTS_PLAYBACK_FINISHED, EventName.TTS_INTERRUPTED, EventName.TTS_FAILED}:
+            if self.state.lifecycle is not LifecycleStage.SPEAKING:
+                return
+            await self._set_lifecycle(
+                LifecycleStage.RESPONDING,
+                response_emotion,
+                preview_text,
+            )
 
     async def _run_manual_input(self, raw_text: str) -> None:
         text = raw_text.strip()

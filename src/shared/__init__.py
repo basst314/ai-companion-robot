@@ -1,6 +1,6 @@
 """Shared types and helpers used across packages."""
 
-from shared.config import AppConfig, CloudConfig, MockDataConfig, PathConfig, RuntimeConfig, TtsConfig
+from shared.config import AppConfig, CloudConfig, MockDataConfig, PathConfig, RuntimeConfig, TtsConfig, UiConfig
 from shared.events import Event, EventBus, EventName
 from shared.models import (
     ActionRequest,
@@ -67,6 +67,7 @@ __all__ = [
     "Transcript",
     "TtsConfig",
     "TurnPlan",
+    "UiConfig",
     "UserIdentity",
     "VisionDetection",
 ]

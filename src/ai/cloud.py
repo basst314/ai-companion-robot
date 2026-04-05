@@ -433,6 +433,16 @@ def _spoken_reply_schema() -> dict[str, Any]:
 
 
 def _extract_structured_reply(payload: dict[str, Any]) -> dict[str, str]:
+    if str(payload.get("status", "")).strip().lower() == "incomplete":
+        reason = ""
+        details = payload.get("incomplete_details")
+        if isinstance(details, dict):
+            reason = str(details.get("reason", "")).strip().lower()
+        if reason == "max_output_tokens":
+            raise RuntimeError(
+                "OpenAI structured reply was truncated by max_output_tokens; "
+                "increase AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS"
+            )
     raw_text = _extract_output_text(payload)
     parsed = json.loads(raw_text)
     if not isinstance(parsed, dict):
