@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import struct
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+import pytest
 
 from shared.config import TtsConfig
 from shared.events import Event, EventName
@@ -22,8 +26,12 @@ from tts.service import (
     PiperManagedProcess,
     PiperVoiceResolver,
     PlaybackResult,
+    PersistentAplayAudioPlaybackService,
     QueuedTtsService,
     ResolvedSpeechRequest,
+    _build_aplay_stream_command,
+    _extract_raw_pcm_audio,
+    _prepare_wav_bytes_for_playback,
 )
 
 
@@ -46,6 +54,20 @@ class _ImmediatePlaybackService:
         del audio, job_id, selection
         self.spoken_texts.append(request.text)
         return _ImmediatePlaybackSession(duration_ms=max(50, len(request.text) * 10))
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def prewarm(self) -> None:
+        return None
+
+
+@dataclass(slots=True)
+class _PrewarmingPlaybackService(_ImmediatePlaybackService):
+    prewarm_calls: int = 0
+
+    async def prewarm(self) -> None:
+        self.prewarm_calls += 1
 
 
 @dataclass(slots=True)
@@ -80,6 +102,12 @@ class _BlockingPlaybackService:
         )
         self.sessions.append(session)
         return session
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def prewarm(self) -> None:
+        return None
 
 
 @dataclass(slots=True)
@@ -162,6 +190,123 @@ def test_piper_voice_resolver_uses_expressive_german_pack_when_enabled() -> None
     assert selection.length_scale is None
 
 
+def test_prepare_wav_bytes_for_playback_adds_lead_in_and_tail_silence() -> None:
+    sample_rate = 16000
+    source_wav = _build_test_wav([4000] * 160, sample_rate=sample_rate)
+
+    prepared_wav = _prepare_wav_bytes_for_playback(source_wav)
+
+    with wave.open(io.BytesIO(prepared_wav), "rb") as wav_file:
+        assert wav_file.getframerate() == sample_rate
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+    assert len(samples) > 160
+    assert all(sample == 0 for sample in samples[: sample_rate * 120 // 1000])
+    assert all(sample == 0 for sample in samples[-(sample_rate * 40 // 1000) :])
+
+
+def test_prepare_wav_bytes_for_playback_fades_final_samples() -> None:
+    source_wav = _build_test_wav([6000] * 800, sample_rate=16000)
+
+    prepared_wav = _prepare_wav_bytes_for_playback(source_wav)
+
+    with wave.open(io.BytesIO(prepared_wav), "rb") as wav_file:
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+    trimmed_samples = samples[16000 * 120 // 1000 : -(16000 * 40 // 1000)]
+    assert trimmed_samples[-1] == 0
+    assert abs(trimmed_samples[-2]) <= abs(trimmed_samples[-20])
+
+
+def test_build_aplay_stream_command_rewrites_file_playback_to_stdin() -> None:
+    audio = _extract_raw_pcm_audio(_build_test_wav([500] * 32, sample_rate=16000))
+
+    assert audio is not None
+    assert _build_aplay_stream_command(("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"), audio) == (
+        "aplay",
+        "-D",
+        "default:CARD=vc4hdmi1",
+        "-q",
+        "-t",
+        "raw",
+        "-f",
+        "S16_LE",
+        "-r",
+        "16000",
+        "-c",
+        "1",
+        "-",
+    )
+
+
+def test_persistent_aplay_service_reuses_running_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[tuple[str, ...]] = []
+    payloads: list[bytes] = []
+
+    class _FakeStdin:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            payloads.append(data)
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_closing(self) -> bool:
+            return self.closed
+
+    class _FakeProcess:
+        def __init__(self, command: tuple[str, ...]) -> None:
+            self.command = command
+            self.returncode: int | None = None
+            self.stdin = _FakeStdin()
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            self.returncode = 0 if self.returncode is None else self.returncode
+            return self.returncode
+
+    async def _fake_create_subprocess_exec(*command, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        starts.append(tuple(command))
+        return _FakeProcess(tuple(command))
+
+    monkeypatch.setattr("tts.service.asyncio.create_subprocess_exec", _fake_create_subprocess_exec)
+
+    async def run() -> None:
+        service = PersistentAplayAudioPlaybackService(
+            command_template=("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"),
+            timeout_seconds=5,
+        )
+        audio = SynthesizedAudio(audio_bytes=_build_test_wav([1200] * 400, sample_rate=16000))
+        request = SpeechRequest(text="hello", language=Language.ENGLISH)
+        selection = ResolvedSpeechRequest(text="hello", voice_id="test", style_hint=SpeechStyle.NEUTRAL)
+
+        first = await service.start(audio, job_id="1", request=request, selection=selection)
+        await first.wait()
+        await asyncio.sleep(0.15)
+        second = await service.start(audio, job_id="2", request=request, selection=selection)
+        await second.wait()
+        await service.shutdown()
+
+    asyncio.run(run())
+
+    assert len(starts) == 1
+    assert len(payloads) >= 3
+    assert any(payload and set(payload) == {0} for payload in payloads)
+
+
 def test_queued_tts_service_processes_append_jobs_in_order() -> None:
     playback = _ImmediatePlaybackService()
     service = QueuedTtsService(
@@ -182,6 +327,17 @@ def test_queued_tts_service_processes_append_jobs_in_order() -> None:
     asyncio.run(run())
 
     assert playback.spoken_texts == ["first", "second"]
+
+
+def _build_test_wav(samples: list[int], *, sample_rate: int) -> bytes:
+    pcm_frames = struct.pack(f"<{len(samples)}h", *samples)
+    with io.BytesIO() as buffer:
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(pcm_frames)
+        return buffer.getvalue()
 
 
 def test_queued_tts_service_interrupt_and_replace_stops_current_job() -> None:
@@ -252,9 +408,10 @@ def test_queued_tts_service_marks_queue_overflow_as_failed() -> None:
 
 def test_queued_tts_service_start_prewarms_process_manager() -> None:
     process_manager = _ProcessManagerSpy()
+    playback = _PrewarmingPlaybackService()
     service = QueuedTtsService(
         synthesizer=MockSpeechSynthesizer(),
-        playback=_ImmediatePlaybackService(),
+        playback=playback,
         process_manager=process_manager,  # type: ignore[arg-type]
         queue_max=4,
     )
@@ -267,6 +424,7 @@ def test_queued_tts_service_start_prewarms_process_manager() -> None:
 
     assert process_manager.ensure_running_calls == 1
     assert process_manager.shutdown_calls == 1
+    assert playback.prewarm_calls == 1
 
 
 def test_piper_managed_process_shutdown_kills_stuck_process() -> None:

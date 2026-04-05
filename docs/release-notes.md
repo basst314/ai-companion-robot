@@ -9,6 +9,25 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-04 — Raspberry Pi HDMI TTS Playback Stabilization
+
+### Highlights
+- Hardened local Piper playback on Raspberry Pi HDMI outputs by padding synthesized WAVs with a short lead-in, a short fade-out, and a small tail of silence before playback.
+- Added a persistent `aplay` playback path that keeps the HDMI sink active between utterances by continuously streaming silence when no speech is queued.
+- Prewarmed the persistent playback path during app startup so the very first spoken response is much less likely to lose its opening syllables.
+- Added focused TTS tests covering WAV preparation, persistent `aplay` command shaping, continuous-silence process reuse, and playback prewarming at service startup.
+
+### Why this matters
+Waveshare-style HDMI displays and similar Pi audio sinks can wake slowly and pop when the stream opens or closes. These changes make spoken replies much more reliable in the real Pi deployment path without changing the higher-level TTS interface or requiring different hardware.
+
+### Key decisions & rationale
+- Decision: keep the fix inside the existing local playback adapter layer instead of special-casing the orchestrator or Piper provider.
+  - Why: startup, queueing, interruption, and Raspberry Pi deployment all continue to use the same TTS contract.
+- Decision: use a persistent `aplay` process with silence-fill rather than launching a fresh `aplay` process for every utterance.
+  - Why: the dominant user-facing problem was HDMI sink wake/sleep behavior, so the most effective fix was to keep the device clocked while the app runs.
+- Decision: accept the small remaining shutdown pop as a hardware-path limitation for now.
+  - Why: the app is intended to stay up continuously, and the remaining artifact appears only on exit while normal runtime speech now behaves correctly.
+
 ## 2026-04-04 — Raspberry Pi 5 Bring-Up And Setup Compatibility
 
 ### Highlights
