@@ -34,7 +34,13 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
                 "AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE=de_DE-thorsten_emotional-medium",
                 "AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=true",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
                 "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+                "AI_COMPANION_TTS_ALSA_DEVICE=default:CARD=vc4hdmi1",
+                "AI_COMPANION_TTS_ALSA_SAMPLE_RATE=22050",
+                "AI_COMPANION_TTS_ALSA_PERIOD_FRAMES=256",
+                "AI_COMPANION_TTS_ALSA_BUFFER_FRAMES=1024",
+                "AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=15",
                 "AI_COMPANION_TTS_QUEUE_MAX=3",
                 "AI_COMPANION_TTS_SAVE_ARTIFACTS=true",
                 "AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=11.5",
@@ -86,7 +92,13 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.tts.default_voice_id == "id_ID-news_tts-medium"
     assert config.tts.expressive_de_voice == "de_DE-thorsten_emotional-medium"
     assert config.tts.expressive_de_enabled is True
+    assert config.tts.audio_backend == "alsa_persistent"
     assert config.tts.audio_play_command == ("aplay", "{input_path}")
+    assert config.tts.alsa_device == "default:CARD=vc4hdmi1"
+    assert config.tts.alsa_sample_rate == 22050
+    assert config.tts.alsa_period_frames == 256
+    assert config.tts.alsa_buffer_frames == 1024
+    assert config.tts.alsa_keepalive_interval_ms == 15
     assert config.tts.queue_max == 3
     assert config.tts.save_artifacts is True
     assert config.tts.synthesis_timeout_seconds == 11.5
@@ -206,6 +218,95 @@ def test_load_app_config_normalizes_invalid_vad_frame_size(tmp_path: Path) -> No
 
     assert config.runtime.vad_frame_ms == 30
     assert config.runtime.vad_start_trigger_frames == 1
+
+
+def test_load_app_config_defaults_to_alsa_backend_for_aplay_on_linux(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+            ]
+        )
+    )
+    monkeypatch.setattr("shared.config.sys.platform", "linux")
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.tts.audio_backend == "alsa_persistent"
+
+
+def test_load_app_config_rejects_alsa_buffer_smaller_than_period(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_ALSA_PERIOD_FRAMES=512",
+                "AI_COMPANION_TTS_ALSA_BUFFER_FRAMES=128",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="ALSA_BUFFER_FRAMES"):
+        load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_command_backend_ignores_invalid_alsa_values(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=command",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+                "AI_COMPANION_TTS_ALSA_DEVICE=",
+                "AI_COMPANION_TTS_ALSA_SAMPLE_RATE=0",
+                "AI_COMPANION_TTS_ALSA_PERIOD_FRAMES=0",
+                "AI_COMPANION_TTS_ALSA_BUFFER_FRAMES=1",
+                "AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=0",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.tts.audio_backend == "command"
+
+
+def test_load_app_config_rejects_non_positive_alsa_keepalive_interval(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=0",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="ALSA_KEEPALIVE_INTERVAL_MS"):
+        load_app_config(base_dir=tmp_path)
 
 
 def test_setup_script_help_is_available() -> None:

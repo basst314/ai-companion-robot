@@ -9,6 +9,26 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-04 — ALSA-Native Raspberry Pi HDMI Audio Output
+
+### Highlights
+- Replaced the Pi-specific persistent `aplay` timing loop with a dedicated ALSA-backed playback worker thread that owns the HDMI device continuously.
+- Added an explicit TTS audio backend selector plus Pi ALSA settings for device, sample rate, period frames, buffer frames, and keepalive interval.
+- Tightened playback lifecycle semantics so `TTS_PLAYBACK_STARTED` is emitted only after playback actually starts, which keeps robot face timing aligned with audible speech.
+- Added focused tests for the ALSA worker, backend selection, config parsing, and delayed-start playback-event timing.
+- Removed the ALSA playback path's dependency on `audioop`, making the new backend compatible with Raspberry Pi OS Trixie / Python 3.13.
+
+### Why this matters
+The earlier Pi HDMI fixes solved clipping but forced a tradeoff between startup delay and runtime stability. The ALSA-native backend removes that tradeoff on the tested Pi path: speech now starts promptly without clipped opening words, and the periodic pops/dropouts are gone.
+
+### Key decisions & rationale
+- Decision: use one dedicated audio-owner thread for the Pi HDMI output instead of pacing PCM writes from the app's main asyncio loop.
+  - Why: audio timing on the Pi must stay isolated from STT, UI, logging, and orchestration jitter.
+- Decision: keep the command playback backend for macOS/dev and make the ALSA worker the Pi-specific production path.
+  - Why: the Pi needed a lower-level backend for robust HDMI behavior, while the simpler command path remains a good fit elsewhere.
+- Decision: keep the worker as the single owner of the audio device and separate idle keepalive from speech playback inside that owner.
+  - Why: it avoids multiple writers fighting over the same HDMI/ALSA sink and eliminates the silence backlog that caused startup delay.
+
 ## 2026-04-04 — Raspberry Pi HDMI TTS Playback Stabilization
 
 ### Highlights

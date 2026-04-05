@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import shlex
+import sys
 from typing import Literal
 
 from shared.models import Language
@@ -72,11 +73,17 @@ class TtsConfig:
     """Text-to-speech provider and playback configuration."""
 
     backend: Literal["mock", "piper", "cloud"] = "mock"
+    audio_backend: Literal["command", "alsa_persistent"] = "command"
     piper_base_url: str = "http://127.0.0.1:5001"
     piper_service_mode: Literal["managed", "external"] = "managed"
     piper_data_dir: Path = Path("artifacts/piper-voices")
     piper_command: tuple[str, ...] = ()
     audio_play_command: tuple[str, ...] = ()
+    alsa_device: str = "default"
+    alsa_sample_rate: int = 16000
+    alsa_period_frames: int = 512
+    alsa_buffer_frames: int = 2048
+    alsa_keepalive_interval_ms: int = 20
     default_voice_en: str = "en_US-hfc_female-medium"
     default_voice_de: str = "de_DE-thorsten-medium"
     default_voice_id: str = "id_ID-news_tts-medium"
@@ -303,6 +310,27 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}TTS_AUDIO_PLAY_COMMAND"),
         default=tts.audio_play_command,
     )
+    tts.audio_backend = _parse_tts_audio_backend(
+        env.get(f"{ENV_PREFIX}TTS_AUDIO_BACKEND"),
+        default=_default_tts_audio_backend(tts.audio_play_command),
+    )
+    tts.alsa_device = env.get(f"{ENV_PREFIX}TTS_ALSA_DEVICE", tts.alsa_device).strip() or tts.alsa_device
+    tts.alsa_sample_rate = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_ALSA_SAMPLE_RATE"),
+        default=tts.alsa_sample_rate,
+    )
+    tts.alsa_period_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_ALSA_PERIOD_FRAMES"),
+        default=tts.alsa_period_frames,
+    )
+    tts.alsa_buffer_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_ALSA_BUFFER_FRAMES"),
+        default=tts.alsa_buffer_frames,
+    )
+    tts.alsa_keepalive_interval_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_ALSA_KEEPALIVE_INTERVAL_MS"),
+        default=tts.alsa_keepalive_interval_ms,
+    )
     tts.default_voice_en = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_EN", tts.default_voice_en).strip()
     tts.default_voice_de = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_DE", tts.default_voice_de).strip()
     tts.default_voice_id = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_ID", tts.default_voice_id).strip()
@@ -376,6 +404,17 @@ def _validate_tts_config(tts: TtsConfig) -> None:
         raise ValueError("AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS must be greater than zero")
     if tts.playback_timeout_seconds <= 0:
         raise ValueError("AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS must be greater than zero")
+    if tts.audio_backend == "alsa_persistent":
+        if not tts.alsa_device.strip():
+            raise ValueError("AI_COMPANION_TTS_ALSA_DEVICE must be configured")
+        if tts.alsa_sample_rate <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_SAMPLE_RATE must be greater than zero")
+        if tts.alsa_period_frames <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_PERIOD_FRAMES must be greater than zero")
+        if tts.alsa_buffer_frames < tts.alsa_period_frames:
+            raise ValueError("AI_COMPANION_TTS_ALSA_BUFFER_FRAMES must be greater than or equal to period frames")
+        if tts.alsa_keepalive_interval_ms <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS must be greater than zero")
     if tts.backend == "piper":
         if not tts.piper_base_url.strip():
             raise ValueError("AI_COMPANION_TTS_PIPER_BASE_URL must be configured for Piper TTS")
@@ -513,6 +552,15 @@ def _parse_tts_backend(
     return default
 
 
+def _parse_tts_audio_backend(
+    value: str | None,
+    default: Literal["command", "alsa_persistent"],
+) -> Literal["command", "alsa_persistent"]:
+    if value in {"command", "alsa_persistent"}:
+        return value
+    return default
+
+
 def _parse_piper_service_mode(
     value: str | None,
     default: Literal["managed", "external"],
@@ -520,6 +568,12 @@ def _parse_piper_service_mode(
     if value in {"managed", "external"}:
         return value
     return default
+
+
+def _default_tts_audio_backend(command_template: tuple[str, ...]) -> Literal["command", "alsa_persistent"]:
+    if sys.platform != "darwin" and command_template and Path(command_template[0]).name == "aplay":
+        return "alsa_persistent"
+    return "command"
 
 
 def _apply_speech_latency_profile(runtime: RuntimeConfig) -> None:

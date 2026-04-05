@@ -34,17 +34,13 @@ from shared.models import (
     SpeechStyle,
     SynthesizedAudio,
 )
+from tts.alsa_backend import AlsaPcmConfig, AlsaPlaybackWorker, AlsaQueuedPcmJob
 
 logger = logging.getLogger(__name__)
 
 _PLAYBACK_LEAD_IN_MS = 120
 _PLAYBACK_FADE_OUT_MS = 18
 _PLAYBACK_TAIL_SILENCE_MS = 40
-_PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_RATE = 22050
-_PERSISTENT_APLAY_BOOTSTRAP_CHANNELS = 1
-_PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_WIDTH_BYTES = 2
-_PERSISTENT_APLAY_SHUTDOWN_DRAIN_CHUNKS = 3
-
 EventHandler = Callable[[Event], Awaitable[None]]
 
 
@@ -84,6 +80,9 @@ class SpeechSynthesizer(Protocol):
 
 class AudioPlaybackSession(Protocol):
     """Handle for one active playback session."""
+
+    async def wait_started(self) -> bool:
+        """Wait until playback has actually started, if the backend can confirm it."""
 
     async def wait(self) -> "PlaybackResult":
         """Wait until playback has finished and return timing metadata."""
@@ -379,6 +378,9 @@ class CommandPlaybackSession:
     timeout_seconds: float
     _interrupted: bool = field(default=False, init=False, repr=False)
 
+    async def wait_started(self) -> bool:
+        return True
+
     async def wait(self) -> PlaybackResult:
         try:
             await asyncio.wait_for(self.process.wait(), timeout=self.timeout_seconds)
@@ -495,47 +497,38 @@ class _RawPcmAudio:
 
 
 @dataclass(slots=True)
-class _PersistentAplaySession:
-    service: "PersistentAplayAudioPlaybackService"
-    started_at: float
-    end_marker_bytes: int
-    _interrupted: bool = field(default=False, init=False, repr=False)
+class AlsaPlaybackSession:
+    """Playback session backed by the dedicated ALSA worker."""
+
+    service: "AlsaPersistentAudioPlaybackService"
+    job_id: str
+    started_future: asyncio.Future[bool]
+    finished_future: asyncio.Future[PlaybackResult]
+
+    async def wait_started(self) -> bool:
+        return await self.started_future
 
     async def wait(self) -> PlaybackResult:
-        try:
-            await asyncio.wait_for(
-                self.service._wait_for_marker(self.end_marker_bytes),
-                timeout=self.service.timeout_seconds,
-            )
-        except asyncio.TimeoutError as exc:
-            await self.interrupt()
-            raise RuntimeError("audio playback timed out") from exc
-
-        duration_ms = int(max(0.0, time.monotonic() - self.started_at) * 1000)
-        return PlaybackResult(duration_ms=duration_ms, interrupted=self._interrupted)
+        return await self.finished_future
 
     async def interrupt(self) -> PlaybackResult:
-        self._interrupted = True
-        await self.service._flush_and_restart()
-        duration_ms = int(max(0.0, time.monotonic() - self.started_at) * 1000)
-        return PlaybackResult(duration_ms=duration_ms, interrupted=True)
+        self.service.interrupt_job(self.job_id)
+        return await self.finished_future
 
 
 @dataclass(slots=True)
-class PersistentAplayAudioPlaybackService:
-    """Keep one aplay process alive so HDMI audio stays active between replies."""
+class AlsaPersistentAudioPlaybackService:
+    """Dedicated ALSA output owner for Raspberry Pi playback."""
 
-    command_template: tuple[str, ...]
+    device: str
+    sample_rate_hz: int
+    period_frames: int
+    buffer_frames: int
+    keepalive_interval_ms: int
     timeout_seconds: float = 60.0
-    _process: asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
-    _process_command: tuple[str, ...] | None = field(default=None, init=False, repr=False)
-    _process_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-    _writer_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
-    _speech_buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
-    _buffer_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-    _playback_advanced: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
-    _queued_speech_bytes: int = field(default=0, init=False, repr=False)
-    _written_speech_bytes: int = field(default=0, init=False, repr=False)
+    channels: int = 1
+    _worker: AlsaPlaybackWorker | None = field(default=None, init=False, repr=False)
+    _worker_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     async def start(
         self,
@@ -545,157 +538,93 @@ class PersistentAplayAudioPlaybackService:
         request: SpeechRequest,
         selection: ResolvedSpeechRequest,
     ) -> AudioPlaybackSession:
-        del job_id, request, selection
-        prepared_audio = _prepare_audio_for_playback(audio)
-        pcm_audio = _extract_raw_pcm_audio(prepared_audio.audio_bytes)
-        if pcm_audio is None:
-            raise RuntimeError("persistent aplay playback requires 16-bit PCM WAV audio")
-
-        command = _build_aplay_stream_command(self.command_template, pcm_audio)
-        await self._ensure_process(command)
-        async with self._buffer_lock:
-            self._speech_buffer.extend(pcm_audio.pcm_frames)
-            self._queued_speech_bytes += len(pcm_audio.pcm_frames)
-            end_marker_bytes = self._queued_speech_bytes
-        return _PersistentAplaySession(
-            service=self,
-            started_at=time.monotonic(),
-            end_marker_bytes=end_marker_bytes,
+        del request, selection
+        pcm_audio = _prepare_audio_for_alsa_playback(
+            audio,
+            target_sample_rate_hz=self.sample_rate_hz,
+            target_channels=self.channels,
         )
+        if pcm_audio is None:
+            raise RuntimeError("ALSA playback requires uncompressed WAV audio")
 
-    async def shutdown(self) -> None:
-        await self._stop_process()
+        await self._ensure_worker()
+        loop = asyncio.get_running_loop()
+        started_future: asyncio.Future[bool] = loop.create_future()
+        finished_future: asyncio.Future[PlaybackResult] = loop.create_future()
+
+        def on_started() -> None:
+            loop.call_soon_threadsafe(_resolve_started_future, started_future, True)
+
+        def on_finished(duration_ms: int) -> None:
+            loop.call_soon_threadsafe(
+                _resolve_finished_future,
+                started_future,
+                finished_future,
+                True,
+                PlaybackResult(duration_ms=duration_ms),
+            )
+
+        def on_interrupted(duration_ms: int) -> None:
+            loop.call_soon_threadsafe(
+                _resolve_finished_future,
+                started_future,
+                finished_future,
+                False,
+                PlaybackResult(duration_ms=duration_ms, interrupted=True),
+            )
+
+        def on_failed(exc: Exception) -> None:
+            loop.call_soon_threadsafe(_reject_playback_futures, started_future, finished_future, exc)
+
+        assert self._worker is not None
+        self._worker.enqueue(
+            AlsaQueuedPcmJob(
+                job_id=job_id,
+                pcm_frames=pcm_audio.pcm_frames,
+                on_started=on_started,
+                on_finished=on_finished,
+                on_interrupted=on_interrupted,
+                on_failed=on_failed,
+            )
+        )
+        return AlsaPlaybackSession(
+            service=self,
+            job_id=job_id,
+            started_future=started_future,
+            finished_future=finished_future,
+        )
 
     async def prewarm(self) -> None:
-        bootstrap_audio = _RawPcmAudio(
-            pcm_frames=b"",
-            channels=_PERSISTENT_APLAY_BOOTSTRAP_CHANNELS,
-            sample_width_bytes=_PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_WIDTH_BYTES,
-            sample_rate_hz=_PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_RATE,
-        )
-        command = _build_aplay_stream_command(self.command_template, bootstrap_audio)
-        await self._ensure_process(command)
+        await self._ensure_worker()
 
-    async def _ensure_process(self, command: tuple[str, ...]) -> asyncio.subprocess.Process:
-        async with self._process_lock:
-            if self._process is not None and self._process.returncode is None and self._process_command == command:
-                return self._process
-            await self._stop_process_locked()
-            self._process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            self._process_command = command
-            self._writer_task = asyncio.create_task(self._writer_loop(self._process, command))
-            return self._process
+    async def shutdown(self) -> None:
+        async with self._worker_lock:
+            worker = self._worker
+            self._worker = None
+        if worker is not None:
+            await asyncio.to_thread(worker.shutdown)
 
-    async def _writer_loop(
-        self,
-        process: asyncio.subprocess.Process,
-        command: tuple[str, ...],
-    ) -> None:
-        pcm_chunk_size = _persistent_aplay_chunk_size(command)
-        silence_chunk = b"\x00" * pcm_chunk_size
-        try:
-            while True:
-                if process.returncode not in {None, 0}:
-                    raise RuntimeError("audio playback process exited unexpectedly")
-                stdin = process.stdin
-                if stdin is None:
-                    raise RuntimeError("audio playback process has no stdin")
-                async with self._buffer_lock:
-                    if self._speech_buffer:
-                        chunk = bytes(self._speech_buffer[:pcm_chunk_size])
-                        del self._speech_buffer[:pcm_chunk_size]
-                        self._written_speech_bytes += len(chunk)
-                        self._playback_advanced.set()
-                    else:
-                        chunk = silence_chunk
-                stdin.write(chunk)
-                await stdin.drain()
-                await asyncio.sleep(_persistent_aplay_chunk_seconds(command))
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._playback_advanced.set()
+    def interrupt_job(self, job_id: str) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker.interrupt(job_id=job_id)
 
-    async def _wait_for_marker(self, end_marker_bytes: int) -> None:
-        while True:
-            process = self._process
-            if process is None:
-                raise RuntimeError("audio playback process is unavailable")
-            if process.returncode not in {None, 0}:
-                raise RuntimeError(f"audio playback failed with exit code {process.returncode}")
-            if self._written_speech_bytes >= end_marker_bytes:
-                return
-            self._playback_advanced.clear()
-            await self._playback_advanced.wait()
-
-    async def _flush_and_restart(self) -> None:
-        async with self._buffer_lock:
-            self._reset_buffer_state_locked()
-        self._playback_advanced.set()
-        await self._restart_process_locked()
-
-    async def _restart_process_locked(self) -> None:
-        async with self._process_lock:
-            previous_command = self._process_command
-            await self._stop_process_locked()
-            if previous_command is not None:
-                self._process = await asyncio.create_subprocess_exec(
-                    *previous_command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+    async def _ensure_worker(self) -> None:
+        async with self._worker_lock:
+            if self._worker is None:
+                self._worker = AlsaPlaybackWorker(
+                    AlsaPcmConfig(
+                        device=self.device,
+                        sample_rate_hz=self.sample_rate_hz,
+                        channels=self.channels,
+                        period_frames=self.period_frames,
+                        buffer_frames=self.buffer_frames,
+                        keepalive_interval_ms=self.keepalive_interval_ms,
+                    )
                 )
-                self._process_command = previous_command
-                self._writer_task = asyncio.create_task(self._writer_loop(self._process, previous_command))
-
-    async def _stop_process(self) -> None:
-        async with self._process_lock:
-            await self._stop_process_locked()
-
-    async def _stop_process_locked(self) -> None:
-        command = self._process_command
-        if command is not None:
-            async with self._buffer_lock:
-                self._reset_buffer_state_locked()
-            self._playback_advanced.set()
-            await asyncio.sleep(_persistent_aplay_chunk_seconds(command) * _PERSISTENT_APLAY_SHUTDOWN_DRAIN_CHUNKS)
-
-        writer_task = self._writer_task
-        self._writer_task = None
-        if writer_task is not None:
-            writer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await writer_task
-        process = self._process
-        self._process = None
-        self._process_command = None
-        if process is None:
-            return
-        if process.stdin is not None and not process.stdin.is_closing():
-            process.stdin.close()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            process.terminate()
-            with contextlib.suppress(ProcessLookupError, asyncio.TimeoutError):
-                await asyncio.wait_for(process.wait(), timeout=1.0)
-            if process.returncode is None:
-                process.kill()
-                with contextlib.suppress(ProcessLookupError):
-                    await process.wait()
-        async with self._buffer_lock:
-            self._reset_buffer_state_locked()
-        self._playback_advanced.set()
-
-    def _reset_buffer_state_locked(self) -> None:
-        self._speech_buffer.clear()
-        self._queued_speech_bytes = 0
-        self._written_speech_bytes = 0
+            worker = self._worker
+        assert worker is not None
+        await asyncio.to_thread(worker.ensure_started)
 
 
 @dataclass(slots=True)
@@ -704,6 +633,9 @@ class _ImmediatePlaybackSession:
 
     duration_ms: int
     interrupted: bool = False
+
+    async def wait_started(self) -> bool:
+        return True
 
     async def wait(self) -> PlaybackResult:
         return PlaybackResult(duration_ms=self.duration_ms, interrupted=self.interrupted)
@@ -1026,6 +958,12 @@ class QueuedTtsService:
             await self._finalize_failure(queued_job, exc)
             return
 
+        try:
+            playback_started = await self._current_session.wait_started()
+        except Exception as exc:
+            await self._finalize_failure(queued_job, exc)
+            return
+
         self._update_debug(
             phase="play",
             queue_depth=self._queue_depth_locked(),
@@ -1034,25 +972,26 @@ class QueuedTtsService:
             speaker=selection.speaker_name or (str(selection.speaker_id) if selection.speaker_id is not None else "--"),
             preview=request_model.text,
         )
-        await self._emit_tts_event(
-            EventName.TTS_PLAYBACK_STARTED,
-            {
-                "job_id": queued_job.job.job_id,
-                "text": request_model.text,
-                "voice_id": selection.voice_id,
-                "speaker_id": selection.speaker_id,
-                "style": selection.style_hint.value,
-            },
-        )
-        await self._emit_tts_event(
-            EventName.TTS_STARTED,
-            {
-                "job_id": queued_job.job.job_id,
-                "text": request_model.text,
-                "voice_id": selection.voice_id,
-            },
-        )
-        self._log_spoken_text(request_model.text)
+        if playback_started:
+            await self._emit_tts_event(
+                EventName.TTS_PLAYBACK_STARTED,
+                {
+                    "job_id": queued_job.job.job_id,
+                    "text": request_model.text,
+                    "voice_id": selection.voice_id,
+                    "speaker_id": selection.speaker_id,
+                    "style": selection.style_hint.value,
+                },
+            )
+            await self._emit_tts_event(
+                EventName.TTS_STARTED,
+                {
+                    "job_id": queued_job.job.job_id,
+                    "text": request_model.text,
+                    "voice_id": selection.voice_id,
+                },
+            )
+            self._log_spoken_text(request_model.text)
 
         try:
             playback_result = await self._current_session.wait()
@@ -1292,9 +1231,13 @@ def build_piper_tts_service(
     playback_command = config.audio_play_command
     if not playback_command:
         playback_command = _default_audio_play_command()
-    if _supports_persistent_aplay(playback_command):
-        playback: AudioPlaybackService = PersistentAplayAudioPlaybackService(
-            command_template=playback_command,
+    if config.audio_backend == "alsa_persistent":
+        playback: AudioPlaybackService = AlsaPersistentAudioPlaybackService(
+            device=config.alsa_device,
+            sample_rate_hz=config.alsa_sample_rate,
+            period_frames=config.alsa_period_frames,
+            buffer_frames=config.alsa_buffer_frames,
+            keepalive_interval_ms=config.alsa_keepalive_interval_ms,
             timeout_seconds=config.playback_timeout_seconds,
         )
     else:
@@ -1332,63 +1275,6 @@ def _format_input_command(command_template: Sequence[str], input_path: Path) -> 
     return resolved
 
 
-def _supports_persistent_aplay(command_template: Sequence[str]) -> bool:
-    return bool(command_template) and Path(command_template[0]).name == "aplay"
-
-
-def _build_aplay_stream_command(command_template: Sequence[str], audio: _RawPcmAudio) -> tuple[str, ...]:
-    command = [part for part in command_template if "{input_path}" not in part]
-    if not command:
-        raise RuntimeError("audio playback command is not configured")
-    command.extend(
-        (
-            "-q",
-            "-t",
-            "raw",
-            "-f",
-            _alsa_format_name(audio.sample_width_bytes),
-            "-r",
-            str(audio.sample_rate_hz),
-            "-c",
-            str(audio.channels),
-            "-",
-        )
-    )
-    return tuple(command)
-
-
-def _alsa_format_name(sample_width_bytes: int) -> str:
-    if sample_width_bytes == 2:
-        return "S16_LE"
-    raise RuntimeError(f"unsupported PCM sample width for persistent aplay playback: {sample_width_bytes}")
-
-
-def _persistent_aplay_sample_rate(command_template: Sequence[str]) -> int:
-    for index, part in enumerate(command_template):
-        if part == "-r" and index + 1 < len(command_template):
-            return int(command_template[index + 1])
-    return 16000
-
-
-def _persistent_aplay_channels(command_template: Sequence[str]) -> int:
-    for index, part in enumerate(command_template):
-        if part == "-c" and index + 1 < len(command_template):
-            return int(command_template[index + 1])
-    return 1
-
-
-def _persistent_aplay_chunk_frames() -> int:
-    return 1024
-
-
-def _persistent_aplay_chunk_size(command_template: Sequence[str]) -> int:
-    return _persistent_aplay_chunk_frames() * _persistent_aplay_channels(command_template) * 2
-
-
-def _persistent_aplay_chunk_seconds(command_template: Sequence[str]) -> float:
-    return _persistent_aplay_chunk_frames() / _persistent_aplay_sample_rate(command_template)
-
-
 def _build_silent_wav(*, duration_ms: int, sample_rate: int = 16000) -> bytes:
     frame_count = max(1, int(sample_rate * (duration_ms / 1000.0)))
     pcm_data = b"\x00\x00" * frame_count
@@ -1414,6 +1300,25 @@ def _prepare_audio_for_playback(audio: SynthesizedAudio) -> SynthesizedAudio:
         voice_id=audio.voice_id,
         speaker_id=audio.speaker_id,
         metadata=audio.metadata,
+    )
+
+
+def _prepare_audio_for_alsa_playback(
+    audio: SynthesizedAudio,
+    *,
+    target_sample_rate_hz: int,
+    target_channels: int,
+) -> _RawPcmAudio | None:
+    if audio.mime_type != "audio/wav":
+        return None
+    pcm_audio = _extract_raw_pcm_audio(audio.audio_bytes)
+    if pcm_audio is None:
+        return None
+    return _normalize_pcm_audio(
+        pcm_audio,
+        target_sample_rate_hz=target_sample_rate_hz,
+        target_channels=target_channels,
+        add_lead_in=False,
     )
 
 
@@ -1474,6 +1379,161 @@ def _extract_raw_pcm_audio(audio_bytes: bytes) -> _RawPcmAudio | None:
         sample_width_bytes=sample_width,
         sample_rate_hz=sample_rate,
     )
+
+
+def _normalize_pcm_audio(
+    pcm_audio: _RawPcmAudio,
+    *,
+    target_sample_rate_hz: int,
+    target_channels: int,
+    add_lead_in: bool,
+) -> _RawPcmAudio | None:
+    pcm_frames = pcm_audio.pcm_frames
+    channels = pcm_audio.channels
+    sample_width = pcm_audio.sample_width_bytes
+    sample_rate = pcm_audio.sample_rate_hz
+
+    if sample_width not in {1, 2, 4} or channels <= 0 or sample_rate <= 0:
+        return None
+
+    frame_samples = _decode_pcm_frames(pcm_frames, sample_width)
+    if frame_samples is None:
+        return None
+
+    if channels != target_channels:
+        if channels == 2 and target_channels == 1:
+            frame_samples = _downmix_stereo_to_mono(frame_samples)
+            channels = 1
+        else:
+            return None
+
+    if sample_width != 2:
+        frame_samples = _convert_sample_width_to_s16(frame_samples, sample_width)
+        sample_width = 2
+
+    if sample_rate != target_sample_rate_hz:
+        frame_samples = _resample_interleaved_s16(
+            frame_samples,
+            channels=channels,
+            source_rate_hz=sample_rate,
+            target_rate_hz=target_sample_rate_hz,
+        )
+        sample_rate = target_sample_rate_hz
+
+    pcm_frames = _encode_pcm_s16(frame_samples)
+
+    if add_lead_in:
+        lead_in_frames = int(sample_rate * (_PLAYBACK_LEAD_IN_MS / 1000.0))
+        pcm_frames = (b"\x00" * (lead_in_frames * channels * sample_width)) + pcm_frames
+
+    return _RawPcmAudio(
+        pcm_frames=pcm_frames,
+        channels=channels,
+        sample_width_bytes=sample_width,
+        sample_rate_hz=sample_rate,
+    )
+
+
+def _decode_pcm_frames(pcm_frames: bytes, sample_width: int) -> list[int] | None:
+    if sample_width == 1:
+        return [(byte - 128) << 8 for byte in pcm_frames]
+    if sample_width == 2:
+        sample_count = len(pcm_frames) // 2
+        try:
+            return list(struct.unpack(f"<{sample_count}h", pcm_frames))
+        except struct.error:
+            return None
+    if sample_width == 4:
+        sample_count = len(pcm_frames) // 4
+        try:
+            raw_samples = struct.unpack(f"<{sample_count}i", pcm_frames)
+        except struct.error:
+            return None
+        return [_clamp_s16(sample >> 16) for sample in raw_samples]
+    return None
+
+
+def _downmix_stereo_to_mono(samples: list[int]) -> list[int]:
+    mono: list[int] = []
+    limit = len(samples) - (len(samples) % 2)
+    for index in range(0, limit, 2):
+        mono.append(_clamp_s16((samples[index] + samples[index + 1]) // 2))
+    return mono
+
+
+def _convert_sample_width_to_s16(samples: list[int], sample_width: int) -> list[int]:
+    if sample_width == 2:
+        return samples
+    if sample_width == 1:
+        return [_clamp_s16(sample) for sample in samples]
+    if sample_width == 4:
+        return [_clamp_s16(sample) for sample in samples]
+    raise RuntimeError(f"unsupported sample width: {sample_width}")
+
+
+def _resample_interleaved_s16(
+    samples: list[int],
+    *,
+    channels: int,
+    source_rate_hz: int,
+    target_rate_hz: int,
+) -> list[int]:
+    if source_rate_hz == target_rate_hz or not samples:
+        return samples
+    frame_count = len(samples) // channels
+    if frame_count <= 1:
+        return samples
+    target_frame_count = max(1, int(round(frame_count * target_rate_hz / source_rate_hz)))
+    resampled: list[int] = []
+    for target_index in range(target_frame_count):
+        source_position = target_index * (frame_count - 1) / max(1, target_frame_count - 1)
+        left_frame = int(source_position)
+        right_frame = min(left_frame + 1, frame_count - 1)
+        blend = source_position - left_frame
+        left_offset = left_frame * channels
+        right_offset = right_frame * channels
+        for channel in range(channels):
+            left_value = samples[left_offset + channel]
+            right_value = samples[right_offset + channel]
+            interpolated = int(round(left_value + ((right_value - left_value) * blend)))
+            resampled.append(_clamp_s16(interpolated))
+    return resampled
+
+
+def _encode_pcm_s16(samples: list[int]) -> bytes:
+    return struct.pack(f"<{len(samples)}h", *(_clamp_s16(sample) for sample in samples))
+
+
+def _clamp_s16(value: int) -> int:
+    return max(-32768, min(32767, int(value)))
+
+
+def _resolve_started_future(future: asyncio.Future[bool], value: bool) -> None:
+    if not future.done():
+        future.set_result(value)
+
+
+def _resolve_finished_future(
+    started_future: asyncio.Future[bool],
+    finished_future: asyncio.Future[PlaybackResult],
+    started_value: bool,
+    result: PlaybackResult,
+) -> None:
+    if not started_future.done():
+        started_future.set_result(started_value)
+    if not finished_future.done():
+        finished_future.set_result(result)
+
+
+def _reject_playback_futures(
+    started_future: asyncio.Future[bool],
+    finished_future: asyncio.Future[PlaybackResult],
+    exc: Exception,
+) -> None:
+    if not started_future.done():
+        started_future.set_exception(exc)
+    if not finished_future.done():
+        finished_future.set_exception(exc)
 
 
 def _apply_wav_fade_out(
