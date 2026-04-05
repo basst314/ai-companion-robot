@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -187,6 +188,9 @@ class PygameFaceUiService:
         assert self._pygame is not None
         assert self._screen is not None
         width, height = self._screen.get_size()
+        if self.theme.render_mode == "minimal_neon":
+            self._draw_minimal_face(frame, width, height)
+            return
         geometry = self.theme.geometry
         bob_offset_y = int(frame.pose.bob_y * height)
         eye_width = int(width * geometry.eye_width_ratio * frame.pose.eye_scale_x)
@@ -310,6 +314,112 @@ class PygameFaceUiService:
             eyebrow_right,
             max(2, int(geometry.accent_width_px * max(0.4, accent_strength))),
         )
+
+    def _draw_minimal_face(self, frame: FaceFrame, width: int, height: int) -> None:
+        geometry = self.theme.geometry
+        bob_offset_y = int(frame.pose.bob_y * height)
+        eye_diameter = int(min(width * geometry.eye_width_ratio, height * geometry.eye_height_ratio))
+        spacing = int(width * geometry.eye_spacing_ratio)
+        center_y = (height // 2) - int(height * 0.05) + bob_offset_y
+        center_x = width // 2
+        left_center_x = center_x - (spacing // 2) - (eye_diameter // 2)
+        right_center_x = center_x + (spacing // 2) + (eye_diameter // 2)
+
+        self._draw_minimal_eye(
+            center_x=left_center_x + int(frame.pose.pupil_x_left * eye_diameter * 0.35),
+            center_y=center_y + int(frame.pose.pupil_y_left * eye_diameter * 0.35),
+            diameter=int(eye_diameter * max(0.18, frame.pose.openness_left) * frame.pose.eye_scale_x),
+        )
+        self._draw_minimal_eye(
+            center_x=right_center_x + int(frame.pose.pupil_x_right * eye_diameter * 0.35),
+            center_y=center_y + int(frame.pose.pupil_y_right * eye_diameter * 0.35),
+            diameter=int(eye_diameter * max(0.18, frame.pose.openness_right) * frame.pose.eye_scale_x),
+        )
+        self._draw_minimal_mouth(frame.expression, width, height, center_y)
+
+    def _draw_minimal_eye(self, *, center_x: int, center_y: int, diameter: int) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        color = self.theme.palette.eye_fill
+        radius = max(5, diameter // 2)
+        self._draw_glow_circle(center_x, center_y, radius)
+        self._pygame.draw.circle(self._screen, color, (center_x, center_y), radius)
+
+    def _draw_glow_circle(self, center_x: int, center_y: int, radius: int) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        glow_surface = self._pygame.Surface(self._screen.get_size(), self._pygame.SRCALPHA)
+        layers = (
+            (radius + max(8, radius // 2), 26),
+            (radius + max(4, radius // 3), 42),
+            (radius + max(2, radius // 5), 70),
+        )
+        r, g, b = self.theme.palette.eye_fill
+        for glow_radius, alpha in layers:
+            self._pygame.draw.circle(glow_surface, (r, g, b, alpha), (center_x, center_y), glow_radius)
+        self._screen.blit(glow_surface, (0, 0))
+
+    def _draw_minimal_mouth(self, expression: str, width: int, height: int, eye_center_y: int) -> None:
+        geometry = self.theme.geometry
+        center_x = width // 2
+        center_y = eye_center_y + int(height * geometry.mouth_offset_y_ratio)
+        mouth_width = int(width * geometry.mouth_width_ratio)
+        mouth_height = int(height * geometry.mouth_height_ratio)
+        dot_size = max(8, int(width * geometry.mouth_dot_size_ratio))
+        dot_gap = max(6, int(width * geometry.mouth_dot_gap_ratio))
+
+        if expression in {"thinking", "listening"}:
+            radius = max(8, mouth_height // 2)
+            self._draw_glow_circle(center_x, center_y, radius)
+            self._pygame.draw.circle(self._screen, self.theme.palette.eye_fill, (center_x, center_y), radius)
+            return
+        if expression == "speaking":
+            self._draw_minimal_dot_mouth(center_x, center_y, dot_size, dot_gap)
+            return
+        if expression == "sleepy":
+            self._draw_minimal_arc(center_x, center_y + 6, mouth_width, max(8, mouth_height // 2), smile=False)
+            return
+        self._draw_minimal_arc(center_x, center_y, mouth_width, mouth_height, smile=True)
+
+    def _draw_minimal_dot_mouth(self, center_x: int, center_y: int, dot_size: int, gap: int) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        total_width = (dot_size * 4) + (gap * 3)
+        left = center_x - (total_width // 2)
+        color = self.theme.palette.eye_fill
+        for index in range(4):
+            x = left + index * (dot_size + gap)
+            self._draw_glow_rect(x, center_y - (dot_size // 2), dot_size, dot_size)
+            self._pygame.draw.rect(self._screen, color, (x, center_y - (dot_size // 2), dot_size, dot_size))
+
+    def _draw_glow_rect(self, x: int, y: int, width: int, height: int) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        glow_surface = self._pygame.Surface(self._screen.get_size(), self._pygame.SRCALPHA)
+        r, g, b = self.theme.palette.eye_fill
+        for inflate, alpha in ((12, 20), (8, 36), (4, 54)):
+            rect = self._pygame.Rect(x - (inflate // 2), y - (inflate // 2), width + inflate, height + inflate)
+            self._pygame.draw.rect(glow_surface, (r, g, b, alpha), rect, border_radius=max(2, rect.height // 3))
+        self._screen.blit(glow_surface, (0, 0))
+
+    def _draw_minimal_arc(self, center_x: int, center_y: int, width: int, height: int, *, smile: bool) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        rect = self._pygame.Rect(center_x - (width // 2), center_y - (height // 2), width, max(8, height))
+        start_angle = 0.15 if smile else math.pi + 0.15
+        end_angle = math.pi - 0.15 if smile else (math.tau - 0.15)
+        self._draw_glow_arc(rect, start_angle, end_angle, 5)
+        self._pygame.draw.arc(self._screen, self.theme.palette.eye_fill, rect, start_angle, end_angle, 4)
+
+    def _draw_glow_arc(self, rect, start_angle: float, end_angle: float, width: int) -> None:
+        assert self._pygame is not None
+        assert self._screen is not None
+        glow_surface = self._pygame.Surface(self._screen.get_size(), self._pygame.SRCALPHA)
+        r, g, b = self.theme.palette.eye_fill
+        for inflate, alpha, glow_width in ((18, 16, width + 10), (10, 28, width + 6), (4, 44, width + 2)):
+            glow_rect = rect.inflate(inflate, inflate)
+            self._pygame.draw.arc(glow_surface, (r, g, b, alpha), glow_rect, start_angle, end_angle, glow_width)
+        self._screen.blit(glow_surface, (0, 0))
 
     def _draw_text_overlay(self, text: str) -> None:
         assert self._pygame is not None

@@ -315,6 +315,9 @@ class Fb0FaceUiService:
         assert self._device is not None
         width = min(canvas.width, self._device.visible_width)
         height = min(canvas.height, self._device.visible_height)
+        if self.theme.render_mode == "minimal_neon":
+            self._draw_minimal_face(canvas, frame, width, height)
+            return
         geometry = self.theme.geometry
         bob_offset_y = int(frame.pose.bob_y * height)
         eye_width = int(width * geometry.eye_width_ratio * frame.pose.eye_scale_x * _FB0_EYE_SCALE_X)
@@ -445,6 +448,176 @@ class Fb0FaceUiService:
         if scene != "face":
             canvas.fill_rect(left + 24, top + 20, box_width - 48, 12, palette.accent)
 
+    def _draw_minimal_face(self, canvas: _FramebufferCanvas, frame: FaceFrame, width: int, height: int) -> None:
+        geometry = self.theme.geometry
+        bob_offset_y = int(frame.pose.bob_y * height)
+        eye_diameter = int(min(width * geometry.eye_width_ratio, height * geometry.eye_height_ratio))
+        spacing = int(width * geometry.eye_spacing_ratio)
+        center_y = (height // 2) - int(height * 0.05) + bob_offset_y
+        center_x = width // 2
+        left_center_x = center_x - (spacing // 2) - (eye_diameter // 2)
+        right_center_x = center_x + (spacing // 2) + (eye_diameter // 2)
+
+        self._draw_minimal_eye(
+            canvas,
+            center_x=left_center_x + int(frame.pose.pupil_x_left * eye_diameter * 0.35),
+            center_y=center_y + int(frame.pose.pupil_y_left * eye_diameter * 0.35),
+            diameter=int(eye_diameter * max(0.18, frame.pose.openness_left) * frame.pose.eye_scale_x),
+        )
+        self._draw_minimal_eye(
+            canvas,
+            center_x=right_center_x + int(frame.pose.pupil_x_right * eye_diameter * 0.35),
+            center_y=center_y + int(frame.pose.pupil_y_right * eye_diameter * 0.35),
+            diameter=int(eye_diameter * max(0.18, frame.pose.openness_right) * frame.pose.eye_scale_x),
+        )
+        self._draw_minimal_mouth(canvas, frame.expression, width, height, center_y)
+
+    def _draw_minimal_eye(
+        self,
+        canvas: _FramebufferCanvas,
+        *,
+        center_x: int,
+        center_y: int,
+        diameter: int,
+    ) -> None:
+        radius = max(5, diameter // 2)
+        color = self.theme.palette.eye_fill
+        self._draw_glow_circle(canvas, center_x, center_y, radius)
+        canvas.fill_ellipse(center_x, center_y, radius, radius, color)
+
+    def _draw_minimal_mouth(
+        self,
+        canvas: _FramebufferCanvas,
+        expression: str,
+        width: int,
+        height: int,
+        eye_center_y: int,
+    ) -> None:
+        geometry = self.theme.geometry
+        center_x = width // 2
+        center_y = eye_center_y + int(height * geometry.mouth_offset_y_ratio)
+        mouth_width = int(width * geometry.mouth_width_ratio)
+        mouth_height = int(height * geometry.mouth_height_ratio)
+        dot_size = max(8, int(width * geometry.mouth_dot_size_ratio))
+        dot_gap = max(6, int(width * geometry.mouth_dot_gap_ratio))
+
+        if expression in {"thinking", "listening"}:
+            radius = max(8, mouth_height // 2)
+            self._draw_glow_circle(canvas, center_x, center_y, radius)
+            canvas.fill_ellipse(center_x, center_y, radius, radius, self.theme.palette.eye_fill)
+            return
+        if expression == "speaking":
+            self._draw_minimal_dot_mouth(canvas, center_x, center_y, dot_size, dot_gap)
+            return
+        if expression == "sleepy":
+            self._draw_minimal_arc(canvas, center_x, center_y + 6, mouth_width, max(8, mouth_height // 2), smile=False)
+            return
+        self._draw_minimal_arc(canvas, center_x, center_y, mouth_width, mouth_height, smile=True)
+
+    def _draw_minimal_dot_mouth(
+        self,
+        canvas: _FramebufferCanvas,
+        center_x: int,
+        center_y: int,
+        dot_size: int,
+        gap: int,
+    ) -> None:
+        total_width = (dot_size * 4) + (gap * 3)
+        left = center_x - (total_width // 2)
+        color = self.theme.palette.eye_fill
+        for index in range(4):
+            x = left + index * (dot_size + gap)
+            self._draw_glow_rect(canvas, x, center_y - (dot_size // 2), dot_size, dot_size)
+            canvas.fill_rect(x, center_y - (dot_size // 2), dot_size, dot_size, color)
+
+    def _draw_minimal_arc(
+        self,
+        canvas: _FramebufferCanvas,
+        center_x: int,
+        center_y: int,
+        width: int,
+        height: int,
+        *,
+        smile: bool,
+    ) -> None:
+        color = self.theme.palette.eye_fill
+        start_angle = 0.15 if smile else math.pi + 0.15
+        end_angle = math.pi - 0.15 if smile else (math.tau - 0.15)
+        self._draw_glow_arc(canvas, center_x, center_y, width, height, start_angle, end_angle)
+        self._draw_arc(canvas, center_x, center_y, width, height, start_angle, end_angle, color, thickness=4)
+
+    def _draw_arc(
+        self,
+        canvas: _FramebufferCanvas,
+        center_x: int,
+        center_y: int,
+        width: int,
+        height: int,
+        start_angle: float,
+        end_angle: float,
+        color: tuple[int, int, int],
+        *,
+        thickness: int,
+    ) -> None:
+        rx = max(1, width // 2)
+        ry = max(1, height // 2)
+        steps = 40
+        previous: tuple[int, int] | None = None
+        for step in range(steps + 1):
+            theta = start_angle + ((end_angle - start_angle) * (step / steps))
+            x = center_x + int(round(rx * math.cos(theta)))
+            y = center_y + int(round(ry * math.sin(theta)))
+            if previous is not None:
+                canvas.line(previous[0], previous[1], x, y, color, thickness=thickness)
+            previous = (x, y)
+
+    def _draw_glow_circle(self, canvas: _FramebufferCanvas, center_x: int, center_y: int, radius: int) -> None:
+        color = self.theme.palette.eye_fill
+        for glow_radius, factor in ((radius + max(8, radius // 2), 0.18), (radius + max(4, radius // 3), 0.32), (radius + max(2, radius // 5), 0.58)):
+            canvas.fill_ellipse(center_x, center_y, glow_radius, glow_radius, _scale_color(color, factor))
+
+    def _draw_glow_rect(
+        self,
+        canvas: _FramebufferCanvas,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+    ) -> None:
+        color = self.theme.palette.eye_fill
+        for inflate, factor in ((12, 0.14), (8, 0.24), (4, 0.42)):
+            canvas.fill_rect(
+                x - (inflate // 2),
+                y - (inflate // 2),
+                width + inflate,
+                height + inflate,
+                _scale_color(color, factor),
+            )
+
+    def _draw_glow_arc(
+        self,
+        canvas: _FramebufferCanvas,
+        center_x: int,
+        center_y: int,
+        width: int,
+        height: int,
+        start_angle: float,
+        end_angle: float,
+    ) -> None:
+        color = self.theme.palette.eye_fill
+        for inflate, factor, thickness in ((18, 0.12, 10), (10, 0.20, 7), (4, 0.34, 5)):
+            self._draw_arc(
+                canvas,
+                center_x,
+                center_y,
+                width + inflate,
+                height + inflate,
+                start_angle,
+                end_angle,
+                _scale_color(color, factor),
+                thickness=thickness,
+            )
+
 
 def _read_virtual_size(path: Path) -> tuple[int, int]:
     virtual_size_path = Path("/sys/class/graphics") / path.name / "virtual_size"
@@ -513,3 +686,7 @@ def _read_bits_per_pixel(path: Path) -> int:
 def _rgb565(r: int, g: int, b: int) -> bytes:
     value = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
     return value.to_bytes(2, "little")
+
+
+def _scale_color(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(channel * factor))) for channel in color)

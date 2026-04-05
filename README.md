@@ -49,7 +49,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Voice interaction with low latency
 - Multilingual support (English, German, Indonesian)
-- Animated face with expressions and reactions
+- Animated minimalist neon face with expressions and reactions
 - Recognition of known individuals
 - Personality-driven responses (humor, sound effects)
 - Hybrid local/cloud execution
@@ -216,7 +216,7 @@ On Raspberry Pi:
 On macOS:
 - `python@3.11`
 
-Built-in face themes currently include `retro_bot`, `amber_bot`, `noir_bot`, and `neon_bot`.
+The current experimental face theme is `neon_bot`, an ultra-minimal cyan-on-black digital face baseline for the Raspberry Pi display.
 - `cmake`
 - `sox`
 - `git`

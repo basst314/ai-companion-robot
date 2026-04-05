@@ -34,7 +34,7 @@ def test_face_controller_blends_smoothly_into_listening_state() -> None:
 
     assert listening_frame.expression == "listening"
     assert neutral_frame.pose.openness_left < listening_frame.pose.openness_left < 1.08
-    assert neutral_frame.pose.accent_strength < listening_frame.pose.accent_strength
+    assert neutral_frame.pose.eye_scale_x < listening_frame.pose.eye_scale_x
 
 
 def test_face_controller_idle_animation_introduces_blinks_and_glances() -> None:
@@ -103,18 +103,14 @@ def test_face_controller_speaking_animation_follows_tts_events() -> None:
 
 
 def test_build_face_theme_supports_multiple_personalities() -> None:
-    retro = build_face_theme("retro_bot")
-    amber = build_face_theme("amber_bot")
     neon = build_face_theme("neon_bot")
 
-    assert "amber_bot" in SUPPORTED_FACE_THEME_NAMES
     assert "neon_bot" in SUPPORTED_FACE_THEME_NAMES
-    assert amber.name == "amber_bot"
     assert neon.name == "neon_bot"
-    assert amber.palette.eye_outline != retro.palette.eye_outline
-    assert amber.presets["playful"].accent_strength > retro.presets["playful"].accent_strength
-    assert neon.palette.eye_outline != retro.palette.eye_outline
-    assert neon.geometry.eye_width_ratio < retro.geometry.eye_width_ratio
+    assert SUPPORTED_FACE_THEME_NAMES == ("neon_bot",)
+    assert neon.render_mode == "minimal_neon"
+    assert neon.palette.background == (0, 0, 0)
+    assert neon.palette.eye_fill == neon.palette.eye_outline
 
 
 def test_build_face_theme_rejects_unknown_theme_name() -> None:

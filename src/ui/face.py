@@ -6,6 +6,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field, fields, replace
+from typing import Literal
 
 from shared.events import Event, EventName
 
@@ -23,13 +24,18 @@ class FacePalette:
 
 @dataclass(slots=True, frozen=True)
 class EyeGeometry:
-    eye_width_ratio: float = 0.24
-    eye_height_ratio: float = 0.19
+    eye_width_ratio: float = 0.15
+    eye_height_ratio: float = 0.15
     eye_spacing_ratio: float = 0.15
     pupil_radius_ratio: float = 0.18
     highlight_radius_ratio: float = 0.05
     outline_width_px: int = 5
     accent_width_px: int = 4
+    mouth_width_ratio: float = 0.20
+    mouth_height_ratio: float = 0.075
+    mouth_offset_y_ratio: float = 0.20
+    mouth_dot_size_ratio: float = 0.018
+    mouth_dot_gap_ratio: float = 0.018
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,6 +94,7 @@ class ExpressionPreset:
 @dataclass(slots=True, frozen=True)
 class FaceTheme:
     name: str
+    render_mode: Literal["classic", "minimal_neon"] = "classic"
     palette: FacePalette = field(default_factory=FacePalette)
     geometry: EyeGeometry = field(default_factory=EyeGeometry)
     blink: BlinkTiming = field(default_factory=BlinkTiming)
@@ -101,366 +108,156 @@ class FaceTheme:
         return self.presets["neutral"]
 
 
-SUPPORTED_FACE_THEME_NAMES = ("retro_bot", "amber_bot", "noir_bot", "neon_bot")
+SUPPORTED_FACE_THEME_NAMES = ("neon_bot",)
 
 
-def build_face_theme(name: str = "retro_bot") -> FaceTheme:
+def build_face_theme(name: str = "neon_bot") -> FaceTheme:
     base_presets = {
         "neutral": ExpressionPreset(
             name="neutral",
             eye_scale_x=1.0,
             eye_scale_y=1.0,
-            openness_left=0.96,
-            openness_right=0.96,
-            accent_strength=0.16,
+            openness_left=1.0,
+            openness_right=1.0,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "listening": ExpressionPreset(
             name="listening",
-            eye_scale_x=1.04,
+            eye_scale_x=1.10,
             eye_scale_y=1.10,
-            openness_left=1.08,
-            openness_right=1.08,
-            pupil_scale_left=0.94,
-            pupil_scale_right=0.94,
-            pupil_y_left=-0.02,
-            pupil_y_right=-0.02,
-            accent_strength=0.34,
+            openness_left=1.10,
+            openness_right=1.10,
+            pupil_y_left=-0.03,
+            pupil_y_right=-0.03,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "thinking": ExpressionPreset(
             name="thinking",
-            eye_scale_x=0.98,
-            eye_scale_y=0.92,
-            openness_left=0.82,
-            openness_right=0.96,
-            pupil_scale_left=0.92,
-            pupil_scale_right=0.88,
-            pupil_x_left=-0.04,
-            pupil_x_right=0.14,
+            eye_scale_x=1.00,
+            eye_scale_y=1.00,
+            openness_left=0.92,
+            openness_right=1.04,
+            pupil_x_left=-0.05,
+            pupil_x_right=0.08,
             pupil_y_left=-0.10,
-            pupil_y_right=-0.18,
-            lid_tilt_left=0.10,
-            lid_tilt_right=0.18,
-            brow_left=0.08,
-            brow_right=0.14,
-            accent_strength=0.28,
+            pupil_y_right=-0.14,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "responding": ExpressionPreset(
             name="responding",
             eye_scale_x=1.00,
-            eye_scale_y=0.98,
-            openness_left=0.92,
-            openness_right=0.92,
-            pupil_y_left=-0.04,
-            pupil_y_right=-0.04,
-            accent_strength=0.22,
+            eye_scale_y=1.00,
+            openness_left=0.98,
+            openness_right=0.98,
+            pupil_y_left=-0.03,
+            pupil_y_right=-0.03,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "speaking": ExpressionPreset(
             name="speaking",
-            eye_scale_x=1.02,
+            eye_scale_x=0.98,
             eye_scale_y=0.98,
-            openness_left=0.98,
-            openness_right=0.98,
-            pupil_scale_left=0.97,
-            pupil_scale_right=0.97,
-            pupil_y_left=-0.02,
-            pupil_y_right=-0.02,
-            accent_strength=0.30,
+            openness_left=0.96,
+            openness_right=0.96,
+            pupil_y_left=-0.01,
+            pupil_y_right=-0.01,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "sleepy": ExpressionPreset(
             name="sleepy",
-            eye_scale_x=1.00,
-            eye_scale_y=0.24,
-            openness_left=0.12,
-            openness_right=0.12,
-            pupil_scale_left=0.84,
-            pupil_scale_right=0.84,
+            eye_scale_x=0.80,
+            eye_scale_y=0.80,
+            openness_left=0.58,
+            openness_right=0.58,
             pupil_y_left=0.10,
             pupil_y_right=0.10,
-            lid_tilt_left=-0.06,
-            lid_tilt_right=0.06,
-            brow_left=-0.08,
-            brow_right=-0.08,
-            accent_strength=0.08,
-            highlight_strength=0.45,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "playful": ExpressionPreset(
             name="playful",
             eye_scale_x=1.02,
-            eye_scale_y=0.94,
-            openness_left=0.78,
-            openness_right=0.96,
-            pupil_scale_left=0.88,
-            pupil_scale_right=0.92,
-            pupil_x_left=-0.14,
+            eye_scale_y=1.02,
+            openness_left=0.96,
+            openness_right=1.08,
+            pupil_x_left=-0.08,
             pupil_x_right=-0.04,
-            pupil_y_left=0.02,
-            pupil_y_right=-0.02,
-            lid_tilt_left=-0.18,
-            lid_tilt_right=-0.06,
-            brow_left=-0.12,
-            brow_right=-0.02,
-            accent_strength=0.42,
+            pupil_y_left=-0.02,
+            pupil_y_right=-0.04,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
         "curious": ExpressionPreset(
             name="curious",
-            eye_scale_x=1.03,
+            eye_scale_x=1.02,
             eye_scale_y=1.02,
-            openness_left=0.92,
-            openness_right=1.06,
-            pupil_scale_left=0.92,
-            pupil_scale_right=0.88,
-            pupil_x_left=0.02,
-            pupil_x_right=0.16,
+            openness_left=0.98,
+            openness_right=1.10,
+            pupil_x_left=0.00,
+            pupil_x_right=0.12,
             pupil_y_left=-0.06,
             pupil_y_right=-0.12,
-            lid_tilt_left=0.08,
-            lid_tilt_right=0.16,
-            brow_left=0.06,
-            brow_right=0.18,
-            accent_strength=0.36,
+            accent_strength=0.0,
+            highlight_strength=0.0,
         ),
     }
-    retro_bot = FaceTheme(name="retro_bot", presets=base_presets)
-    amber_bot = FaceTheme(
-        name="amber_bot",
-        palette=FacePalette(
-            background=(15, 11, 8),
-            eye_fill=(255, 245, 222),
-            eye_outline=(255, 177, 66),
-            pupil=(48, 28, 12),
-            highlight=(255, 250, 240),
-            accent=(255, 105, 60),
-            text=(255, 239, 212),
-        ),
-        idle=replace(
-            retro_bot.idle,
-            breathing_bob_amplitude=0.020,
-            playful_variant_chance=0.28,
-        ),
-        presets={
-            **base_presets,
-            "neutral": replace(base_presets["neutral"], accent_strength=0.20),
-            "listening": replace(base_presets["listening"], accent_strength=0.40),
-            "playful": replace(
-                base_presets["playful"],
-                accent_strength=0.48,
-                openness_left=0.74,
-                pupil_y_left=0.04,
-            ),
-        },
-    )
-    noir_bot = FaceTheme(
-        name="noir_bot",
-        palette=FacePalette(
-            background=(5, 7, 10),
-            eye_fill=(230, 238, 246),
-            eye_outline=(154, 206, 255),
-            pupil=(10, 18, 26),
-            highlight=(255, 255, 255),
-            accent=(126, 167, 255),
-            text=(225, 234, 245),
-        ),
-        geometry=replace(
-            retro_bot.geometry,
-            outline_width_px=4,
-            accent_width_px=3,
-        ),
-        idle=replace(
-            retro_bot.idle,
-            glance_range_x=0.14,
-            glance_range_y=0.09,
-            playful_variant_chance=0.16,
-        ),
-        presets={
-            **base_presets,
-            "neutral": replace(
-                base_presets["neutral"],
-                eye_scale_x=0.98,
-                eye_scale_y=0.94,
-                accent_strength=0.12,
-            ),
-            "thinking": replace(
-                base_presets["thinking"],
-                openness_left=0.78,
-                openness_right=0.90,
-                brow_left=0.10,
-                brow_right=0.18,
-            ),
-            "sleepy": replace(
-                base_presets["sleepy"],
-                highlight_strength=0.32,
-                accent_strength=0.05,
-            ),
-        },
-    )
     neon_bot = FaceTheme(
         name="neon_bot",
+        render_mode="minimal_neon",
         palette=FacePalette(
-            background=(6, 11, 16),
-            eye_fill=(102, 248, 255),
-            eye_outline=(73, 241, 255),
-            pupil=(6, 28, 36),
-            highlight=(210, 255, 255),
-            accent=(73, 241, 255),
-            text=(188, 250, 255),
+            background=(0, 0, 0),
+            eye_fill=(72, 248, 255),
+            eye_outline=(72, 248, 255),
+            pupil=(72, 248, 255),
+            highlight=(72, 248, 255),
+            accent=(72, 248, 255),
+            text=(180, 252, 255),
         ),
-        geometry=replace(
-            retro_bot.geometry,
-            eye_width_ratio=0.20,
-            eye_height_ratio=0.17,
-            eye_spacing_ratio=0.13,
-            pupil_radius_ratio=0.14,
-            outline_width_px=4,
-            accent_width_px=3,
+        geometry=EyeGeometry(
+            eye_width_ratio=0.15,
+            eye_height_ratio=0.15,
+            eye_spacing_ratio=0.15,
+            pupil_radius_ratio=0.0,
+            highlight_radius_ratio=0.0,
+            outline_width_px=0,
+            accent_width_px=0,
+            mouth_width_ratio=0.20,
+            mouth_height_ratio=0.075,
+            mouth_offset_y_ratio=0.20,
+            mouth_dot_size_ratio=0.018,
+            mouth_dot_gap_ratio=0.018,
         ),
         blink=replace(
-            retro_bot.blink,
-            interval_min_seconds=2.8,
-            interval_max_seconds=5.8,
+            BlinkTiming(),
+            interval_min_seconds=2.6,
+            interval_max_seconds=5.2,
         ),
         idle=replace(
-            retro_bot.idle,
-            glance_range_x=0.10,
-            glance_range_y=0.07,
-            breathing_bob_amplitude=0.010,
-            speaking_bob_amplitude=0.014,
-            playful_variant_chance=0.14,
+            IdleMotionTuning(),
+            glance_range_x=0.08,
+            glance_range_y=0.05,
+            breathing_bob_amplitude=0.006,
+            speaking_bob_amplitude=0.012,
+            playful_variant_chance=0.10,
         ),
         transitions=replace(
-            retro_bot.transitions,
+            TransitionDurations(),
             quick_seconds=0.12,
             normal_seconds=0.20,
             relaxed_seconds=0.34,
         ),
-        presets={
-            **base_presets,
-            "neutral": replace(
-                base_presets["neutral"],
-                eye_scale_x=0.94,
-                eye_scale_y=0.90,
-                openness_left=0.98,
-                openness_right=0.98,
-                pupil_scale_left=0.86,
-                pupil_scale_right=0.86,
-                accent_strength=0.04,
-                highlight_strength=0.84,
-            ),
-            "listening": replace(
-                base_presets["listening"],
-                eye_scale_x=0.98,
-                eye_scale_y=0.98,
-                openness_left=1.02,
-                openness_right=1.02,
-                pupil_scale_left=0.90,
-                pupil_scale_right=0.90,
-                accent_strength=0.08,
-                highlight_strength=0.90,
-            ),
-            "thinking": replace(
-                base_presets["thinking"],
-                eye_scale_x=0.94,
-                eye_scale_y=0.84,
-                openness_left=0.78,
-                openness_right=0.92,
-                pupil_scale_left=0.82,
-                pupil_scale_right=0.82,
-                pupil_x_left=-0.02,
-                pupil_x_right=0.10,
-                pupil_y_left=-0.08,
-                pupil_y_right=-0.12,
-                lid_tilt_left=0.04,
-                lid_tilt_right=0.12,
-                brow_left=0.02,
-                brow_right=0.10,
-                accent_strength=0.06,
-                highlight_strength=0.76,
-            ),
-            "responding": replace(
-                base_presets["responding"],
-                eye_scale_x=0.95,
-                eye_scale_y=0.88,
-                openness_left=0.92,
-                openness_right=0.92,
-                pupil_scale_left=0.86,
-                pupil_scale_right=0.86,
-                accent_strength=0.05,
-                highlight_strength=0.82,
-            ),
-            "speaking": replace(
-                base_presets["speaking"],
-                eye_scale_x=0.92,
-                eye_scale_y=0.76,
-                openness_left=0.84,
-                openness_right=0.84,
-                pupil_scale_left=0.80,
-                pupil_scale_right=0.80,
-                accent_strength=0.05,
-                highlight_strength=0.74,
-            ),
-            "sleepy": replace(
-                base_presets["sleepy"],
-                eye_scale_x=0.96,
-                eye_scale_y=0.20,
-                openness_left=0.08,
-                openness_right=0.08,
-                pupil_scale_left=0.74,
-                pupil_scale_right=0.74,
-                lid_tilt_left=0.0,
-                lid_tilt_right=0.0,
-                brow_left=-0.02,
-                brow_right=-0.02,
-                accent_strength=0.02,
-                highlight_strength=0.36,
-            ),
-            "playful": replace(
-                base_presets["playful"],
-                eye_scale_x=0.96,
-                eye_scale_y=0.88,
-                openness_left=0.88,
-                openness_right=1.00,
-                pupil_scale_left=0.82,
-                pupil_scale_right=0.82,
-                pupil_x_left=-0.10,
-                pupil_x_right=-0.02,
-                lid_tilt_left=-0.10,
-                lid_tilt_right=-0.04,
-                brow_left=-0.04,
-                brow_right=0.02,
-                accent_strength=0.10,
-                highlight_strength=0.82,
-            ),
-            "curious": replace(
-                base_presets["curious"],
-                eye_scale_x=0.97,
-                eye_scale_y=0.94,
-                openness_left=0.92,
-                openness_right=1.02,
-                pupil_scale_left=0.84,
-                pupil_scale_right=0.80,
-                pupil_x_left=0.00,
-                pupil_x_right=0.12,
-                pupil_y_left=-0.04,
-                pupil_y_right=-0.10,
-                lid_tilt_left=0.04,
-                lid_tilt_right=0.12,
-                brow_left=0.02,
-                brow_right=0.12,
-                accent_strength=0.08,
-                highlight_strength=0.84,
-            ),
-        },
+        presets=base_presets,
     )
-    themes = {
-        retro_bot.name: retro_bot,
-        amber_bot.name: amber_bot,
-        noir_bot.name: noir_bot,
-        neon_bot.name: neon_bot,
-    }
-    normalized = (name or "retro_bot").strip().lower()
-    if normalized not in themes:
+    normalized = (name or "neon_bot").strip().lower()
+    if normalized != "neon_bot":
         supported = ", ".join(SUPPORTED_FACE_THEME_NAMES)
         raise ValueError(f"unknown face theme {name!r}; expected one of: {supported}")
-    return themes[normalized]
+    return neon_bot
 
 
 @dataclass(slots=True, frozen=True)

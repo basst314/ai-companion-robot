@@ -9,6 +9,22 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-05 — Minimal Neon Face Baseline
+
+### Highlights
+- Simplified the face system down to a single experimental `neon_bot` theme so visual iteration can focus on one strong direction instead of preserving multiple older variants.
+- Shifted the face style toward an ultra-minimal digital robot look: pitch-black background, solid neon-cyan circular eyes, simple geometric mouths, and a soft glow treatment.
+- Removed the remaining product/docs language that implied several actively supported face themes when the current intent is to iterate on one baseline.
+
+### Why this matters
+This locks in a clean visual starting point for the robot face. Instead of spreading effort across multiple personalities and older eye styles, the project now has one deliberate baseline that is easy to test on the Pi and easy to refine in later passes.
+
+### Key decisions & rationale
+- Decision: keep only one experimental face theme for now.
+  - Why: it keeps visual iteration focused and makes it much easier to judge whether a change actually improves the robot's look on the real hardware.
+- Decision: favor simple glowing geometry over anatomical eye details.
+  - Why: the robot reads better as a stylized digital character, and the minimal shapes are cheaper to tune and animate consistently on the small display.
+
 ## 2026-04-04 — ALSA-Native Raspberry Pi HDMI Audio Output
 
 ### Highlights
@@ -34,13 +50,13 @@ The earlier Pi HDMI fixes solved clipping but forced a tradeoff between startup 
 ### Highlights
 - Added real face-rendering backends for both windowed/fullscreen `pygame-ce` and Raspberry Pi `fb0`, with procedural robot eyes, smooth interpolation between states, playful idle micro-animations, sleeping-eyes behavior, and placeholder scene plumbing for future camera/image takeovers.
 - Added a face/theme layer so palette, eye geometry, blink timing, idle motion, transition durations, and named expression presets can be tuned without rewriting the renderer.
-- Added a new `neon_bot` face theme for a simpler cyan-blue robot look alongside `retro_bot`, `amber_bot`, and `noir_bot`.
+- Added the `neon_bot` face theme as the current experimental minimal cyan-blue robot look.
 - Extended `UiService` with `start()`, `shutdown()`, `show_content(...)`, and `clear_content()`, and added new UI runtime config for backend selection, frame rates, sleep timing, display sleep/wake hooks, and theme selection.
 - Updated the orchestrator so visual `speaking` begins on playback start events instead of when speech is merely queued or synthesized.
 - Hardened OpenAI structured-reply parsing so truncated structured outputs surface a clear runtime error instead of a raw JSON decode failure.
 
 ### Why this matters
-This is the first robot-face milestone that can actually live reliably on the Raspberry Pi display hardware used for the robot. The robot now has a real face surface, multiple visual personalities, and playback timing that is good enough for visible speech animation while still respecting the messy reality of Pi HDMI audio and framebuffer output.
+This is the first robot-face milestone that can actually live reliably on the Raspberry Pi display hardware used for the robot. The robot now has a real face surface, an experimental visual baseline, and playback timing that is good enough for visible speech animation while still respecting the messy reality of Pi HDMI audio and framebuffer output.
 
 ### Key decisions & rationale
 - Decision: keep the face procedural instead of sprite-based.

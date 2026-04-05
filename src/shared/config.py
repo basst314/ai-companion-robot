@@ -109,7 +109,7 @@ class UiConfig:
     sleep_command: tuple[str, ...] = ()
     wake_command: tuple[str, ...] = ()
     sdl_videodriver: str = ""
-    theme_name: str = "retro_bot"
+    theme_name: str = "neon_bot"
     fb_path: str = "/dev/fb0"
 
 

@@ -55,7 +55,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_UI_SLEEP_COMMAND=vcgencmd display_power 0",
                 "AI_COMPANION_UI_WAKE_COMMAND=vcgencmd display_power 1",
                 "AI_COMPANION_UI_SDL_VIDEODRIVER=kmsdrm",
-                "AI_COMPANION_UI_THEME_NAME=retro_bot",
+                "AI_COMPANION_UI_THEME_NAME=neon_bot",
                 "AI_COMPANION_UI_FB_PATH=/dev/fb0",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
@@ -125,7 +125,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.ui.sleep_command == ("vcgencmd", "display_power", "0")
     assert config.ui.wake_command == ("vcgencmd", "display_power", "1")
     assert config.ui.sdl_videodriver == "kmsdrm"
-    assert config.ui.theme_name == "retro_bot"
+    assert config.ui.theme_name == "neon_bot"
     assert config.ui.fb_path == "/dev/fb0"
     assert config.runtime.input_mode == "speech"
     assert config.runtime.speech_latency_profile == "balanced"
