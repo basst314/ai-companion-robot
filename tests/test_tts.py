@@ -156,6 +156,78 @@ class _DelayedStartPlaybackService:
 
 
 @dataclass(slots=True)
+class _FalseStartPlaybackSession:
+    released: asyncio.Event
+
+    async def wait_started(self) -> bool:
+        return False
+
+    async def wait(self) -> PlaybackResult:
+        await self.released.wait()
+        return PlaybackResult(duration_ms=100)
+
+    async def interrupt(self) -> PlaybackResult:
+        self.released.set()
+        return PlaybackResult(duration_ms=50, interrupted=True)
+
+
+@dataclass(slots=True)
+class _FalseStartPlaybackService:
+    released: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def start(self, audio, *, job_id, request, selection):  # type: ignore[no-untyped-def]
+        del audio, job_id, request, selection
+        return _FalseStartPlaybackSession(released=self.released)
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def prewarm(self) -> None:
+        return None
+
+
+@dataclass(slots=True)
+class _FailingStartedPlaybackSession:
+    async def wait_started(self) -> bool:
+        raise RuntimeError("playback start failed")
+
+    async def wait(self) -> PlaybackResult:
+        raise AssertionError("wait should not be called after wait_started failure")
+
+    async def interrupt(self) -> PlaybackResult:
+        return PlaybackResult(duration_ms=0, interrupted=True)
+
+
+@dataclass(slots=True)
+class _FailingStartedPlaybackService:
+    async def start(self, audio, *, job_id, request, selection):  # type: ignore[no-untyped-def]
+        del audio, job_id, request, selection
+        return _FailingStartedPlaybackSession()
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def prewarm(self) -> None:
+        return None
+
+
+@dataclass(slots=True)
+class _FakeWorker:
+    ensure_started_calls: int = 0
+    interrupt_calls: list[str | None] = field(default_factory=list)
+    shutdown_calls: int = 0
+
+    def ensure_started(self) -> None:
+        self.ensure_started_calls += 1
+
+    def interrupt(self, *, job_id: str | None = None) -> None:
+        self.interrupt_calls.append(job_id)
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
+@dataclass(slots=True)
 class _CapturingSynthesizer:
     provider_name: str = "fake"
     selections: list[ResolvedSpeechRequest] = field(default_factory=list)
@@ -423,6 +495,65 @@ def test_queued_tts_service_waits_for_playback_start_before_emitting_event() -> 
     asyncio.run(run())
 
 
+def test_queued_tts_service_skips_started_events_when_backend_cannot_confirm_start() -> None:
+    playback = _FalseStartPlaybackService()
+    events: list[Event] = []
+    service = QueuedTtsService(
+        synthesizer=MockSpeechSynthesizer(),
+        playback=playback,
+        queue_max=4,
+    )
+
+    async def record_event(event: Event) -> None:
+        events.append(event)
+
+    service.bind_event_handler(record_event)
+
+    async def run() -> None:
+        speak_task = asyncio.create_task(service.speak(SpeechRequest(text="hello", language=Language.ENGLISH)))
+        await asyncio.sleep(0.05)
+        playback.released.set()
+        output = await speak_task
+        assert output.status is SpeechJobStatus.PLAYBACK_FINISHED
+        await service.shutdown()
+
+    asyncio.run(run())
+
+    event_names = [event.name for event in events]
+    assert EventName.TTS_SYNTHESIS_FINISHED in event_names
+    assert EventName.TTS_PLAYBACK_STARTED not in event_names
+    assert EventName.TTS_STARTED not in event_names
+    assert EventName.TTS_PLAYBACK_FINISHED in event_names
+
+
+def test_queued_tts_service_marks_job_failed_when_wait_started_raises() -> None:
+    events: list[Event] = []
+    service = QueuedTtsService(
+        synthesizer=MockSpeechSynthesizer(),
+        playback=_FailingStartedPlaybackService(),
+        queue_max=4,
+    )
+
+    async def record_event(event: Event) -> None:
+        events.append(event)
+
+    service.bind_event_handler(record_event)
+
+    async def run() -> None:
+        job = await service.enqueue(SpeechRequest(text="hello", language=Language.ENGLISH))
+        output = await service.wait_for_job(job.job_id)
+        assert output.status is SpeechJobStatus.FAILED
+        assert output.error_message == "playback start failed"
+        await service.shutdown()
+
+    asyncio.run(run())
+
+    event_names = [event.name for event in events]
+    assert EventName.TTS_FAILED in event_names
+    assert EventName.ERROR_OCCURRED in event_names
+    assert EventName.TTS_PLAYBACK_STARTED not in event_names
+
+
 def test_queued_tts_service_start_prewarms_process_manager() -> None:
     process_manager = _ProcessManagerSpy()
     playback = _PrewarmingPlaybackService()
@@ -442,6 +573,37 @@ def test_queued_tts_service_start_prewarms_process_manager() -> None:
     assert process_manager.ensure_running_calls == 1
     assert process_manager.shutdown_calls == 1
     assert playback.prewarm_calls == 1
+
+
+def test_alsa_playback_service_interrupt_and_shutdown_delegate_to_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_workers: list[_FakeWorker] = []
+
+    def build_worker(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        worker = _FakeWorker()
+        created_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr("tts.service.AlsaPlaybackWorker", build_worker)
+    service = AlsaPersistentAudioPlaybackService(
+        device="default:CARD=vc4hdmi1",
+        sample_rate_hz=16000,
+        period_frames=512,
+        buffer_frames=2048,
+        keepalive_interval_ms=20,
+    )
+
+    async def run() -> None:
+        await service.prewarm()
+        service.interrupt_job("job-1")
+        await service.shutdown()
+
+    asyncio.run(run())
+
+    assert len(created_workers) == 1
+    assert created_workers[0].ensure_started_calls == 1
+    assert created_workers[0].interrupt_calls == ["job-1"]
+    assert created_workers[0].shutdown_calls == 1
 
 
 def test_piper_managed_process_shutdown_kills_stuck_process() -> None:

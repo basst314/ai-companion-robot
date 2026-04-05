@@ -263,6 +263,52 @@ def test_load_app_config_rejects_alsa_buffer_smaller_than_period(tmp_path: Path)
         load_app_config(base_dir=tmp_path)
 
 
+def test_load_app_config_command_backend_ignores_invalid_alsa_values(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=command",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+                "AI_COMPANION_TTS_ALSA_DEVICE=",
+                "AI_COMPANION_TTS_ALSA_SAMPLE_RATE=0",
+                "AI_COMPANION_TTS_ALSA_PERIOD_FRAMES=0",
+                "AI_COMPANION_TTS_ALSA_BUFFER_FRAMES=1",
+                "AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=0",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.tts.audio_backend == "command"
+
+
+def test_load_app_config_rejects_non_positive_alsa_keepalive_interval(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
+                "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
+                "AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium",
+                "AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=0",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="ALSA_KEEPALIVE_INTERVAL_MS"):
+        load_app_config(base_dir=tmp_path)
+
+
 def test_setup_script_help_is_available() -> None:
     """The bootstrap script should expose a stable help surface."""
 
