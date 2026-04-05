@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import audioop
 import asyncio
 import contextlib
 import io
@@ -34,6 +35,7 @@ from shared.models import (
     SpeechStyle,
     SynthesizedAudio,
 )
+from tts.alsa_backend import AlsaPcmConfig, AlsaPlaybackWorker, AlsaQueuedPcmJob
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,9 @@ class SpeechSynthesizer(Protocol):
 
 class AudioPlaybackSession(Protocol):
     """Handle for one active playback session."""
+
+    async def wait_started(self) -> bool:
+        """Wait until playback has actually started, if the backend can confirm it."""
 
     async def wait(self) -> "PlaybackResult":
         """Wait until playback has finished and return timing metadata."""
@@ -379,6 +384,9 @@ class CommandPlaybackSession:
     timeout_seconds: float
     _interrupted: bool = field(default=False, init=False, repr=False)
 
+    async def wait_started(self) -> bool:
+        return True
+
     async def wait(self) -> PlaybackResult:
         try:
             await asyncio.wait_for(self.process.wait(), timeout=self.timeout_seconds)
@@ -500,6 +508,9 @@ class _PersistentAplaySession:
     started_at: float
     end_marker_bytes: int
     _interrupted: bool = field(default=False, init=False, repr=False)
+
+    async def wait_started(self) -> bool:
+        return True
 
     async def wait(self) -> PlaybackResult:
         try:
@@ -699,11 +710,145 @@ class PersistentAplayAudioPlaybackService:
 
 
 @dataclass(slots=True)
+class AlsaPlaybackSession:
+    """Playback session backed by the dedicated ALSA worker."""
+
+    service: "AlsaPersistentAudioPlaybackService"
+    job_id: str
+    started_future: asyncio.Future[bool]
+    finished_future: asyncio.Future[PlaybackResult]
+
+    async def wait_started(self) -> bool:
+        return await self.started_future
+
+    async def wait(self) -> PlaybackResult:
+        return await self.finished_future
+
+    async def interrupt(self) -> PlaybackResult:
+        self.service.interrupt_job(self.job_id)
+        return await self.finished_future
+
+
+@dataclass(slots=True)
+class AlsaPersistentAudioPlaybackService:
+    """Dedicated ALSA output owner for Raspberry Pi playback."""
+
+    device: str
+    sample_rate_hz: int
+    period_frames: int
+    buffer_frames: int
+    keepalive_interval_ms: int
+    timeout_seconds: float = 60.0
+    channels: int = 1
+    _worker: AlsaPlaybackWorker | None = field(default=None, init=False, repr=False)
+    _worker_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+
+    async def start(
+        self,
+        audio: SynthesizedAudio,
+        *,
+        job_id: str,
+        request: SpeechRequest,
+        selection: ResolvedSpeechRequest,
+    ) -> AudioPlaybackSession:
+        del request, selection
+        pcm_audio = _prepare_audio_for_alsa_playback(
+            audio,
+            target_sample_rate_hz=self.sample_rate_hz,
+            target_channels=self.channels,
+        )
+        if pcm_audio is None:
+            raise RuntimeError("ALSA playback requires uncompressed WAV audio")
+
+        await self._ensure_worker()
+        loop = asyncio.get_running_loop()
+        started_future: asyncio.Future[bool] = loop.create_future()
+        finished_future: asyncio.Future[PlaybackResult] = loop.create_future()
+
+        def on_started() -> None:
+            loop.call_soon_threadsafe(_resolve_started_future, started_future, True)
+
+        def on_finished(duration_ms: int) -> None:
+            loop.call_soon_threadsafe(
+                _resolve_finished_future,
+                started_future,
+                finished_future,
+                True,
+                PlaybackResult(duration_ms=duration_ms),
+            )
+
+        def on_interrupted(duration_ms: int) -> None:
+            loop.call_soon_threadsafe(
+                _resolve_finished_future,
+                started_future,
+                finished_future,
+                False,
+                PlaybackResult(duration_ms=duration_ms, interrupted=True),
+            )
+
+        def on_failed(exc: Exception) -> None:
+            loop.call_soon_threadsafe(_reject_playback_futures, started_future, finished_future, exc)
+
+        assert self._worker is not None
+        self._worker.enqueue(
+            AlsaQueuedPcmJob(
+                job_id=job_id,
+                pcm_frames=pcm_audio.pcm_frames,
+                on_started=on_started,
+                on_finished=on_finished,
+                on_interrupted=on_interrupted,
+                on_failed=on_failed,
+            )
+        )
+        return AlsaPlaybackSession(
+            service=self,
+            job_id=job_id,
+            started_future=started_future,
+            finished_future=finished_future,
+        )
+
+    async def prewarm(self) -> None:
+        await self._ensure_worker()
+
+    async def shutdown(self) -> None:
+        async with self._worker_lock:
+            worker = self._worker
+            self._worker = None
+        if worker is not None:
+            await asyncio.to_thread(worker.shutdown)
+
+    def interrupt_job(self, job_id: str) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker.interrupt(job_id=job_id)
+
+    async def _ensure_worker(self) -> None:
+        async with self._worker_lock:
+            if self._worker is None:
+                self._worker = AlsaPlaybackWorker(
+                    AlsaPcmConfig(
+                        device=self.device,
+                        sample_rate_hz=self.sample_rate_hz,
+                        channels=self.channels,
+                        period_frames=self.period_frames,
+                        buffer_frames=self.buffer_frames,
+                        keepalive_interval_ms=self.keepalive_interval_ms,
+                    )
+                )
+            worker = self._worker
+        assert worker is not None
+        await asyncio.to_thread(worker.ensure_started)
+
+
+@dataclass(slots=True)
 class _ImmediatePlaybackSession:
     """Playback session used by the mock playback adapter."""
 
     duration_ms: int
     interrupted: bool = False
+
+    async def wait_started(self) -> bool:
+        return True
 
     async def wait(self) -> PlaybackResult:
         return PlaybackResult(duration_ms=self.duration_ms, interrupted=self.interrupted)
@@ -1026,6 +1171,12 @@ class QueuedTtsService:
             await self._finalize_failure(queued_job, exc)
             return
 
+        try:
+            playback_started = await self._current_session.wait_started()
+        except Exception as exc:
+            await self._finalize_failure(queued_job, exc)
+            return
+
         self._update_debug(
             phase="play",
             queue_depth=self._queue_depth_locked(),
@@ -1034,25 +1185,26 @@ class QueuedTtsService:
             speaker=selection.speaker_name or (str(selection.speaker_id) if selection.speaker_id is not None else "--"),
             preview=request_model.text,
         )
-        await self._emit_tts_event(
-            EventName.TTS_PLAYBACK_STARTED,
-            {
-                "job_id": queued_job.job.job_id,
-                "text": request_model.text,
-                "voice_id": selection.voice_id,
-                "speaker_id": selection.speaker_id,
-                "style": selection.style_hint.value,
-            },
-        )
-        await self._emit_tts_event(
-            EventName.TTS_STARTED,
-            {
-                "job_id": queued_job.job.job_id,
-                "text": request_model.text,
-                "voice_id": selection.voice_id,
-            },
-        )
-        self._log_spoken_text(request_model.text)
+        if playback_started:
+            await self._emit_tts_event(
+                EventName.TTS_PLAYBACK_STARTED,
+                {
+                    "job_id": queued_job.job.job_id,
+                    "text": request_model.text,
+                    "voice_id": selection.voice_id,
+                    "speaker_id": selection.speaker_id,
+                    "style": selection.style_hint.value,
+                },
+            )
+            await self._emit_tts_event(
+                EventName.TTS_STARTED,
+                {
+                    "job_id": queued_job.job.job_id,
+                    "text": request_model.text,
+                    "voice_id": selection.voice_id,
+                },
+            )
+            self._log_spoken_text(request_model.text)
 
         try:
             playback_result = await self._current_session.wait()
@@ -1292,7 +1444,16 @@ def build_piper_tts_service(
     playback_command = config.audio_play_command
     if not playback_command:
         playback_command = _default_audio_play_command()
-    if _supports_persistent_aplay(playback_command):
+    if config.audio_backend == "alsa_persistent":
+        playback: AudioPlaybackService = AlsaPersistentAudioPlaybackService(
+            device=config.alsa_device,
+            sample_rate_hz=config.alsa_sample_rate,
+            period_frames=config.alsa_period_frames,
+            buffer_frames=config.alsa_buffer_frames,
+            keepalive_interval_ms=config.alsa_keepalive_interval_ms,
+            timeout_seconds=config.playback_timeout_seconds,
+        )
+    elif _supports_persistent_aplay(playback_command):
         playback: AudioPlaybackService = PersistentAplayAudioPlaybackService(
             command_template=playback_command,
             timeout_seconds=config.playback_timeout_seconds,
@@ -1417,6 +1578,25 @@ def _prepare_audio_for_playback(audio: SynthesizedAudio) -> SynthesizedAudio:
     )
 
 
+def _prepare_audio_for_alsa_playback(
+    audio: SynthesizedAudio,
+    *,
+    target_sample_rate_hz: int,
+    target_channels: int,
+) -> _RawPcmAudio | None:
+    if audio.mime_type != "audio/wav":
+        return None
+    pcm_audio = _extract_raw_pcm_audio(audio.audio_bytes)
+    if pcm_audio is None:
+        return None
+    return _normalize_pcm_audio(
+        pcm_audio,
+        target_sample_rate_hz=target_sample_rate_hz,
+        target_channels=target_channels,
+        add_lead_in=False,
+    )
+
+
 def _prepare_wav_bytes_for_playback(audio_bytes: bytes) -> bytes:
     try:
         with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
@@ -1474,6 +1654,83 @@ def _extract_raw_pcm_audio(audio_bytes: bytes) -> _RawPcmAudio | None:
         sample_width_bytes=sample_width,
         sample_rate_hz=sample_rate,
     )
+
+
+def _normalize_pcm_audio(
+    pcm_audio: _RawPcmAudio,
+    *,
+    target_sample_rate_hz: int,
+    target_channels: int,
+    add_lead_in: bool,
+) -> _RawPcmAudio | None:
+    pcm_frames = pcm_audio.pcm_frames
+    channels = pcm_audio.channels
+    sample_width = pcm_audio.sample_width_bytes
+    sample_rate = pcm_audio.sample_rate_hz
+
+    if sample_width not in {1, 2, 4} or channels <= 0 or sample_rate <= 0:
+        return None
+
+    if channels != target_channels:
+        if channels == 2 and target_channels == 1:
+            pcm_frames = audioop.tomono(pcm_frames, sample_width, 0.5, 0.5)
+            channels = 1
+        else:
+            return None
+
+    if sample_width != 2:
+        pcm_frames = audioop.lin2lin(pcm_frames, sample_width, 2)
+        sample_width = 2
+
+    if sample_rate != target_sample_rate_hz:
+        pcm_frames, _ = audioop.ratecv(
+            pcm_frames,
+            sample_width,
+            channels,
+            sample_rate,
+            target_sample_rate_hz,
+            None,
+        )
+        sample_rate = target_sample_rate_hz
+
+    if add_lead_in:
+        lead_in_frames = int(sample_rate * (_PLAYBACK_LEAD_IN_MS / 1000.0))
+        pcm_frames = (b"\x00" * (lead_in_frames * channels * sample_width)) + pcm_frames
+
+    return _RawPcmAudio(
+        pcm_frames=pcm_frames,
+        channels=channels,
+        sample_width_bytes=sample_width,
+        sample_rate_hz=sample_rate,
+    )
+
+
+def _resolve_started_future(future: asyncio.Future[bool], value: bool) -> None:
+    if not future.done():
+        future.set_result(value)
+
+
+def _resolve_finished_future(
+    started_future: asyncio.Future[bool],
+    finished_future: asyncio.Future[PlaybackResult],
+    started_value: bool,
+    result: PlaybackResult,
+) -> None:
+    if not started_future.done():
+        started_future.set_result(started_value)
+    if not finished_future.done():
+        finished_future.set_result(result)
+
+
+def _reject_playback_futures(
+    started_future: asyncio.Future[bool],
+    finished_future: asyncio.Future[PlaybackResult],
+    exc: Exception,
+) -> None:
+    if not started_future.done():
+        started_future.set_exception(exc)
+    if not finished_future.done():
+        finished_future.set_exception(exc)
 
 
 def _apply_wav_fade_out(

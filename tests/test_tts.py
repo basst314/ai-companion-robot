@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import struct
+import time
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,7 @@ from shared.models import (
     SynthesizedAudio,
 )
 from tts.service import (
+    AlsaPersistentAudioPlaybackService,
     MockSpeechSynthesizer,
     PiperManagedProcess,
     PiperVoiceResolver,
@@ -29,6 +31,7 @@ from tts.service import (
     PersistentAplayAudioPlaybackService,
     QueuedTtsService,
     ResolvedSpeechRequest,
+    build_piper_tts_service,
     _build_aplay_stream_command,
     _extract_raw_pcm_audio,
     _prepare_wav_bytes_for_playback,
@@ -38,6 +41,9 @@ from tts.service import (
 @dataclass(slots=True)
 class _ImmediatePlaybackSession:
     duration_ms: int
+
+    async def wait_started(self) -> bool:
+        return True
 
     async def wait(self) -> PlaybackResult:
         return PlaybackResult(duration_ms=self.duration_ms)
@@ -77,8 +83,11 @@ class _BlockingPlaybackSession:
     released: asyncio.Event
     interrupted: bool = False
 
-    async def wait(self) -> PlaybackResult:
+    async def wait_started(self) -> bool:
         self.started.set()
+        return True
+
+    async def wait(self) -> PlaybackResult:
         await self.released.wait()
         return PlaybackResult(duration_ms=100, interrupted=self.interrupted)
 
@@ -102,6 +111,43 @@ class _BlockingPlaybackService:
         )
         self.sessions.append(session)
         return session
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def prewarm(self) -> None:
+        return None
+
+
+@dataclass(slots=True)
+class _DelayedStartPlaybackSession:
+    started_signal: asyncio.Event
+    released: asyncio.Event
+
+    async def wait_started(self) -> bool:
+        await self.started_signal.wait()
+        return True
+
+    async def wait(self) -> PlaybackResult:
+        await self.released.wait()
+        return PlaybackResult(duration_ms=100)
+
+    async def interrupt(self) -> PlaybackResult:
+        self.released.set()
+        return PlaybackResult(duration_ms=50, interrupted=True)
+
+
+@dataclass(slots=True)
+class _DelayedStartPlaybackService:
+    started_signal: asyncio.Event = field(default_factory=asyncio.Event)
+    released: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def start(self, audio, *, job_id, request, selection):  # type: ignore[no-untyped-def]
+        del audio, job_id, request, selection
+        return _DelayedStartPlaybackSession(
+            started_signal=self.started_signal,
+            released=self.released,
+        )
 
     async def shutdown(self) -> None:
         return None
@@ -307,6 +353,18 @@ def test_persistent_aplay_service_reuses_running_process(monkeypatch: pytest.Mon
     assert any(payload and set(payload) == {0} for payload in payloads)
 
 
+def test_build_piper_tts_service_selects_alsa_backend(tmp_path: Path) -> None:
+    config = TtsConfig(
+        backend="piper",
+        audio_backend="alsa_persistent",
+        alsa_device="default:CARD=vc4hdmi1",
+    )
+
+    service = build_piper_tts_service(config, audio_output_dir=tmp_path)
+
+    assert isinstance(service.playback, AlsaPersistentAudioPlaybackService)
+
+
 def test_queued_tts_service_processes_append_jobs_in_order() -> None:
     playback = _ImmediatePlaybackService()
     service = QueuedTtsService(
@@ -402,6 +460,41 @@ def test_queued_tts_service_marks_queue_overflow_as_failed() -> None:
         assert third_output.acknowledged is False
         await service.shutdown()
         assert first.job_id != second.job_id
+
+    asyncio.run(run())
+
+
+def test_queued_tts_service_waits_for_playback_start_before_emitting_event() -> None:
+    playback = _DelayedStartPlaybackService()
+    events: list[Event] = []
+    service = QueuedTtsService(
+        synthesizer=MockSpeechSynthesizer(),
+        playback=playback,
+        queue_max=4,
+    )
+
+    async def record_event(event: Event) -> None:
+        events.append(event)
+
+    service.bind_event_handler(record_event)
+
+    async def run() -> None:
+        speak_task = asyncio.create_task(service.speak(SpeechRequest(text="hello", language=Language.ENGLISH)))
+        deadline = time.monotonic() + 1.0
+        while EventName.TTS_SYNTHESIS_FINISHED not in [event.name for event in events]:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.01)
+        assert EventName.TTS_SYNTHESIS_FINISHED in [event.name for event in events]
+        assert EventName.TTS_PLAYBACK_STARTED not in [event.name for event in events]
+
+        playback.started_signal.set()
+        await asyncio.sleep(0)
+        assert EventName.TTS_PLAYBACK_STARTED in [event.name for event in events]
+
+        playback.released.set()
+        output = await speak_task
+        assert output.status is SpeechJobStatus.PLAYBACK_FINISHED
+        await service.shutdown()
 
     asyncio.run(run())
 
