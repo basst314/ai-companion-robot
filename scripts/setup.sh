@@ -183,7 +183,7 @@ install_system_packages() {
   require_command sudo
   log "installing Raspberry Pi system dependencies with apt"
   sudo apt-get update
-  sudo apt-get install -y build-essential cmake git python3 python3-venv python3-pip alsa-utils curl
+  sudo apt-get install -y build-essential cmake git python3 python3-venv python3-pip alsa-utils libasound2-dev curl
 }
 
 python_at_least_311() {
@@ -705,13 +705,19 @@ write_env_file() {
   local whisper_model="${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin"
   local audio_command
   local playback_command
+  local tts_audio_backend
+  local tts_alsa_device
 
   if [[ "${PLATFORM}" == "macos" ]]; then
     audio_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
     playback_command="afplay {input_path}"
+    tts_audio_backend="command"
+    tts_alsa_device="default"
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
     playback_command='aplay {input_path}'
+    tts_audio_backend="alsa_persistent"
+    tts_alsa_device="default:CARD=vc4hdmi1"
   fi
 
   if [[ -f "${ENV_FILE}" ]] && [[ "${FORCE}" -eq 0 ]] && ! confirm "Overwrite existing ${ENV_FILE}?"; then
@@ -745,7 +751,13 @@ AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium
 AI_COMPANION_TTS_DEFAULT_VOICE_ID=id_ID-news_tts-medium
 AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE=de_DE-thorsten_emotional-medium
 AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=${tts_expressive_de}
+AI_COMPANION_TTS_AUDIO_BACKEND=${tts_audio_backend}
 AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=${playback_command}
+AI_COMPANION_TTS_ALSA_DEVICE=${tts_alsa_device}
+AI_COMPANION_TTS_ALSA_SAMPLE_RATE=16000
+AI_COMPANION_TTS_ALSA_PERIOD_FRAMES=512
+AI_COMPANION_TTS_ALSA_BUFFER_FRAMES=2048
+AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS=20
 AI_COMPANION_TTS_QUEUE_MAX=4
 AI_COMPANION_TTS_SAVE_ARTIFACTS=false
 AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=20

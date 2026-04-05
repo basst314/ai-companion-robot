@@ -129,7 +129,9 @@ After setup finishes, open `.env.local` on the Pi and verify:
 
 - `AI_COMPANION_OPENAI_API_KEY`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_TTS_AUDIO_BACKEND`
 - `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_TTS_ALSA_DEVICE`
 - `AI_COMPANION_WAKE_WORD_ENABLED`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
@@ -139,7 +141,8 @@ After setup finishes, open `.env.local` on the Pi and verify:
 Important:
 - do not copy your Mac `.env.local` directly to the Pi because it contains machine-specific absolute paths
 - if your mic needs a different ALSA device, update `AI_COMPANION_AUDIO_RECORD_COMMAND`
-- if your speaker path differs, update `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- if your speaker path differs, update `AI_COMPANION_TTS_ALSA_DEVICE`
+- the Pi setup now defaults to `AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent` because the ALSA-native playback path is much more robust on HDMI displays/speakers than command-driven `aplay` alone
 
 ## 7. Validate The Pi Runtime
 

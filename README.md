@@ -193,6 +193,7 @@ On Raspberry Pi:
 - `python3`, `python3-venv`, `python3-pip`
 - build tools for `whisper.cpp`
 - `alsa-utils` for `arecord`
+- `libasound2-dev` so the ALSA-native Pi playback backend can build `pyalsaaudio`
 
 On macOS:
 - `python@3.11`
@@ -210,10 +211,12 @@ Project-local artifacts:
 Raspberry Pi:
 - the script expects a Debian-family Raspberry Pi environment
 - audio capture defaults to `arecord`
+- TTS playback defaults to the ALSA-native Pi backend on `default:CARD=vc4hdmi1`
 
 macOS:
 - the script uses Homebrew for dependencies
 - audio capture defaults to `rec`, which has been more reliable than `ffmpeg`/`avfoundation` on some Macs
+- TTS playback stays on the simpler command backend
 - you may need to grant microphone access to Terminal or your shell app
 
 ### Manual Fallback
@@ -416,7 +419,7 @@ AI_COMPANION_OPENAI_RESPONSE_MODEL=...
 AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=120
 ```
 
-The cloud backend returns reply text and can request local tools such as a camera snapshot when needed. Audio output remains local and Piper is still a later milestone.
+The cloud backend returns reply text and can request local tools such as a camera snapshot when needed. Audio output remains local, and the current Pi production path now uses local Piper plus an ALSA-native playback backend for HDMI audio.
 For short-term continuity, the OpenAI path also reuses the prior response thread for wake-free follow-ups and for fresh wake-word turns that happen again within a short in-memory resume window.
 The setup script can now enable the OpenAI path interactively, asks for the API key when you opt in, and accepts a blank value so you can add the key later in `.env.local`.
 

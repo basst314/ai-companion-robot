@@ -46,7 +46,13 @@ Current supported variables:
 - `AI_COMPANION_TTS_DEFAULT_VOICE_ID`
 - `AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE`
 - `AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED`
+- `AI_COMPANION_TTS_AUDIO_BACKEND`
 - `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_TTS_ALSA_DEVICE`
+- `AI_COMPANION_TTS_ALSA_SAMPLE_RATE`
+- `AI_COMPANION_TTS_ALSA_PERIOD_FRAMES`
+- `AI_COMPANION_TTS_ALSA_BUFFER_FRAMES`
+- `AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS`
 - `AI_COMPANION_TTS_QUEUE_MAX`
 - `AI_COMPANION_TTS_SAVE_ARTIFACTS`
 - `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
@@ -82,17 +88,21 @@ If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the r
 That same OpenAI path keeps short-term turn continuity by reusing the previous response thread for immediate follow-ups and for a short wake-word resume window after the conversation pauses.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
 If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.
+On Raspberry Pi, the generated TTS config now defaults to `AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent` with a dedicated HDMI ALSA device path. That backend is intended to eliminate the startup clipping, pops, and mid-speech dropouts that were hard to avoid with command-driven `aplay` playback alone.
 
 ## Platform-Specific Defaults
 
 Raspberry Pi:
 - package manager: `apt`
 - recorder command: `arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}` (`{output_path}` becomes `-` at runtime)
+- playback backend: `alsa_persistent`
+- ALSA device: `default:CARD=vc4hdmi1`
 - intended target: Raspberry Pi OS or another Debian-family Raspberry Pi image
 
 macOS:
 - package manager: `brew`
 - recorder command: `rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}` (`{output_path}` becomes `-` at runtime)
+- playback backend: `command`
 - this uses `sox`/`rec`, which has been more reliable than `ffmpeg`/`avfoundation` for clean mic capture on some Macs
 - remember to grant microphone permissions to Terminal/iTerm
 
@@ -114,7 +124,7 @@ Use these when you want repeatable automation:
 If the script cannot support your environment yet, install manually:
 
 1. Install Python 3.11+, Git, CMake, and a recorder tool.
-2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS.
+2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS. On Raspberry Pi/Linux, the `tts` extra now also installs `pyalsaaudio` for the ALSA-native playback backend.
 3. Clone and build `whisper.cpp`.
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
