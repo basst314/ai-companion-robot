@@ -406,8 +406,11 @@ class PygameFaceUiService:
         assert self._pygame is not None
         assert self._screen is not None
         rect = self._pygame.Rect(center_x - (width // 2), center_y - (height // 2), width, max(8, height))
-        start_angle = 0.15 if smile else math.pi + 0.15
-        end_angle = math.pi - 0.15 if smile else (math.tau - 0.15)
+        # pygame's arc angle orientation renders the opposite curvature from our
+        # custom framebuffer path, so the happy/sleepy halves need to be swapped
+        # here to keep Mac/dev and Pi visuals consistent.
+        start_angle = math.pi + 0.15 if smile else 0.15
+        end_angle = (math.tau - 0.15) if smile else (math.pi - 0.15)
         self._draw_glow_arc(rect, start_angle, end_angle, 5)
         self._pygame.draw.arc(self._screen, self.theme.palette.eye_fill, rect, start_angle, end_angle, 4)
 
