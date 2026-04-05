@@ -36,6 +36,10 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=true",
                 "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
                 "AI_COMPANION_TTS_USE_PERSISTENT_APLAY=false",
+                "AI_COMPANION_TTS_WARMUP_ENABLED=true",
+                "AI_COMPANION_TTS_WARMUP_DURATION_MS=140",
+                "AI_COMPANION_TTS_WARMUP_SETTLE_MS=35",
+                "AI_COMPANION_TTS_WARMUP_IDLE_THRESHOLD_SECONDS=6.5",
                 "AI_COMPANION_TTS_QUEUE_MAX=3",
                 "AI_COMPANION_TTS_SAVE_ARTIFACTS=true",
                 "AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=11.5",
@@ -101,6 +105,10 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.tts.expressive_de_enabled is True
     assert config.tts.audio_play_command == ("aplay", "{input_path}")
     assert config.tts.use_persistent_aplay is False
+    assert config.tts.warmup_enabled is True
+    assert config.tts.warmup_duration_ms == 140
+    assert config.tts.warmup_settle_ms == 35
+    assert config.tts.warmup_idle_threshold_seconds == 6.5
     assert config.tts.queue_max == 3
     assert config.tts.save_artifacts is True
     assert config.tts.synthesis_timeout_seconds == 11.5

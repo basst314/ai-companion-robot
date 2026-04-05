@@ -78,6 +78,10 @@ class TtsConfig:
     piper_command: tuple[str, ...] = ()
     audio_play_command: tuple[str, ...] = ()
     use_persistent_aplay: bool = True
+    warmup_enabled: bool = True
+    warmup_duration_ms: int = 120
+    warmup_settle_ms: int = 40
+    warmup_idle_threshold_seconds: float = 8.0
     default_voice_en: str = "en_US-hfc_female-medium"
     default_voice_de: str = "de_DE-thorsten-medium"
     default_voice_id: str = "id_ID-news_tts-medium"
@@ -327,6 +331,22 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}TTS_USE_PERSISTENT_APLAY"),
         default=tts.use_persistent_aplay,
     )
+    tts.warmup_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}TTS_WARMUP_ENABLED"),
+        default=tts.warmup_enabled,
+    )
+    tts.warmup_duration_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_WARMUP_DURATION_MS"),
+        default=tts.warmup_duration_ms,
+    )
+    tts.warmup_settle_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}TTS_WARMUP_SETTLE_MS"),
+        default=tts.warmup_settle_ms,
+    )
+    tts.warmup_idle_threshold_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}TTS_WARMUP_IDLE_THRESHOLD_SECONDS"),
+        default=tts.warmup_idle_threshold_seconds,
+    )
     tts.default_voice_en = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_EN", tts.default_voice_en).strip()
     tts.default_voice_de = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_DE", tts.default_voice_de).strip()
     tts.default_voice_id = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_ID", tts.default_voice_id).strip()
@@ -441,6 +461,12 @@ def _validate_tts_config(tts: TtsConfig) -> None:
         raise ValueError("AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS must be greater than zero")
     if tts.playback_timeout_seconds <= 0:
         raise ValueError("AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS must be greater than zero")
+    if tts.warmup_duration_ms < 0:
+        raise ValueError("AI_COMPANION_TTS_WARMUP_DURATION_MS must be zero or greater")
+    if tts.warmup_settle_ms < 0:
+        raise ValueError("AI_COMPANION_TTS_WARMUP_SETTLE_MS must be zero or greater")
+    if tts.warmup_idle_threshold_seconds < 0:
+        raise ValueError("AI_COMPANION_TTS_WARMUP_IDLE_THRESHOLD_SECONDS must be zero or greater")
     if tts.backend == "piper":
         if not tts.piper_base_url.strip():
             raise ValueError("AI_COMPANION_TTS_PIPER_BASE_URL must be configured for Piper TTS")

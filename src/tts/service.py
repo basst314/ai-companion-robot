@@ -429,6 +429,11 @@ class CommandAudioPlaybackService:
     output_dir: Path
     save_artifacts: bool = False
     timeout_seconds: float = 60.0
+    warmup_enabled: bool = True
+    warmup_duration_ms: int = 120
+    warmup_settle_ms: int = 40
+    warmup_idle_threshold_seconds: float = 8.0
+    _last_warm_activity_at: float | None = field(default=None, init=False, repr=False)
 
     async def start(
         self,
@@ -439,6 +444,7 @@ class CommandAudioPlaybackService:
         selection: ResolvedSpeechRequest,
     ) -> AudioPlaybackSession:
         del request, selection
+        await self._ensure_warm()
         artifact_path, cleanup_after = self._write_audio_file(job_id, audio)
         command = _format_input_command(self.command_template, artifact_path)
         process = await asyncio.create_subprocess_exec(
@@ -446,6 +452,7 @@ class CommandAudioPlaybackService:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._last_warm_activity_at = time.monotonic()
         return CommandPlaybackSession(
             process=process,
             started_at=time.monotonic(),
@@ -470,7 +477,35 @@ class CommandAudioPlaybackService:
         return None
 
     async def prewarm(self) -> None:
-        return None
+        await self._run_warmup(force=True)
+
+    async def _ensure_warm(self) -> None:
+        await self._run_warmup(force=False)
+
+    async def _run_warmup(self, *, force: bool) -> None:
+        if not self.warmup_enabled or not _supports_aplay_command(self.command_template):
+            return
+        if not force and self._last_warm_activity_at is not None:
+            idle_seconds = time.monotonic() - self._last_warm_activity_at
+            if idle_seconds < self.warmup_idle_threshold_seconds:
+                return
+        silence_audio = SynthesizedAudio(audio_bytes=_build_silent_wav(duration_ms=self.warmup_duration_ms))
+        artifact_path, cleanup_after = self._write_audio_file("prewarm", silence_audio)
+        command = _format_input_command(self.command_template, artifact_path)
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=min(self.timeout_seconds, 5.0))
+        finally:
+            if cleanup_after:
+                with contextlib.suppress(FileNotFoundError):
+                    artifact_path.unlink()
+        if self.warmup_settle_ms > 0:
+            await asyncio.sleep(self.warmup_settle_ms / 1000.0)
+        self._last_warm_activity_at = time.monotonic()
 
 
 @dataclass(slots=True, frozen=True)
@@ -611,11 +646,14 @@ class PersistentAplayAudioPlaybackService:
                         del self._speech_buffer[:pcm_chunk_size]
                         self._written_speech_bytes += len(chunk)
                         self._playback_advanced.set()
+                        should_sleep = False
                     else:
                         chunk = silence_chunk
+                        should_sleep = True
                 stdin.write(chunk)
                 await stdin.drain()
-                await asyncio.sleep(_persistent_aplay_chunk_seconds(command))
+                if should_sleep:
+                    await asyncio.sleep(_persistent_aplay_chunk_seconds(command))
         except asyncio.CancelledError:
             raise
         finally:
@@ -1289,10 +1327,10 @@ def build_piper_tts_service(
             default_voice=config.default_voice_en,
             command_override=config.piper_command,
         )
-    playback_command = config.audio_play_command
+        playback_command = config.audio_play_command
     if not playback_command:
         playback_command = _default_audio_play_command()
-    if _supports_persistent_aplay(playback_command):
+    if config.use_persistent_aplay and _supports_persistent_aplay(playback_command):
         playback: AudioPlaybackService = PersistentAplayAudioPlaybackService(
             command_template=playback_command,
             timeout_seconds=config.playback_timeout_seconds,
@@ -1303,6 +1341,10 @@ def build_piper_tts_service(
             output_dir=audio_output_dir,
             save_artifacts=config.save_artifacts,
             timeout_seconds=config.playback_timeout_seconds,
+            warmup_enabled=config.warmup_enabled,
+            warmup_duration_ms=config.warmup_duration_ms,
+            warmup_settle_ms=config.warmup_settle_ms,
+            warmup_idle_threshold_seconds=config.warmup_idle_threshold_seconds,
         )
     return QueuedTtsService(
         synthesizer=PiperHttpSynthesizer(
@@ -1332,8 +1374,12 @@ def _format_input_command(command_template: Sequence[str], input_path: Path) -> 
     return resolved
 
 
-def _supports_persistent_aplay(command_template: Sequence[str]) -> bool:
+def _supports_aplay_command(command_template: Sequence[str]) -> bool:
     return bool(command_template) and Path(command_template[0]).name == "aplay"
+
+
+def _supports_persistent_aplay(command_template: Sequence[str]) -> bool:
+    return _supports_aplay_command(command_template)
 
 
 def _build_aplay_stream_command(command_template: Sequence[str], audio: _RawPcmAudio) -> tuple[str, ...]:
@@ -1378,7 +1424,9 @@ def _persistent_aplay_channels(command_template: Sequence[str]) -> int:
 
 
 def _persistent_aplay_chunk_frames() -> int:
-    return 1024
+    # Use a larger buffer window so brief event-loop jitter on the Pi is less
+    # likely to underrun the HDMI audio device.
+    return 4096
 
 
 def _persistent_aplay_chunk_size(command_template: Sequence[str]) -> int:
