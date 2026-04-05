@@ -32,7 +32,10 @@ from stt.service import (
     WhisperCppSttService,
 )
 from tts.service import MockTtsService, TtsService, build_piper_tts_service
-from ui.service import MockUiService
+from ui.face import build_face_theme
+from ui.fb0_service import Fb0FaceUiService
+from ui.pygame_service import PygameFaceUiService
+from ui.service import MockUiService, UiService
 from vision.service import MockVisionService
 
 
@@ -60,6 +63,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
     cloud_response = _build_cloud_services(app_config)
     tts = _build_tts_service(app_config, terminal_debug=terminal_debug)
+    ui = _build_ui_service(app_config, terminal_debug=terminal_debug)
     service = OrchestratorService(
         config=app_config,
         state=OrchestratorState.initial(),
@@ -69,10 +73,7 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         event_bus=event_bus,
         memory=memory,
         vision=vision,
-        ui=MockUiService(
-            echo_state_to_console=terminal_debug is None,
-            echo_text_to_console=True,
-        ),
+        ui=ui,
         hardware=MockHardwareService(),
         cloud_response=cloud_response,
         stt=stt,
@@ -82,6 +83,8 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     )
     if hasattr(tts, "bind_event_handler"):
         tts.bind_event_handler(service.handle_event)
+    if hasattr(ui, "handle_event"):
+        event_bus.subscribe(ui.handle_event)
     return service
 
 
@@ -119,6 +122,27 @@ def _build_tts_service(
             terminal_debug=terminal_debug,
         )
     raise RuntimeError("cloud TTS is not implemented yet")
+
+
+def _build_ui_service(
+    app_config: AppConfig,
+    *,
+    terminal_debug: TerminalDebugScreen | None = None,
+) -> UiService:
+    if app_config.ui.backend == "pygame":
+        return PygameFaceUiService(
+            config=app_config.ui,
+            theme=build_face_theme(app_config.ui.theme_name),
+        )
+    if app_config.ui.backend == "fb0":
+        return Fb0FaceUiService(
+            config=app_config.ui,
+            theme=build_face_theme(app_config.ui.theme_name),
+        )
+    return MockUiService(
+        echo_state_to_console=terminal_debug is None,
+        echo_text_to_console=True,
+    )
 
 
 def _build_speech_services(

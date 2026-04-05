@@ -29,24 +29,26 @@ The earlier Pi HDMI fixes solved clipping but forced a tradeoff between startup 
 - Decision: keep the worker as the single owner of the audio device and separate idle keepalive from speech playback inside that owner.
   - Why: it avoids multiple writers fighting over the same HDMI/ALSA sink and eliminates the silence backlog that caused startup delay.
 
-## 2026-04-04 — Raspberry Pi HDMI TTS Playback Stabilization
+## 2026-04-04 — Robot Face UI And Pi Framebuffer Backend
 
 ### Highlights
-- Hardened local Piper playback on Raspberry Pi HDMI outputs by padding synthesized WAVs with a short lead-in, a short fade-out, and a small tail of silence before playback.
-- Added a persistent `aplay` playback path that keeps the HDMI sink active between utterances by continuously streaming silence when no speech is queued.
-- Prewarmed the persistent playback path during app startup so the very first spoken response is much less likely to lose its opening syllables.
-- Added focused TTS tests covering WAV preparation, persistent `aplay` command shaping, continuous-silence process reuse, and playback prewarming at service startup.
+- Added real face-rendering backends for both windowed/fullscreen `pygame-ce` and Raspberry Pi `fb0`, with procedural robot eyes, smooth interpolation between states, playful idle micro-animations, sleeping-eyes behavior, and placeholder scene plumbing for future camera/image takeovers.
+- Added a face/theme layer so palette, eye geometry, blink timing, idle motion, transition durations, and named expression presets can be tuned without rewriting the renderer.
+- Added a new `neon_bot` face theme for a simpler cyan-blue robot look alongside `retro_bot`, `amber_bot`, and `noir_bot`.
+- Extended `UiService` with `start()`, `shutdown()`, `show_content(...)`, and `clear_content()`, and added new UI runtime config for backend selection, frame rates, sleep timing, display sleep/wake hooks, and theme selection.
+- Updated the orchestrator so visual `speaking` begins on playback start events instead of when speech is merely queued or synthesized.
+- Hardened OpenAI structured-reply parsing so truncated structured outputs surface a clear runtime error instead of a raw JSON decode failure.
 
 ### Why this matters
-Waveshare-style HDMI displays and similar Pi audio sinks can wake slowly and pop when the stream opens or closes. These changes make spoken replies much more reliable in the real Pi deployment path without changing the higher-level TTS interface or requiring different hardware.
+This is the first robot-face milestone that can actually live reliably on the Raspberry Pi display hardware used for the robot. The robot now has a real face surface, multiple visual personalities, and playback timing that is good enough for visible speech animation while still respecting the messy reality of Pi HDMI audio and framebuffer output.
 
 ### Key decisions & rationale
-- Decision: keep the fix inside the existing local playback adapter layer instead of special-casing the orchestrator or Piper provider.
-  - Why: startup, queueing, interruption, and Raspberry Pi deployment all continue to use the same TTS contract.
-- Decision: use a persistent `aplay` process with silence-fill rather than launching a fresh `aplay` process for every utterance.
-  - Why: the dominant user-facing problem was HDMI sink wake/sleep behavior, so the most effective fix was to keep the device clocked while the app runs.
-- Decision: accept the small remaining shutdown pop as a hardware-path limitation for now.
-  - Why: the app is intended to stay up continuously, and the remaining artifact appears only on exit while normal runtime speech now behaves correctly.
+- Decision: keep the face procedural instead of sprite-based.
+  - Why: this keeps the look easy to customize, helps transitions stay fluid, and makes it cheap to add new expressions and personalities later.
+- Decision: drive visible speaking only from playback lifecycle events.
+  - Why: reply generation and synthesis completion are not the same as audible speech, and the face needs the latter to feel convincing.
+- Decision: use sleeping eyes first, then optional display blank/off hooks for real power saving.
+  - Why: it preserves character and readability while still allowing actual screen-power reduction after a grace window.
 
 ## 2026-04-04 — Raspberry Pi 5 Bring-Up And Setup Compatibility
 

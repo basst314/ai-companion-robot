@@ -57,6 +57,18 @@ Current supported variables:
 - `AI_COMPANION_TTS_SAVE_ARTIFACTS`
 - `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
 - `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
+- `AI_COMPANION_UI_BACKEND`
+- `AI_COMPANION_UI_FULLSCREEN`
+- `AI_COMPANION_UI_ACTIVE_FPS`
+- `AI_COMPANION_UI_IDLE_FPS`
+- `AI_COMPANION_UI_IDLE_SLEEP_SECONDS`
+- `AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS`
+- `AI_COMPANION_UI_SHOW_TEXT_OVERLAY`
+- `AI_COMPANION_UI_SLEEP_COMMAND`
+- `AI_COMPANION_UI_WAKE_COMMAND`
+- `AI_COMPANION_UI_SDL_VIDEODRIVER`
+- `AI_COMPANION_UI_THEME_NAME`
+- `AI_COMPANION_UI_FB_PATH`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -81,6 +93,7 @@ Current supported variables:
 
 You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
 The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after the bundled Silero VAD confirms trailing non-speech. Custom recorder commands therefore need to support raw PCM output to standard output.
+`AI_COMPANION_UI_THEME_NAME` currently supports `retro_bot`, `amber_bot`, `noir_bot`, and `neon_bot`.
 `AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 The generated speech config also enables wake-free follow-up mode by default. After a spoken reply finishes, the robot opens a short follow-up listen window and only continues if VAD confirms real speech inside `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` puts a hard cap on how many wake-free follow-up turns can chain before the robot falls back to ordinary wake-word listening again.
@@ -124,7 +137,7 @@ Use these when you want repeatable automation:
 If the script cannot support your environment yet, install manually:
 
 1. Install Python 3.11+, Git, CMake, and a recorder tool.
-2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS. On Raspberry Pi/Linux, the `tts` extra now also installs `pyalsaaudio` for the ALSA-native playback backend.
+2. Create `.venv` and run `python -m pip install -e ".[dev,ui]"`, or `python -m pip install -e ".[dev,tts,ui]"` if you want local Piper TTS plus the fullscreen face renderer. On Raspberry Pi/Linux, the `tts` extra also installs `pyalsaaudio` for the ALSA-native playback backend.
 3. Clone and build `whisper.cpp`.
 4. Download a model such as `base`.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.

@@ -12,12 +12,14 @@ from orchestrator.capabilities import build_default_capability_registry
 from orchestrator.router import LocalShortcutPlanner, LocalTurnDirector
 from orchestrator.state import LifecycleStage
 from shared.config import AppConfig
-from shared.events import EventName
+from shared.events import Event, EventName
 from shared.models import (
     ComponentName,
     Language,
     PlanStep,
     RouteKind,
+    SpeechJobStatus,
+    SpeechOutput,
     Transcript,
     TurnPlan,
 )
@@ -198,6 +200,54 @@ class StartupSpyTtsService:
 
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
+
+
+class ScriptedLifecycleTtsService:
+    """Emit a controlled TTS event sequence for lifecycle assertions."""
+
+    def __init__(self, lifecycle_probe) -> None:  # type: ignore[no-untyped-def]
+        self.lifecycle_probe = lifecycle_probe
+        self._event_handler = None
+        self.lifecycle_after_synthesis = None
+        self.lifecycle_after_playback_started = None
+
+    def bind_event_handler(self, handler) -> None:  # type: ignore[no-untyped-def]
+        self._event_handler = handler
+
+    async def speak(self, request):  # type: ignore[no-untyped-def]
+        assert self._event_handler is not None
+        payload = {
+            "job_id": "scripted-job",
+            "text": request.text,
+            "language": request.language.value,
+            "style": request.style_hint.value,
+            "voice_id": None,
+            "speaker_id": None,
+            "emitted_at_monotonic_ms": 1,
+        }
+        await self._event_handler(Event(EventName.TTS_ENQUEUED, ComponentName.TTS, payload))
+        await self._event_handler(Event(EventName.TTS_SYNTHESIS_STARTED, ComponentName.TTS, payload))
+        self.lifecycle_after_synthesis = self.lifecycle_probe()
+        await self._event_handler(Event(EventName.TTS_SYNTHESIS_FINISHED, ComponentName.TTS, payload))
+        await self._event_handler(Event(EventName.TTS_PLAYBACK_STARTED, ComponentName.TTS, payload))
+        self.lifecycle_after_playback_started = self.lifecycle_probe()
+        finish_payload = dict(payload)
+        finish_payload["playback_duration_ms"] = 120
+        await self._event_handler(Event(EventName.TTS_PLAYBACK_FINISHED, ComponentName.TTS, finish_payload))
+        await self._event_handler(Event(EventName.TTS_FINISHED, ComponentName.TTS, finish_payload))
+        await self._event_handler(Event(EventName.AUDIO_FINISHED, ComponentName.TTS, finish_payload))
+        return SpeechOutput(
+            text=request.text,
+            acknowledged=True,
+            duration_ms=120,
+            job_id="scripted-job",
+            provider_name="scripted",
+            language=request.language,
+            status=SpeechJobStatus.PLAYBACK_FINISHED,
+        )
+
+    async def shutdown(self) -> None:
+        return None
 
 
 def test_main_returns_success_code() -> None:
@@ -487,6 +537,22 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     assert EventName.TTS_PLAYBACK_STARTED in event_names
     assert EventName.TTS_PLAYBACK_FINISHED in event_names
     assert event_names[-1] == EventName.AUDIO_FINISHED
+
+
+def test_orchestrator_enters_speaking_only_after_tts_playback_starts() -> None:
+    config = AppConfig()
+    config.runtime.manual_inputs = ("tell me a joke",)
+    service = build_application(config)
+    scripted_tts = ScriptedLifecycleTtsService(lambda: service.state.lifecycle)
+    service.tts = scripted_tts  # type: ignore[assignment]
+    scripted_tts.bind_event_handler(service.handle_event)
+
+    asyncio.run(service.run())
+
+    assert scripted_tts.lifecycle_after_synthesis is LifecycleStage.RESPONDING
+    assert scripted_tts.lifecycle_after_playback_started is LifecycleStage.SPEAKING
+    rendered_lifecycles = [lifecycle for lifecycle, _emotion, _preview in service.ui.rendered_states]
+    assert rendered_lifecycles.index("responding") < rendered_lifecycles.index("speaking")
 
 
 def test_speech_mode_follow_up_turn_runs_without_second_wake_word() -> None:

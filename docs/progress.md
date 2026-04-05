@@ -16,7 +16,7 @@ Status: early working local prototype
 Current milestone:
 - the project has a working local-first turn-routing loop
 - the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and a single tool-aware cloud reply path
-- responses can be shown in the UI mock and spoken through queued mock or Piper-backed TTS
+- responses can be shown through a mock UI or a real procedural Raspberry Pi face renderer and spoken through queued mock or Piper-backed TTS
 - interaction history is stored in memory
 - a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
 
@@ -162,6 +162,9 @@ Available now:
 - queued TTS requests with append/replace policies
 - mock and Piper-backed synthesis/playback adapters
 - precise queue/synthesis/playback events
+- playback-start synchronization through `AudioPlaybackSession.wait_started()`
+- standardized playback event payloads with timing metadata for UI sync
+- persistent `aplay` output reuse and service prewarm for Raspberry Pi HDMI deployments
 - printed `[TTS] ...` acknowledgement
 - graceful failure handling
 - terminal debug row for TTS backend/voice/phase/queue timing
@@ -172,17 +175,24 @@ Current limitations:
 
 ### UI
 
-Status: functional mock
+Status: working mock plus real Raspberry Pi face prototype
 
 Available now:
 - state rendering for lifecycle and emotion
 - preview text updates
 - response text display
+- `UiService` lifecycle hooks for startup and shutdown
+- content-mode API surface for future `camera` and `image` scenes
+- procedural fullscreen `pygame-ce` robot face renderer for Raspberry Pi
+- smooth state transitions between idle, listening, thinking, responding, speaking, and sleep
+- idle micro-animation including blinks, glances, breathing drift, and playful expression variants
+- sleeping-eyes grace window before optional display blank/off hooks
+- theme-driven tuning for palette, eye geometry, blink timing, idle motion, transitions, and expression presets
 
 Current limitations:
-- console-backed only
-- no animated face
-- no actual display integration
+- camera and image scenes are placeholders only
+- the real face renderer is not exercised in headless CI because it depends on `pygame-ce` and a display runtime
+- there is still no real vision-driven content takeover yet
 
 ### STT
 
@@ -245,11 +255,12 @@ Current limitations:
 - event tracking and in-process pub/sub
 - failure handling patterns
 - local speech synthesis/playback with Piper
+- playback-accurate TTS lifecycle for UI sync
+- procedural fullscreen face rendering for Raspberry Pi
 - integration tests for the main interaction loop
 
 ### Mocked subsystems
 
-- UI rendering
 - memory persistence
 - vision
 - hardware control

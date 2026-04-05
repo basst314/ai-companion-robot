@@ -29,6 +29,7 @@ class OrchestratorState:
     active_user_id: str | None = None
     current_transcript: Transcript | None = None
     current_response: str | None = None
+    response_emotion: EmotionState | None = None
     last_detections: tuple[VisionDetection, ...] = ()
     last_error: str | None = None
     interaction_id: int = 0

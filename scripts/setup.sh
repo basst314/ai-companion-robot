@@ -405,6 +405,7 @@ EOF
     "${REPO_DIR}/.venv/bin/python" -m pip install \
       "pytest>=8.0" \
       "pytest-cov>=5.0" \
+      "pygame-ce>=2.5,<3" \
       "onnxruntime<2,>=1.10.0" \
       "requests<3,>=2.0" \
       "tqdm<5.0,>=4.0" \
@@ -418,10 +419,10 @@ EOF
     return 0
   fi
   if [[ "${tts_backend}" == "piper" ]]; then
-    "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts]"
+    "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts,ui]"
     return 0
   fi
-  "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev]"
+  "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,ui]"
 }
 
 resolve_wake_model() {
@@ -707,17 +708,20 @@ write_env_file() {
   local playback_command
   local tts_audio_backend
   local tts_alsa_device
+  local ui_backend
 
   if [[ "${PLATFORM}" == "macos" ]]; then
     audio_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
     playback_command="afplay {input_path}"
     tts_audio_backend="command"
     tts_alsa_device="default"
+    ui_backend="mock"
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
     playback_command='aplay {input_path}'
     tts_audio_backend="alsa_persistent"
     tts_alsa_device="default:CARD=vc4hdmi1"
+    ui_backend="fb0"
   fi
 
   if [[ -f "${ENV_FILE}" ]] && [[ "${FORCE}" -eq 0 ]] && ! confirm "Overwrite existing ${ENV_FILE}?"; then
@@ -762,6 +766,18 @@ AI_COMPANION_TTS_QUEUE_MAX=4
 AI_COMPANION_TTS_SAVE_ARTIFACTS=false
 AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=20
 AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=60
+AI_COMPANION_UI_BACKEND=${ui_backend}
+AI_COMPANION_UI_FULLSCREEN=true
+AI_COMPANION_UI_ACTIVE_FPS=30
+AI_COMPANION_UI_IDLE_FPS=12
+AI_COMPANION_UI_IDLE_SLEEP_SECONDS=300
+AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS=12
+AI_COMPANION_UI_SHOW_TEXT_OVERLAY=true
+AI_COMPANION_UI_SLEEP_COMMAND=
+AI_COMPANION_UI_WAKE_COMMAND=
+AI_COMPANION_UI_SDL_VIDEODRIVER=
+AI_COMPANION_UI_THEME_NAME=retro_bot
+AI_COMPANION_UI_FB_PATH=/dev/fb0
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
