@@ -24,15 +24,14 @@ from shared.models import (
 )
 from tts.service import (
     AlsaPersistentAudioPlaybackService,
+    CommandAudioPlaybackService,
     MockSpeechSynthesizer,
     PiperManagedProcess,
     PiperVoiceResolver,
     PlaybackResult,
-    PersistentAplayAudioPlaybackService,
     QueuedTtsService,
     ResolvedSpeechRequest,
     build_piper_tts_service,
-    _build_aplay_stream_command,
     _extract_raw_pcm_audio,
     _prepare_wav_bytes_for_playback,
 )
@@ -266,93 +265,6 @@ def test_prepare_wav_bytes_for_playback_fades_final_samples() -> None:
     assert abs(trimmed_samples[-2]) <= abs(trimmed_samples[-20])
 
 
-def test_build_aplay_stream_command_rewrites_file_playback_to_stdin() -> None:
-    audio = _extract_raw_pcm_audio(_build_test_wav([500] * 32, sample_rate=16000))
-
-    assert audio is not None
-    assert _build_aplay_stream_command(("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"), audio) == (
-        "aplay",
-        "-D",
-        "default:CARD=vc4hdmi1",
-        "-q",
-        "-t",
-        "raw",
-        "-f",
-        "S16_LE",
-        "-r",
-        "16000",
-        "-c",
-        "1",
-        "-",
-    )
-
-
-def test_persistent_aplay_service_reuses_running_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    starts: list[tuple[str, ...]] = []
-    payloads: list[bytes] = []
-
-    class _FakeStdin:
-        def __init__(self) -> None:
-            self.closed = False
-
-        def write(self, data: bytes) -> None:
-            payloads.append(data)
-
-        async def drain(self) -> None:
-            return None
-
-        def close(self) -> None:
-            self.closed = True
-
-        def is_closing(self) -> bool:
-            return self.closed
-
-    class _FakeProcess:
-        def __init__(self, command: tuple[str, ...]) -> None:
-            self.command = command
-            self.returncode: int | None = None
-            self.stdin = _FakeStdin()
-
-        def terminate(self) -> None:
-            self.returncode = 0
-
-        def kill(self) -> None:
-            self.returncode = -9
-
-        async def wait(self) -> int:
-            self.returncode = 0 if self.returncode is None else self.returncode
-            return self.returncode
-
-    async def _fake_create_subprocess_exec(*command, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        starts.append(tuple(command))
-        return _FakeProcess(tuple(command))
-
-    monkeypatch.setattr("tts.service.asyncio.create_subprocess_exec", _fake_create_subprocess_exec)
-
-    async def run() -> None:
-        service = PersistentAplayAudioPlaybackService(
-            command_template=("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"),
-            timeout_seconds=5,
-        )
-        audio = SynthesizedAudio(audio_bytes=_build_test_wav([1200] * 400, sample_rate=16000))
-        request = SpeechRequest(text="hello", language=Language.ENGLISH)
-        selection = ResolvedSpeechRequest(text="hello", voice_id="test", style_hint=SpeechStyle.NEUTRAL)
-
-        first = await service.start(audio, job_id="1", request=request, selection=selection)
-        await first.wait()
-        await asyncio.sleep(0.15)
-        second = await service.start(audio, job_id="2", request=request, selection=selection)
-        await second.wait()
-        await service.shutdown()
-
-    asyncio.run(run())
-
-    assert len(starts) == 1
-    assert len(payloads) >= 3
-    assert any(payload and set(payload) == {0} for payload in payloads)
-
-
 def test_build_piper_tts_service_selects_alsa_backend(tmp_path: Path) -> None:
     config = TtsConfig(
         backend="piper",
@@ -363,6 +275,18 @@ def test_build_piper_tts_service_selects_alsa_backend(tmp_path: Path) -> None:
     service = build_piper_tts_service(config, audio_output_dir=tmp_path)
 
     assert isinstance(service.playback, AlsaPersistentAudioPlaybackService)
+
+
+def test_build_piper_tts_service_uses_command_backend_when_selected(tmp_path: Path) -> None:
+    config = TtsConfig(
+        backend="piper",
+        audio_backend="command",
+        audio_play_command=("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"),
+    )
+
+    service = build_piper_tts_service(config, audio_output_dir=tmp_path)
+
+    assert isinstance(service.playback, CommandAudioPlaybackService)
 
 
 def test_queued_tts_service_processes_append_jobs_in_order() -> None:

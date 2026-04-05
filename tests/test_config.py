@@ -226,6 +226,7 @@ def test_load_app_config_defaults_to_alsa_backend_for_aplay_on_linux(tmp_path: P
         "\n".join(
             [
                 "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
                 "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
                 "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
                 "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",
@@ -247,6 +248,7 @@ def test_load_app_config_rejects_alsa_buffer_smaller_than_period(tmp_path: Path)
         "\n".join(
             [
                 "AI_COMPANION_TTS_BACKEND=piper",
+                "AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent",
                 "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
                 "AI_COMPANION_TTS_DEFAULT_VOICE_EN=en_US-hfc_female-medium",
                 "AI_COMPANION_TTS_DEFAULT_VOICE_DE=de_DE-thorsten-medium",

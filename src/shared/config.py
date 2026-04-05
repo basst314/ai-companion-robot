@@ -404,16 +404,17 @@ def _validate_tts_config(tts: TtsConfig) -> None:
         raise ValueError("AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS must be greater than zero")
     if tts.playback_timeout_seconds <= 0:
         raise ValueError("AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS must be greater than zero")
-    if not tts.alsa_device.strip():
-        raise ValueError("AI_COMPANION_TTS_ALSA_DEVICE must be configured")
-    if tts.alsa_sample_rate <= 0:
-        raise ValueError("AI_COMPANION_TTS_ALSA_SAMPLE_RATE must be greater than zero")
-    if tts.alsa_period_frames <= 0:
-        raise ValueError("AI_COMPANION_TTS_ALSA_PERIOD_FRAMES must be greater than zero")
-    if tts.alsa_buffer_frames < tts.alsa_period_frames:
-        raise ValueError("AI_COMPANION_TTS_ALSA_BUFFER_FRAMES must be greater than or equal to period frames")
-    if tts.alsa_keepalive_interval_ms <= 0:
-        raise ValueError("AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS must be greater than zero")
+    if tts.audio_backend == "alsa_persistent":
+        if not tts.alsa_device.strip():
+            raise ValueError("AI_COMPANION_TTS_ALSA_DEVICE must be configured")
+        if tts.alsa_sample_rate <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_SAMPLE_RATE must be greater than zero")
+        if tts.alsa_period_frames <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_PERIOD_FRAMES must be greater than zero")
+        if tts.alsa_buffer_frames < tts.alsa_period_frames:
+            raise ValueError("AI_COMPANION_TTS_ALSA_BUFFER_FRAMES must be greater than or equal to period frames")
+        if tts.alsa_keepalive_interval_ms <= 0:
+            raise ValueError("AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS must be greater than zero")
     if tts.backend == "piper":
         if not tts.piper_base_url.strip():
             raise ValueError("AI_COMPANION_TTS_PIPER_BASE_URL must be configured for Piper TTS")
