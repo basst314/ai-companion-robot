@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
+import pytest
 
 from ai.cloud import (
     CloudReplyResult,
@@ -371,6 +372,40 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
     assert result.response_id == "resp_tool_2"
 
 
+class FakeIncompleteStructuredResponseClient:
+    async def create_response(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        model,
+        instructions,
+        input_items,
+        tools=None,
+        text_format=None,
+        previous_response_id=None,
+        max_output_tokens=None,
+        parallel_tool_calls=False,
+        stream=False,
+    ):
+        del model, instructions, input_items, tools, text_format, previous_response_id, max_output_tokens
+        del parallel_tool_calls, stream
+        return {
+            "id": "resp_incomplete",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "{\"text\":\"Once upon a time",
+                        }
+                    ],
+                }
+            ],
+        }
+
+
 def test_openai_reply_forwards_previous_response_id_when_provided() -> None:
     client = FakeResponseClientWithPreviousId()
     service = OpenAiCloudResponseService(
@@ -407,6 +442,33 @@ def test_openai_reply_forwards_previous_response_id_when_provided() -> None:
 
     assert client.captured_previous_response_id == "resp_prev_123"
     assert result.response_id == "resp_1"
+
+
+def test_openai_reply_surfaces_incomplete_structured_output_cleanly() -> None:
+    service = OpenAiCloudResponseService(
+        client=FakeIncompleteStructuredResponseClient(),
+        model="gpt-5.2",
+        max_output_tokens=72,
+        wake_word_phrase="Oreo",
+    )
+    transcript = Transcript(
+        text="tell a long story",
+        language=Language.ENGLISH,
+        confidence=1.0,
+        is_final=True,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+    plan = TurnPlan(
+        route_kind=RouteKind.CLOUD_CHAT,
+        confidence=0.6,
+        rationale="defaulted to a single cloud reply",
+        source="local_turn_director",
+        steps=(PlanStep(capability_id="cloud_reply"),),
+    )
+
+    with pytest.raises(RuntimeError, match="max_output_tokens"):
+        asyncio.run(service.generate_reply(transcript, _context(), plan, ()))
 
 
 def test_openai_reply_can_set_indonesian_language_even_when_transcript_is_english() -> None:

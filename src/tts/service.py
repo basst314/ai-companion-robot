@@ -37,9 +37,12 @@ from shared.models import (
 
 logger = logging.getLogger(__name__)
 
-_PLAYBACK_LEAD_IN_MS = 120
+_PLAYBACK_LEAD_IN_MS = 360
 _PLAYBACK_FADE_OUT_MS = 18
 _PLAYBACK_TAIL_SILENCE_MS = 40
+_COMMAND_PLAYBACK_PREWARM_DURATION_MS = 260
+_COMMAND_PLAYBACK_PREWARM_IDLE_SECONDS = 8.0
+_COMMAND_PLAYBACK_PREWARM_SETTLE_SECONDS = 0.12
 _PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_RATE = 22050
 _PERSISTENT_APLAY_BOOTSTRAP_CHANNELS = 1
 _PERSISTENT_APLAY_BOOTSTRAP_SAMPLE_WIDTH_BYTES = 2
@@ -429,6 +432,8 @@ class CommandAudioPlaybackService:
     output_dir: Path
     save_artifacts: bool = False
     timeout_seconds: float = 60.0
+    prewarm_idle_seconds: float = _COMMAND_PLAYBACK_PREWARM_IDLE_SECONDS
+    _last_prewarm_at: float | None = field(default=None, init=False, repr=False)
 
     async def start(
         self,
@@ -439,6 +444,7 @@ class CommandAudioPlaybackService:
         selection: ResolvedSpeechRequest,
     ) -> AudioPlaybackSession:
         del request, selection
+        await self._ensure_warm()
         artifact_path, cleanup_after = self._write_audio_file(job_id, audio)
         command = _format_input_command(self.command_template, artifact_path)
         process = await asyncio.create_subprocess_exec(
@@ -470,7 +476,34 @@ class CommandAudioPlaybackService:
         return None
 
     async def prewarm(self) -> None:
-        return None
+        await self._run_prewarm()
+
+    async def _ensure_warm(self) -> None:
+        if self._last_prewarm_at is None:
+            await self._run_prewarm()
+            return
+        if time.monotonic() - self._last_prewarm_at >= self.prewarm_idle_seconds:
+            await self._run_prewarm()
+
+    async def _run_prewarm(self) -> None:
+        silence_audio = SynthesizedAudio(
+            audio_bytes=_build_silent_wav(duration_ms=_COMMAND_PLAYBACK_PREWARM_DURATION_MS),
+        )
+        artifact_path, cleanup_after = self._write_audio_file("prewarm", silence_audio)
+        command = _format_input_command(self.command_template, artifact_path)
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=min(self.timeout_seconds, 5.0))
+        finally:
+            if cleanup_after:
+                with contextlib.suppress(FileNotFoundError):
+                    artifact_path.unlink()
+        await asyncio.sleep(_COMMAND_PLAYBACK_PREWARM_SETTLE_SECONDS)
+        self._last_prewarm_at = time.monotonic()
 
 
 @dataclass(slots=True, frozen=True)
@@ -1292,7 +1325,7 @@ def build_piper_tts_service(
     playback_command = config.audio_play_command
     if not playback_command:
         playback_command = _default_audio_play_command()
-    if _supports_persistent_aplay(playback_command):
+    if config.use_persistent_aplay and _supports_persistent_aplay(playback_command):
         playback: AudioPlaybackService = PersistentAplayAudioPlaybackService(
             command_template=playback_command,
             timeout_seconds=config.playback_timeout_seconds,

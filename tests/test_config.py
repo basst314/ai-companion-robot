@@ -35,10 +35,23 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE=de_DE-thorsten_emotional-medium",
                 "AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED=true",
                 "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=aplay {input_path}",
+                "AI_COMPANION_TTS_USE_PERSISTENT_APLAY=false",
                 "AI_COMPANION_TTS_QUEUE_MAX=3",
                 "AI_COMPANION_TTS_SAVE_ARTIFACTS=true",
                 "AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=11.5",
                 "AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=21.0",
+                "AI_COMPANION_UI_BACKEND=fb0",
+                "AI_COMPANION_UI_FULLSCREEN=false",
+                "AI_COMPANION_UI_ACTIVE_FPS=36",
+                "AI_COMPANION_UI_IDLE_FPS=10",
+                "AI_COMPANION_UI_IDLE_SLEEP_SECONDS=180",
+                "AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS=9",
+                "AI_COMPANION_UI_SHOW_TEXT_OVERLAY=false",
+                "AI_COMPANION_UI_SLEEP_COMMAND=vcgencmd display_power 0",
+                "AI_COMPANION_UI_WAKE_COMMAND=vcgencmd display_power 1",
+                "AI_COMPANION_UI_SDL_VIDEODRIVER=kmsdrm",
+                "AI_COMPANION_UI_THEME_NAME=retro_bot",
+                "AI_COMPANION_UI_FB_PATH=/dev/fb0",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
@@ -87,10 +100,23 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.tts.expressive_de_voice == "de_DE-thorsten_emotional-medium"
     assert config.tts.expressive_de_enabled is True
     assert config.tts.audio_play_command == ("aplay", "{input_path}")
+    assert config.tts.use_persistent_aplay is False
     assert config.tts.queue_max == 3
     assert config.tts.save_artifacts is True
     assert config.tts.synthesis_timeout_seconds == 11.5
     assert config.tts.playback_timeout_seconds == 21.0
+    assert config.ui.backend == "fb0"
+    assert config.ui.fullscreen is False
+    assert config.ui.active_fps == 36
+    assert config.ui.idle_fps == 10
+    assert config.ui.idle_sleep_seconds == 180
+    assert config.ui.sleeping_eyes_grace_seconds == 9
+    assert config.ui.show_text_overlay is False
+    assert config.ui.sleep_command == ("vcgencmd", "display_power", "0")
+    assert config.ui.wake_command == ("vcgencmd", "display_power", "1")
+    assert config.ui.sdl_videodriver == "kmsdrm"
+    assert config.ui.theme_name == "retro_bot"
+    assert config.ui.fb_path == "/dev/fb0"
     assert config.runtime.input_mode == "speech"
     assert config.runtime.speech_latency_profile == "balanced"
     assert config.runtime.interactive_console is True
@@ -206,6 +232,14 @@ def test_load_app_config_normalizes_invalid_vad_frame_size(tmp_path: Path) -> No
 
     assert config.runtime.vad_frame_ms == 30
     assert config.runtime.vad_start_trigger_frames == 1
+
+
+def test_load_app_config_rejects_non_positive_ui_frame_rate(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text("AI_COMPANION_UI_ACTIVE_FPS=0\n")
+
+    with pytest.raises(ValueError, match="UI_ACTIVE_FPS"):
+        load_app_config(base_dir=tmp_path)
 
 
 def test_setup_script_help_is_available() -> None:

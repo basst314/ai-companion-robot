@@ -22,6 +22,7 @@ from shared.models import (
     SynthesizedAudio,
 )
 from tts.service import (
+    CommandAudioPlaybackService,
     MockSpeechSynthesizer,
     PiperManagedProcess,
     PiperVoiceResolver,
@@ -29,6 +30,7 @@ from tts.service import (
     PersistentAplayAudioPlaybackService,
     QueuedTtsService,
     ResolvedSpeechRequest,
+    build_piper_tts_service,
     _build_aplay_stream_command,
     _extract_raw_pcm_audio,
     _prepare_wav_bytes_for_playback,
@@ -305,6 +307,57 @@ def test_persistent_aplay_service_reuses_running_process(monkeypatch: pytest.Mon
     assert len(starts) == 1
     assert len(payloads) >= 3
     assert any(payload and set(payload) == {0} for payload in payloads)
+
+
+def test_command_playback_service_prewarms_before_first_real_playback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    class _FakeProcess:
+        returncode: int | None = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_create_subprocess_exec(*command, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        commands.append(tuple(command))
+        return _FakeProcess()
+
+    monkeypatch.setattr("tts.service.asyncio.create_subprocess_exec", _fake_create_subprocess_exec)
+
+    async def run() -> None:
+        service = CommandAudioPlaybackService(
+            command_template=("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"),
+            output_dir=tmp_path,
+            timeout_seconds=5,
+        )
+        audio = SynthesizedAudio(audio_bytes=_build_test_wav([1200] * 200, sample_rate=16000))
+        request = SpeechRequest(text="hello", language=Language.ENGLISH)
+        selection = ResolvedSpeechRequest(text="hello", voice_id="test", style_hint=SpeechStyle.NEUTRAL)
+
+        session = await service.start(audio, job_id="1", request=request, selection=selection)
+        await session.wait()
+
+    asyncio.run(run())
+
+    assert len(commands) == 2
+    assert commands[0][:3] == ("aplay", "-D", "default:CARD=vc4hdmi1")
+    assert commands[1][:3] == ("aplay", "-D", "default:CARD=vc4hdmi1")
+
+
+def test_build_piper_tts_service_can_disable_persistent_aplay(tmp_path: Path) -> None:
+    config = TtsConfig(
+        backend="piper",
+        audio_play_command=("aplay", "-D", "default:CARD=vc4hdmi1", "{input_path}"),
+        use_persistent_aplay=False,
+    )
+
+    service = build_piper_tts_service(config, audio_output_dir=tmp_path)
+
+    assert isinstance(service.playback, CommandAudioPlaybackService)
 
 
 def test_queued_tts_service_processes_append_jobs_in_order() -> None:

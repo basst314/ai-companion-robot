@@ -186,3 +186,31 @@ After the core runtime is working, move on to:
 - wake-word threshold tuning on the Pi
 
 That keeps the first session focused on getting one stable working robot runtime before layering on extra hardware variables.
+
+### Display Diagnostics
+
+If the Pi display powers on but the robot face is not visible, run the standalone display diagnostic:
+
+```bash
+cd ~/ai-companion-robot
+.venv/bin/python scripts/test-display-diagnostics.py --driver kmsdrm
+```
+
+This script:
+- prints SDL/display environment details in the terminal
+- cycles through solid-color fullscreen scenes, a grid, a circle, and simple robot eyes
+- lets you press `space` to advance, `left` to go back, `s` to save screenshots, and `q` to quit
+
+For a windowed test instead of fullscreen:
+
+```bash
+.venv/bin/python scripts/test-display-diagnostics.py --no-fullscreen --size 800x480
+```
+
+If the SDL/KMS test still blanks the screen, run the direct framebuffer fallback instead:
+
+```bash
+.venv/bin/python scripts/test-fb0-display.py --cycles 1
+```
+
+That script writes straight to `/dev/fb0`, which matches the boot-console display path. If this one is visible while the SDL test is black, the panel itself is fine and the remaining issue is specifically the SDL/KMS presentation path.
