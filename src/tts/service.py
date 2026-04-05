@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import audioop
 import asyncio
 import contextlib
 import io
@@ -1671,27 +1670,31 @@ def _normalize_pcm_audio(
     if sample_width not in {1, 2, 4} or channels <= 0 or sample_rate <= 0:
         return None
 
+    frame_samples = _decode_pcm_frames(pcm_frames, sample_width)
+    if frame_samples is None:
+        return None
+
     if channels != target_channels:
         if channels == 2 and target_channels == 1:
-            pcm_frames = audioop.tomono(pcm_frames, sample_width, 0.5, 0.5)
+            frame_samples = _downmix_stereo_to_mono(frame_samples)
             channels = 1
         else:
             return None
 
     if sample_width != 2:
-        pcm_frames = audioop.lin2lin(pcm_frames, sample_width, 2)
+        frame_samples = _convert_sample_width_to_s16(frame_samples, sample_width)
         sample_width = 2
 
     if sample_rate != target_sample_rate_hz:
-        pcm_frames, _ = audioop.ratecv(
-            pcm_frames,
-            sample_width,
-            channels,
-            sample_rate,
-            target_sample_rate_hz,
-            None,
+        frame_samples = _resample_interleaved_s16(
+            frame_samples,
+            channels=channels,
+            source_rate_hz=sample_rate,
+            target_rate_hz=target_sample_rate_hz,
         )
         sample_rate = target_sample_rate_hz
+
+    pcm_frames = _encode_pcm_s16(frame_samples)
 
     if add_lead_in:
         lead_in_frames = int(sample_rate * (_PLAYBACK_LEAD_IN_MS / 1000.0))
@@ -1703,6 +1706,80 @@ def _normalize_pcm_audio(
         sample_width_bytes=sample_width,
         sample_rate_hz=sample_rate,
     )
+
+
+def _decode_pcm_frames(pcm_frames: bytes, sample_width: int) -> list[int] | None:
+    if sample_width == 1:
+        return [(byte - 128) << 8 for byte in pcm_frames]
+    if sample_width == 2:
+        sample_count = len(pcm_frames) // 2
+        try:
+            return list(struct.unpack(f"<{sample_count}h", pcm_frames))
+        except struct.error:
+            return None
+    if sample_width == 4:
+        sample_count = len(pcm_frames) // 4
+        try:
+            raw_samples = struct.unpack(f"<{sample_count}i", pcm_frames)
+        except struct.error:
+            return None
+        return [_clamp_s16(sample >> 16) for sample in raw_samples]
+    return None
+
+
+def _downmix_stereo_to_mono(samples: list[int]) -> list[int]:
+    mono: list[int] = []
+    limit = len(samples) - (len(samples) % 2)
+    for index in range(0, limit, 2):
+        mono.append(_clamp_s16((samples[index] + samples[index + 1]) // 2))
+    return mono
+
+
+def _convert_sample_width_to_s16(samples: list[int], sample_width: int) -> list[int]:
+    if sample_width == 2:
+        return samples
+    if sample_width == 1:
+        return [_clamp_s16(sample) for sample in samples]
+    if sample_width == 4:
+        return [_clamp_s16(sample) for sample in samples]
+    raise RuntimeError(f"unsupported sample width: {sample_width}")
+
+
+def _resample_interleaved_s16(
+    samples: list[int],
+    *,
+    channels: int,
+    source_rate_hz: int,
+    target_rate_hz: int,
+) -> list[int]:
+    if source_rate_hz == target_rate_hz or not samples:
+        return samples
+    frame_count = len(samples) // channels
+    if frame_count <= 1:
+        return samples
+    target_frame_count = max(1, int(round(frame_count * target_rate_hz / source_rate_hz)))
+    resampled: list[int] = []
+    for target_index in range(target_frame_count):
+        source_position = target_index * (frame_count - 1) / max(1, target_frame_count - 1)
+        left_frame = int(source_position)
+        right_frame = min(left_frame + 1, frame_count - 1)
+        blend = source_position - left_frame
+        left_offset = left_frame * channels
+        right_offset = right_frame * channels
+        for channel in range(channels):
+            left_value = samples[left_offset + channel]
+            right_value = samples[right_offset + channel]
+            interpolated = int(round(left_value + ((right_value - left_value) * blend)))
+            resampled.append(_clamp_s16(interpolated))
+    return resampled
+
+
+def _encode_pcm_s16(samples: list[int]) -> bytes:
+    return struct.pack(f"<{len(samples)}h", *(_clamp_s16(sample) for sample in samples))
+
+
+def _clamp_s16(value: int) -> int:
+    return max(-32768, min(32767, int(value)))
 
 
 def _resolve_started_future(future: asyncio.Future[bool], value: bool) -> None:
