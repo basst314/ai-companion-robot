@@ -9,6 +9,17 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-04 — Raspberry Pi 5 Bring-Up And Setup Compatibility
+
+### Highlights
+- Added a focused Raspberry Pi 5 bring-up guide covering SD card imaging, headless SSH, repo sync, Pi bootstrap, and staged validation.
+- Added `scripts/sync-to-pi.sh` to copy a clean repo checkout to a Pi without dragging over local machine state.
+- Added `scripts/validate-rpi-runtime.sh` to verify audio devices, run tests, and smoke-test app startup on the Pi.
+- Hardened `scripts/setup.sh` for current Raspberry Pi OS Trixie images by adding a Python 3.13-compatible `openwakeword` install path and by always provisioning shared OpenWakeWord runtime assets needed by endpoint VAD.
+
+### Why this matters
+This makes fresh Pi bring-up much more predictable. A brand-new Raspberry Pi 5 can now be imaged, bootstrapped, validated, and used for typed or voice-adjacent testing with far less manual setup friction, even on newer Raspberry Pi OS images where the Python/runtime stack differs from older assumptions.
+
 ## 2026-03-28 — Multi-Turn Voice Conversations
 
 ### Highlights
@@ -166,7 +177,7 @@ This is the architectural shift from a brittle transcript-gated wake flow to a d
 - Decision: keep the shared mic stream and ring buffer.
   - Why: this preserves low-latency handoff and avoids losing pre-roll audio around the wake event.
 - Decision: ship a built-in `Hey Jarvis` starter path first.
-  - Why: OpenWakeWord needs a matching model; a known built-in pairing is the safest way to guarantee first-run success before adding a custom `Oreo` model later.
+  - Why: OpenWakeWord needs a matching model; a known built-in pairing is the safest way to guarantee first-run success before adding a custom wake-word model later.
 
 ---
 

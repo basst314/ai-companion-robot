@@ -268,7 +268,7 @@ EOF
 }
 
 choose_custom_wake_phrase() {
-  printf '%s' "$(prompt_with_default "Custom wake phrase" "Oreo")"
+  printf '%s' "$(prompt_with_default "Custom wake phrase" "Robot")"
 }
 
 choose_custom_wake_model() {
@@ -394,6 +394,29 @@ EOF
 
   log "installing Python package dependencies"
   "${REPO_DIR}/.venv/bin/python" -m pip install --upgrade pip
+  local python_minor_version
+  python_minor_version="$("${REPO_DIR}/.venv/bin/python" - <<'EOF'
+import sys
+print(f"{sys.version_info[0]}.{sys.version_info[1]}")
+EOF
+)"
+  if [[ "${PLATFORM}" == "rpi" ]] && [[ "${python_minor_version}" == "3.13" ]]; then
+    log "using Raspberry Pi Python 3.13 compatibility path for openWakeWord"
+    "${REPO_DIR}/.venv/bin/python" -m pip install \
+      "pytest>=8.0" \
+      "pytest-cov>=5.0" \
+      "onnxruntime<2,>=1.10.0" \
+      "requests<3,>=2.0" \
+      "tqdm<5.0,>=4.0" \
+      "scipy<2,>=1.3" \
+      "scikit-learn<2,>=1"
+    if [[ "${tts_backend}" == "piper" ]]; then
+      "${REPO_DIR}/.venv/bin/python" -m pip install "piper-tts[http]>=1.4,<2"
+    fi
+    "${REPO_DIR}/.venv/bin/python" -m pip install --no-deps "openwakeword>=0.6,<0.7"
+    "${REPO_DIR}/.venv/bin/python" -m pip install --no-deps -e "${REPO_DIR}"
+    return 0
+  fi
   if [[ "${tts_backend}" == "piper" ]]; then
     "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts]"
     return 0
@@ -508,6 +531,40 @@ EOF
   resolved="${resolved_raw##*$'\n'}"
   [[ "${resolved}" == *"|"* ]] || fail "unexpected OpenWakeWord resolver output: ${resolved_raw}"
   printf '%s' "${resolved}"
+}
+
+prepare_openwakeword_runtime_support() {
+  log "ensuring OpenWakeWord runtime support files are available"
+  local output
+  output="$("${REPO_DIR}/.venv/bin/python" - 2>&1 <<'EOF'
+import pathlib
+
+try:
+    import openwakeword
+    import openwakeword.utils
+except ImportError as exc:
+    raise SystemExit(f"OpenWakeWord is not installed correctly: {exc}")
+
+resources_dir = pathlib.Path(openwakeword.__file__).resolve().parent / "resources" / "models"
+resources_dir.mkdir(parents=True, exist_ok=True)
+
+for feature_model in openwakeword.FEATURE_MODELS.values():
+    tflite_path = resources_dir / feature_model["download_url"].split("/")[-1]
+    onnx_path = resources_dir / tflite_path.name.replace(".tflite", ".onnx")
+    if not tflite_path.exists():
+        openwakeword.utils.download_file(feature_model["download_url"], str(resources_dir))
+    if not onnx_path.exists():
+        openwakeword.utils.download_file(feature_model["download_url"].replace(".tflite", ".onnx"), str(resources_dir))
+
+for vad_model in openwakeword.VAD_MODELS.values():
+    vad_path = resources_dir / vad_model["download_url"].split("/")[-1]
+    if not vad_path.exists():
+        openwakeword.utils.download_file(vad_model["download_url"], str(resources_dir))
+
+print(resources_dir)
+EOF
+)" || fail "${output}"
+  log "OpenWakeWord resources ready at ${output##*$'\n'}"
 }
 
 prepare_whisper_repo() {
@@ -807,6 +864,7 @@ main() {
   log "using Python interpreter: ${python_cmd}"
 
   create_virtualenv "${python_cmd}" "${selected_tts_backend}"
+  prepare_openwakeword_runtime_support
   if [[ "${wake_setup}" != "off" ]]; then
     log "resolving OpenWakeWord model '${wake_model}'"
     local resolved_wake

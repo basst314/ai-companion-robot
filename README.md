@@ -109,6 +109,8 @@ After setup finishes:
 
 The runtime will read `.env.local` automatically if it exists.
 
+For a fresh Raspberry Pi 5 and SD card bring-up, follow [docs/rpi5-bringup.md](docs/rpi5-bringup.md). That guide covers Raspberry Pi Imager, headless SSH, repo sync, Pi bootstrap, and staged validation.
+
 ### Automated Setup
 
 The bootstrap script is interactive by default and uses sensible defaults. You can also override key choices:

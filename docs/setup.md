@@ -18,6 +18,8 @@ The script is designed to be idempotent:
 - it resolves and verifies the selected OpenWakeWord model before writing `.env.local`
 - it asks before overwriting `.env.local`
 
+If you are bringing up a brand-new Raspberry Pi 5 from an erased SD card, use the focused guide in `docs/rpi5-bringup.md`. That flow covers Raspberry Pi Imager, headless SSH, Pi-side setup, optional custom wake-word model transfer, and staged runtime validation.
+
 ## Generated Local Config
 
 The setup script writes `.env.local`, which is loaded automatically by the runtime.
