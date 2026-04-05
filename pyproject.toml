@@ -23,6 +23,9 @@ dev = [
 tts = [
   "piper-tts[http]>=1.4,<2",
 ]
+ui = [
+  "pygame-ce>=2.5,<3",
+]
 
 [project.scripts]
 ai-companion-robot = "main:main"

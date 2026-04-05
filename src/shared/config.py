@@ -77,6 +77,7 @@ class TtsConfig:
     piper_data_dir: Path = Path("artifacts/piper-voices")
     piper_command: tuple[str, ...] = ()
     audio_play_command: tuple[str, ...] = ()
+    use_persistent_aplay: bool = True
     default_voice_en: str = "en_US-hfc_female-medium"
     default_voice_de: str = "de_DE-thorsten-medium"
     default_voice_id: str = "id_ID-news_tts-medium"
@@ -86,6 +87,24 @@ class TtsConfig:
     save_artifacts: bool = False
     synthesis_timeout_seconds: float = 20.0
     playback_timeout_seconds: float = 60.0
+
+
+@dataclass(slots=True)
+class UiConfig:
+    """Face/display backend configuration."""
+
+    backend: Literal["mock", "pygame", "fb0"] = "mock"
+    fullscreen: bool = True
+    active_fps: int = 30
+    idle_fps: int = 12
+    idle_sleep_seconds: float = 300.0
+    sleeping_eyes_grace_seconds: float = 12.0
+    show_text_overlay: bool = True
+    sleep_command: tuple[str, ...] = ()
+    wake_command: tuple[str, ...] = ()
+    sdl_videodriver: str = ""
+    theme_name: str = "retro_bot"
+    fb_path: str = "/dev/fb0"
 
 
 @dataclass(slots=True)
@@ -107,6 +126,7 @@ class AppConfig:
     cloud: CloudConfig = field(default_factory=CloudConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     mocks: MockDataConfig = field(default_factory=MockDataConfig)
 
 
@@ -303,6 +323,10 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}TTS_AUDIO_PLAY_COMMAND"),
         default=tts.audio_play_command,
     )
+    tts.use_persistent_aplay = _parse_bool(
+        env.get(f"{ENV_PREFIX}TTS_USE_PERSISTENT_APLAY"),
+        default=tts.use_persistent_aplay,
+    )
     tts.default_voice_en = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_EN", tts.default_voice_en).strip()
     tts.default_voice_de = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_DE", tts.default_voice_de).strip()
     tts.default_voice_id = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_ID", tts.default_voice_id).strip()
@@ -330,9 +354,50 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}TTS_PLAYBACK_TIMEOUT_SECONDS"),
         default=tts.playback_timeout_seconds,
     )
+    ui = config.ui
+    ui.backend = _parse_ui_backend(
+        env.get(f"{ENV_PREFIX}UI_BACKEND"),
+        default=ui.backend,
+    )
+    ui.fullscreen = _parse_bool(
+        env.get(f"{ENV_PREFIX}UI_FULLSCREEN"),
+        default=ui.fullscreen,
+    )
+    ui.active_fps = _parse_int(
+        env.get(f"{ENV_PREFIX}UI_ACTIVE_FPS"),
+        default=ui.active_fps,
+    )
+    ui.idle_fps = _parse_int(
+        env.get(f"{ENV_PREFIX}UI_IDLE_FPS"),
+        default=ui.idle_fps,
+    )
+    ui.idle_sleep_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}UI_IDLE_SLEEP_SECONDS"),
+        default=ui.idle_sleep_seconds,
+    )
+    ui.sleeping_eyes_grace_seconds = _parse_float(
+        env.get(f"{ENV_PREFIX}UI_SLEEPING_EYES_GRACE_SECONDS"),
+        default=ui.sleeping_eyes_grace_seconds,
+    )
+    ui.show_text_overlay = _parse_bool(
+        env.get(f"{ENV_PREFIX}UI_SHOW_TEXT_OVERLAY"),
+        default=ui.show_text_overlay,
+    )
+    ui.sleep_command = _parse_command(
+        env.get(f"{ENV_PREFIX}UI_SLEEP_COMMAND"),
+        default=ui.sleep_command,
+    )
+    ui.wake_command = _parse_command(
+        env.get(f"{ENV_PREFIX}UI_WAKE_COMMAND"),
+        default=ui.wake_command,
+    )
+    ui.sdl_videodriver = env.get(f"{ENV_PREFIX}UI_SDL_VIDEODRIVER", ui.sdl_videodriver).strip()
+    ui.theme_name = env.get(f"{ENV_PREFIX}UI_THEME_NAME", ui.theme_name).strip() or ui.theme_name
+    ui.fb_path = env.get(f"{ENV_PREFIX}UI_FB_PATH", ui.fb_path).strip() or ui.fb_path
     _validate_runtime_config(runtime)
     _validate_cloud_config(config.cloud, runtime=runtime)
     _validate_tts_config(tts)
+    _validate_ui_config(ui)
 
     return config
 
@@ -385,6 +450,17 @@ def _validate_tts_config(tts: TtsConfig) -> None:
             raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_DE must be configured for Piper TTS")
         if not tts.default_voice_id.strip():
             raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_ID must be configured for Piper TTS")
+
+
+def _validate_ui_config(ui: UiConfig) -> None:
+    if ui.active_fps <= 0:
+        raise ValueError("AI_COMPANION_UI_ACTIVE_FPS must be greater than zero")
+    if ui.idle_fps <= 0:
+        raise ValueError("AI_COMPANION_UI_IDLE_FPS must be greater than zero")
+    if ui.idle_sleep_seconds < 0:
+        raise ValueError("AI_COMPANION_UI_IDLE_SLEEP_SECONDS must be zero or greater")
+    if ui.sleeping_eyes_grace_seconds < 0:
+        raise ValueError("AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS must be zero or greater")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:
@@ -459,6 +535,18 @@ def _parse_optional_path(value: str | None) -> Path | None:
     if value is None or not value.strip():
         return None
     return Path(value)
+
+
+def _parse_ui_backend(
+    value: str | None,
+    default: Literal["mock", "pygame", "fb0"],
+) -> Literal["mock", "pygame", "fb0"]:
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"mock", "pygame", "fb0"}:
+        return normalized
+    raise ValueError("AI_COMPANION_UI_BACKEND must be one of 'mock', 'pygame', or 'fb0'")
 
 
 def _parse_language(value: str | None, default: Language) -> Language:
