@@ -403,6 +403,8 @@ The `{output_path}` placeholder is expected and is filled in by the runtime when
 
 For a quick look at a small openWakeWord model outside the app, open the [wake-word model visualizer](https://basst314.github.io/ai-companion-robot/wakeword-model-visualizer.html) in a browser and choose an `.onnx` wake-word model file. The page parses the model locally and shows its layer layout, parameter counts, and per-node weight summaries.
 
+For live face and personality tuning outside the app, open the [robot face playground](https://basst314.github.io/ai-companion-robot/robot-face-playground.html) in a browser. It lets you experiment with expressions, timing, idle behavior, presets, and exportable face settings.
+
 When `interactive_console` is enabled in speech mode, the runtime supports all of these at once:
 
 - type a phrase and press Enter
