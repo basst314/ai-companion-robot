@@ -1,0 +1,3792 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Robot Face Personality Playground</title>
+  <style>
+    :root {
+      --bg: #05090d;
+      --panel: rgba(9, 17, 24, 0.92);
+      --panel-strong: rgba(6, 12, 18, 0.96);
+      --panel-soft: rgba(15, 25, 34, 0.88);
+      --line: rgba(110, 220, 255, 0.14);
+      --line-strong: rgba(110, 220, 255, 0.26);
+      --ink: #eafcff;
+      --muted: #88a7b4;
+      --accent: #49f4ff;
+      --accent-soft: rgba(73, 244, 255, 0.14);
+      --accent-deep: #157d88;
+      --warn: #ffb367;
+      --shadow: 0 30px 80px rgba(0, 0, 0, 0.38);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+      --sans: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at top left, rgba(73, 244, 255, 0.12), transparent 24%),
+        radial-gradient(circle at top right, rgba(0, 112, 255, 0.10), transparent 20%),
+        radial-gradient(circle at bottom center, rgba(255, 179, 103, 0.08), transparent 26%),
+        linear-gradient(180deg, #071019, #020407 62%);
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border: 0;
+    }
+
+    main {
+      width: min(1500px, calc(100% - 24px));
+      margin: 0 auto;
+      padding: 18px 0 30px;
+    }
+
+    /* Shell layout */
+    .app-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.95fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(12, 21, 29, 0.96), rgba(6, 12, 18, 0.98));
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(22px);
+    }
+
+    .stage-panel {
+      padding: 22px;
+      position: sticky;
+      top: 14px;
+    }
+
+    .controls-panel {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+    }
+
+    .stage-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      margin: 0 0 10px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(73, 244, 255, 0.18);
+      color: var(--accent);
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4vw, 3.65rem);
+      max-width: 10ch;
+    }
+
+    .lede {
+      margin: 14px 0 0;
+      max-width: 58ch;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 1.02rem;
+    }
+
+    .badge-stack {
+      display: grid;
+      gap: 10px;
+      min-width: 230px;
+      align-content: start;
+    }
+
+    .badge-card {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(16, 30, 42, 0.95), rgba(9, 17, 24, 0.95));
+    }
+
+    .badge-label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+    }
+
+    .badge-value {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--ink);
+      word-break: break-word;
+    }
+
+    .stage-frame {
+      position: relative;
+      aspect-ratio: 16 / 10;
+      border-radius: 26px;
+      overflow: hidden;
+      border: 1px solid rgba(73, 244, 255, 0.16);
+      background:
+        radial-gradient(circle at 50% 18%, rgba(73, 244, 255, 0.06), transparent 28%),
+        radial-gradient(circle at 50% 80%, rgba(255, 179, 103, 0.04), transparent 38%),
+        #010305;
+    }
+
+    .stage-frame::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 18%, transparent 82%, rgba(255, 255, 255, 0.015)),
+        radial-gradient(circle at center, transparent 58%, rgba(73, 244, 255, 0.04));
+      mix-blend-mode: screen;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .stage-footer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      margin-top: 16px;
+    }
+
+    .status-line {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.4;
+    }
+
+    .status-line strong {
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .shortcut-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .shortcut-chip {
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(14, 25, 34, 0.75);
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    /* Section structure */
+    .tool-section {
+      padding: 16px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(12, 22, 31, 0.92), rgba(8, 14, 20, 0.92));
+      display: grid;
+      gap: 14px;
+    }
+
+    .section-head {
+      display: grid;
+      gap: 6px;
+    }
+
+    .section-head h2 {
+      font-size: 1.14rem;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.92rem;
+    }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .control-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      background: rgba(14, 24, 32, 0.86);
+      border: 1px solid rgba(73, 244, 255, 0.1);
+    }
+
+    .control-card.wide {
+      grid-column: 1 / -1;
+    }
+
+    .control-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .control-top label {
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #d9f5ff;
+    }
+
+    .value-tag {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+
+    .control-note {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+      margin-top: -4px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      appearance: none;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(73, 244, 255, 0.22), rgba(18, 44, 58, 0.92));
+      outline: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(73, 244, 255, 0.16);
+      border: 0;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(73, 244, 255, 0.16);
+    }
+
+    input[type="color"] {
+      width: 100%;
+      min-height: 44px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: transparent;
+      overflow: hidden;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    select,
+    textarea,
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(73, 244, 255, 0.16);
+      background: rgba(7, 13, 18, 0.95);
+      color: var(--ink);
+      resize: vertical;
+    }
+
+    textarea {
+      min-height: 100px;
+      font-family: var(--mono);
+      line-height: 1.45;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--ink);
+      font-size: 0.96rem;
+      min-height: 28px;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .utility-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .pill-button,
+    .outline-button,
+    .soft-button {
+      min-height: 44px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+    }
+
+    .pill-button {
+      background: linear-gradient(180deg, rgba(73, 244, 255, 0.92), rgba(32, 178, 204, 0.96));
+      color: #031015;
+    }
+
+    .outline-button {
+      background: rgba(10, 19, 26, 0.86);
+      border: 1px solid rgba(73, 244, 255, 0.22);
+      color: var(--ink);
+    }
+
+    .soft-button {
+      background: rgba(17, 31, 42, 0.96);
+      border: 1px solid rgba(73, 244, 255, 0.12);
+      color: var(--muted);
+    }
+
+    .pill-button:hover,
+    .outline-button:hover,
+    .soft-button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(73, 244, 255, 0.3);
+    }
+
+    .saved-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .saved-state-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .saved-card {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(73, 244, 255, 0.12);
+      background: rgba(11, 18, 25, 0.92);
+      display: grid;
+      gap: 10px;
+    }
+
+    .saved-card.active {
+      border-color: rgba(73, 244, 255, 0.34);
+      box-shadow: inset 0 0 0 1px rgba(73, 244, 255, 0.12);
+    }
+
+    .saved-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+    }
+
+    .saved-card h3 {
+      font-size: 1rem;
+    }
+
+    .saved-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.9rem;
+    }
+
+    .saved-meta {
+      font-size: 0.78rem;
+      color: var(--accent);
+      font-family: var(--mono);
+    }
+
+    .saved-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .saved-actions button {
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 27, 37, 0.94);
+      border: 1px solid rgba(73, 244, 255, 0.14);
+      color: var(--ink);
+      font-size: 0.82rem;
+    }
+
+    .empty-note {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(10, 18, 25, 0.76);
+      border: 1px dashed rgba(73, 244, 255, 0.18);
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.92rem;
+    }
+
+    .brief-preview {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(6, 12, 18, 0.94);
+      border: 1px solid rgba(73, 244, 255, 0.1);
+      color: #d5eef4;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      min-height: 180px;
+      max-height: 320px;
+      overflow: auto;
+    }
+
+    .export-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .status-toast {
+      min-height: 20px;
+      color: var(--warn);
+      font-size: 0.86rem;
+      line-height: 1.4;
+    }
+
+    .mono {
+      font-family: var(--mono);
+    }
+
+    @media (max-width: 1180px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .stage-panel {
+        position: static;
+      }
+
+      .controls-panel {
+        max-height: none;
+        overflow: visible;
+      }
+    }
+
+    @media (max-width: 760px) {
+      main {
+        width: min(100%, calc(100% - 18px));
+      }
+
+      .stage-panel,
+      .controls-panel {
+        padding: 14px;
+      }
+
+      .stage-header,
+      .stage-footer {
+        grid-template-columns: 1fr;
+      }
+
+      .badge-stack,
+      .shortcut-strip {
+        justify-content: start;
+      }
+
+      .control-grid,
+      .button-grid,
+      .utility-grid,
+      .export-actions {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="app-shell">
+      <section class="panel stage-panel">
+        <div class="stage-header">
+          <div>
+            <p class="eyebrow">Robot Face Personality Playground</p>
+            <h1>Motion first. Face second.</h1>
+            <p class="lede">
+              Tune a living robot face built from two bold eyes, fast intentful motion, and small deformations.
+              Save moods, stack behaviors, and export a handoff package for Codex to implement later in the robot app.
+            </p>
+          </div>
+
+          <div class="badge-stack">
+            <div class="badge-card">
+              <span class="badge-label">Active Preset</span>
+              <span class="badge-value" id="presetBadge">Neutral</span>
+            </div>
+            <div class="badge-card">
+              <span class="badge-label">Current State</span>
+              <span class="badge-value" id="stateBadge">Neutral Baseline</span>
+            </div>
+            <div class="badge-card">
+              <span class="badge-label">Motion Status</span>
+              <span class="badge-value" id="activityBadge">Idle is on</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage-frame">
+          <canvas id="faceCanvas" aria-label="Robot face preview canvas"></canvas>
+        </div>
+
+        <div class="stage-footer">
+          <div class="status-line">
+            <div><strong id="statusTitle">Neutral baseline</strong></div>
+            <div id="statusSummary">Two cyan eyes, slight deadpan lids, subtle glow, mostly still until a quick burst lands.</div>
+          </div>
+
+          <div class="shortcut-strip">
+            <span class="shortcut-chip"><span class="mono">Space</span> blink</span>
+            <span class="shortcut-chip"><span class="mono">Shift+Space</span> double blink</span>
+            <span class="shortcut-chip"><span class="mono">Arrows</span> look</span>
+            <span class="shortcut-chip"><span class="mono">B</span> bored</span>
+            <span class="shortcut-chip"><span class="mono">C</span> curious</span>
+            <span class="shortcut-chip"><span class="mono">T</span> thinking</span>
+            <span class="shortcut-chip"><span class="mono">A</span> attention</span>
+            <span class="shortcut-chip"><span class="mono">D</span> deadpan</span>
+            <span class="shortcut-chip"><span class="mono">X</span> sleep</span>
+            <span class="shortcut-chip"><span class="mono">R</span> reset</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel controls-panel">
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Visual</h2>
+            <p>Geometry, color, mouth, sparkle, and the basic graphic language of the face.</p>
+          </div>
+          <div class="control-grid" id="visualControls"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Expression</h2>
+            <p>Lids, look direction, deadpan bias, cute pressure, curiosity, and subtle asymmetry.</p>
+          </div>
+          <div class="control-grid" id="expressionControls"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Motion</h2>
+            <p>Timing, bounce, trapped motion, snappiness, and the layer that makes the face feel alive.</p>
+          </div>
+          <div class="control-grid" id="motionControls"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Idle</h2>
+            <p>Stillness, then quick action, then stillness again.</p>
+          </div>
+          <div class="control-grid" id="idleControls"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Behaviors</h2>
+            <p>Trigger layered motion bursts without overwriting your current tuning.</p>
+          </div>
+          <div class="button-grid" id="behaviorButtons"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Presets</h2>
+            <p>Jump to a personality baseline, then keep shaping it manually.</p>
+          </div>
+          <div class="button-grid" id="presetButtons"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Saved States</h2>
+            <p>Capture lightweight mood snapshots for later implementation work.</p>
+          </div>
+
+          <div class="saved-form">
+            <input id="stateNameInput" type="text" placeholder="State name, e.g. Mischievous idle" />
+            <textarea id="stateNotesInput" placeholder="Notes for future Codex/AI implementation. Example: eyes should feel bored first, then snap into curiosity."></textarea>
+            <div class="utility-grid">
+              <button class="pill-button" id="saveStateButton">Save Current Snapshot</button>
+              <button class="outline-button" id="updateStateButton">Update Selected</button>
+              <button class="outline-button" id="duplicateStateButton">Duplicate Selected</button>
+              <button class="soft-button" id="deleteStateButton">Delete Selected</button>
+            </div>
+          </div>
+
+          <div class="saved-state-list" id="savedStateList"></div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Export</h2>
+            <p>Generate a machine-readable handoff plus a design brief for later robot-app implementation.</p>
+          </div>
+
+          <div class="export-actions">
+            <button class="pill-button" id="copyJsonButton">Copy JSON</button>
+            <button class="pill-button" id="copyBriefButton">Copy Design Brief</button>
+            <button class="outline-button" id="copyFullButton">Copy Full Handoff</button>
+            <button class="outline-button" id="populateBufferButton">Populate Buffer</button>
+          </div>
+
+          <div class="section-head">
+            <h3>Design Brief Preview</h3>
+          </div>
+          <pre class="brief-preview" id="briefPreview"></pre>
+
+          <div class="section-head">
+            <h3>JSON Buffer</h3>
+            <p>Paste a saved export here to reapply it. The parser accepts either the full handoff or a raw `currentState` payload.</p>
+          </div>
+          <textarea id="handoffBuffer" placeholder='Paste export JSON here, then click "Apply JSON".'></textarea>
+          <div class="utility-grid">
+            <button class="pill-button" id="applyJsonButton">Apply JSON</button>
+            <button class="soft-button" id="clearBufferButton">Clear Buffer</button>
+          </div>
+        </section>
+
+        <section class="tool-section">
+          <div class="section-head">
+            <h2>Debug</h2>
+            <p>Guides, randomization, and quick utility actions while tuning character.</p>
+          </div>
+          <div class="control-grid" id="debugControls"></div>
+          <div class="utility-grid">
+            <button class="outline-button" id="randomizeButton">Randomize Safe Bounds</button>
+            <button class="soft-button" id="clearMotionButton">Clear Active Motion</button>
+          </div>
+          <div class="status-toast" id="toastMessage"></div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      // Core constants and lightweight utilities.
+      const STORAGE_KEY = "robot-face-playground-v1";
+      const SCHEMA_VERSION = 1;
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const lerp = (a, b, t) => a + ((b - a) * t);
+      const mix = (a, b, t) => lerp(a, b, clamp(t, 0, 1));
+      const deepClone = (value) => JSON.parse(JSON.stringify(value));
+      const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+      const easeInOutCubic = (t) => {
+        const x = clamp(t, 0, 1);
+        return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+      };
+      const uid = () => Math.random().toString(36).slice(2, 10);
+
+      function getByPath(object, path) {
+        return path.split(".").reduce((value, key) => value[key], object);
+      }
+
+      function setByPath(object, path, value) {
+        const keys = path.split(".");
+        const last = keys.pop();
+        const target = keys.reduce((acc, key) => acc[key], object);
+        target[last] = value;
+      }
+
+      function mergePatch(target, patch) {
+        Object.entries(patch).forEach(([key, value]) => {
+          if (
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            target[key] &&
+            typeof target[key] === "object" &&
+            !Array.isArray(target[key])
+          ) {
+            mergePatch(target[key], value);
+            return;
+          }
+          target[key] = deepClone(value);
+        });
+      }
+
+      function hexToRgb(hex) {
+        const normalized = hex.replace("#", "");
+        const value = normalized.length === 3
+          ? normalized.split("").map((part) => part + part).join("")
+          : normalized;
+        const int = Number.parseInt(value, 16);
+        return {
+          r: (int >> 16) & 255,
+          g: (int >> 8) & 255,
+          b: int & 255,
+        };
+      }
+
+      function rgba(hex, alpha) {
+        const { r, g, b } = hexToRgb(hex);
+        return "rgba(" + r + ", " + g + ", " + b + ", " + clamp(alpha, 0, 1) + ")";
+      }
+
+      function ellipsePath(ctx, x, y, rx, ry) {
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+      }
+
+      function roundedRectPath(ctx, x, y, width, height, radius) {
+        const r = clamp(radius, 0, Math.min(width, height) / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + width - r, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        ctx.lineTo(x + width, y + height - r);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        ctx.lineTo(x + r, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+      }
+
+      const DEFAULT_STATE = {
+        baseVisual: {
+          faceScale: 0.96,
+          eyeSize: 0.126,
+          eyeSpacing: 0.29,
+          eyeY: -0.055,
+          eyeXOffset: 0.0,
+          fillMode: "filled",
+          outlineThickness: 20,
+          innerCutout: 0.0,
+          ringShiftIntensity: 0.43,
+          perspectiveIntensity: 0.10,
+          roundness: 1.0,
+          asymmetry: 0.35,
+          glowEnabled: true,
+          glowIntensity: 0.38,
+          eyeColor: "#48f8ff",
+          lidColor: "#48f8ff",
+          backgroundColor: "#000000",
+          eyeGradientEnabled: false,
+          lidGradientEnabled: false,
+          gradientStrength: 0.18,
+          mouthEnabled: true,
+          mouthWidth: 0.07,
+          mouthThickness: 7,
+          mouthY: 0.21,
+          mouthStyle: "tiny-dash",
+          mouthMotionStyle: "sine-wave",
+          mouthCurveBias: 0.0,
+          mouthOpenBias: 0.0,
+          sparkleEnabled: false,
+          sparkleSize: 0.04,
+          sparkleOffsetX: 0.17,
+          sparkleOffsetY: -0.11,
+          eyeReflectionEnabled: false,
+          eyeReflectionSize: 0.07,
+          eyeReflectionOffsetX: -0.20,
+          eyeReflectionOffsetY: -0.24,
+          eyeReflectionOpacity: 0.58,
+          outerBoxEnabled: true,
+          outerBoxColor: "#d6faff",
+          outerBoxWidth: 5,
+          outerBoxRadius: 29,
+          outerBoxPadding: 0.02,
+          forwardBounceScale: 0.08,
+        },
+        expressionModifiers: {
+          lidsEnabled: true,
+          lidAmount: 0.0,
+          lidAngleLeft: 0.0,
+          lidAngleRight: 0.0,
+          lidLift: 1.0,
+          lidInset: 0.36,
+          lidSoftness: 0.52,
+          squishAmount: 0.0,
+          stretchAmount: 0.0,
+          cuteMode: 0.08,
+          boredIntensity: 0.72,
+          curiousIntensity: 0.12,
+          tearfulIntensity: 0.0,
+          lookX: 0.0,
+          lookY: 0.0,
+        },
+        motionModifiers: {
+          trappedMode: false,
+          idleEnabled: true,
+        },
+        timing: {
+          masterSpeed: 1.29,
+          easeInDuration: 0.09,
+          mainMoveDuration: 0.575,
+          easeOutDuration: 0.12,
+          overshootAmount: 0.24,
+          settleAmount: 0.28,
+          idleFrequency: 0.26,
+          idleIntensity: 0.63,
+          blinkSpeed: 0.11,
+          blinkHoldDuration: 0.04,
+          emotionHoldMin: 1.2,
+          emotionHoldMax: 1.89,
+          bounceIntensity: 0.42,
+          pauseRandomness: 0.54,
+          randomnessAmount: 0.86,
+          motionSmoothing: 0.28,
+          movementAmount: 0.91,
+          lookTravelAmount: 1.2,
+          trapRoamAmount: 1.2,
+          mouthAnimationAmount: 1.2,
+          secondaryMicroMotion: true,
+        },
+        meta: {
+          currentPresetName: "Neutral",
+          currentStateName: "Neutral Baseline v3",
+          currentStateNotes: "Two cyan eyes, slight deadpan, subtle glow, mostly still until a quick move lands.",
+          showGuides: false,
+        },
+      };
+
+      const PRESETS = {
+        "Neutral": {
+          baseVisual: {
+            faceScale: 0.96,
+            eyeSize: 0.126,
+            eyeSpacing: 0.29,
+            eyeY: -0.055,
+            eyeXOffset: 0.0,
+            fillMode: "filled",
+            outlineThickness: 20,
+            innerCutout: 0.0,
+            ringShiftIntensity: 0.43,
+            perspectiveIntensity: 0.10,
+            roundness: 1.0,
+            asymmetry: 0.35,
+            glowEnabled: true,
+            glowIntensity: 0.38,
+            eyeColor: "#48f8ff",
+            lidColor: "#48f8ff",
+            backgroundColor: "#000000",
+            eyeGradientEnabled: false,
+            lidGradientEnabled: false,
+            gradientStrength: 0.18,
+            mouthEnabled: true,
+            mouthWidth: 0.07,
+            mouthThickness: 7,
+            mouthY: 0.21,
+            mouthStyle: "tiny-dash",
+            mouthMotionStyle: "sine-wave",
+            mouthCurveBias: 0.0,
+            mouthOpenBias: 0.0,
+            sparkleEnabled: false,
+            sparkleSize: 0.04,
+            sparkleOffsetX: 0.17,
+            sparkleOffsetY: -0.11,
+            eyeReflectionEnabled: false,
+            eyeReflectionSize: 0.07,
+            eyeReflectionOffsetX: -0.20,
+            eyeReflectionOffsetY: -0.24,
+            eyeReflectionOpacity: 0.58,
+            outerBoxEnabled: true,
+            outerBoxColor: "#d6faff",
+            outerBoxWidth: 5,
+            outerBoxRadius: 29,
+            outerBoxPadding: 0.02,
+            forwardBounceScale: 0.08,
+          },
+          expressionModifiers: {
+            lidsEnabled: true,
+            lidAmount: 0.0,
+            lidAngleLeft: 0.0,
+            lidAngleRight: 0.0,
+            lidLift: 1.0,
+            lidInset: 0.36,
+            lidSoftness: 0.52,
+            squishAmount: 0.0,
+            stretchAmount: 0.0,
+            cuteMode: 0.08,
+            boredIntensity: 0.72,
+            curiousIntensity: 0.12,
+            tearfulIntensity: 0.0,
+            lookX: 0.0,
+            lookY: 0.0,
+          },
+          motionModifiers: {
+            trappedMode: false,
+            idleEnabled: true,
+          },
+          timing: {
+            masterSpeed: 1.29,
+            easeInDuration: 0.09,
+            mainMoveDuration: 0.575,
+            easeOutDuration: 0.12,
+            overshootAmount: 0.24,
+            settleAmount: 0.28,
+            idleFrequency: 0.26,
+            idleIntensity: 0.63,
+            blinkSpeed: 0.11,
+            blinkHoldDuration: 0.04,
+            emotionHoldMin: 1.2,
+            emotionHoldMax: 1.89,
+            bounceIntensity: 0.42,
+            pauseRandomness: 0.54,
+            randomnessAmount: 0.86,
+            motionSmoothing: 0.28,
+            movementAmount: 0.91,
+            lookTravelAmount: 1.2,
+            trapRoamAmount: 1.2,
+            mouthAnimationAmount: 1.2,
+            secondaryMicroMotion: true,
+          },
+          meta: {
+            currentStateName: "Neutral Baseline v4",
+            currentStateNotes: "Two cyan eyes, slight deadpan, subtle glow, mostly still until a quick move lands.",
+          },
+        },
+        "Deadpan": {
+          expressionModifiers: {
+            lidAmount: 0.0,
+            lidAngleLeft: 0.0,
+            lidAngleRight: 0.0,
+            cuteMode: 0.0,
+            boredIntensity: 0.90,
+            curiousIntensity: 0.04,
+            lookX: 0.0,
+            lookY: 0.0,
+          },
+          baseVisual: {
+            mouthEnabled: true,
+            mouthStyle: "flat-line",
+            mouthWidth: 0.05,
+            glowIntensity: 0.42,
+          },
+          meta: {
+            currentStateName: "Deadpan",
+            currentStateNotes: "Dry and still. The face should do almost nothing, then hit one precise glance or blink.",
+          },
+        },
+        "Bored": {
+          expressionModifiers: {
+            lidAmount: 0.0,
+            lidAngleLeft: 0.0,
+            lidAngleRight: 0.0,
+            boredIntensity: 0.88,
+            curiousIntensity: 0.05,
+            lookX: -0.08,
+            lookY: 0.06,
+          },
+          baseVisual: {
+            mouthEnabled: true,
+            mouthStyle: "tiny-dash",
+            mouthWidth: 0.10,
+            glowIntensity: 0.36,
+          },
+          timing: {
+            masterSpeed: 0.86,
+            idleFrequency: 0.26,
+            motionSmoothing: 0.36,
+          },
+          meta: {
+            currentStateName: "Bored",
+            currentStateNotes: "Lower lids, long pauses, quick side-glances instead of constant motion.",
+          },
+        },
+        "Curious": {
+          expressionModifiers: {
+            lidAmount: 0.0,
+            lidAngleLeft: 0.0,
+            lidAngleRight: 0.0,
+            cuteMode: 0.1,
+            boredIntensity: 0.0,
+            curiousIntensity: 0.74,
+            lookX: 0.12,
+            lookY: -0.22,
+          },
+          timing: {
+            masterSpeed: 1.12,
+            overshootAmount: 0.32,
+            idleFrequency: 0.48,
+          },
+          meta: {
+            currentStateName: "Curious",
+            currentStateNotes: "Alert, upward, slightly asymmetrical, and ready to snap into a new look target.",
+          },
+        },
+        "Cute": {
+          baseVisual: {
+            eyeSize: 0.19,
+            eyeSpacing: 0.26,
+            glowIntensity: 0.70,
+            mouthEnabled: true,
+            mouthStyle: "small-curve",
+            mouthWidth: 0.11,
+          },
+          expressionModifiers: {
+            lidAmount: 0.0,
+            lidAngleLeft: -0.34,
+            lidAngleRight: 0.34,
+            cuteMode: 0.82,
+            boredIntensity: 0.0,
+            curiousIntensity: 0.34,
+            lookY: -0.08,
+          },
+          meta: {
+            currentStateName: "Cute",
+            currentStateNotes: "Bigger eyes, a little closer together, still robotic, with playful quick snaps rather than babyish softness.",
+          },
+        },
+        "Thinking": {
+          baseVisual: {
+            mouthEnabled: true,
+            mouthStyle: "flat-line",
+            mouthWidth: 0.10,
+          },
+          expressionModifiers: {
+            lidAmount: 0.08,
+            lidAngleLeft: -0.22,
+            lidAngleRight: 0.20,
+            boredIntensity: 0.22,
+            curiousIntensity: 0.44,
+            lookX: 0.16,
+            lookY: -0.34,
+          },
+          timing: {
+            idleFrequency: 0.28,
+            motionSmoothing: 0.34,
+          },
+          meta: {
+            currentStateName: "Thinking",
+            currentStateNotes: "Eyes tip upward with asymmetry. It should feel focused, mildly puzzled, and slightly theatrical.",
+          },
+        },
+        "Mischievous": {
+          baseVisual: {
+            glowIntensity: 0.68,
+            mouthEnabled: true,
+            mouthStyle: "small-curve",
+            mouthWidth: 0.13,
+          },
+          expressionModifiers: {
+            lidAmount: 0.16,
+            lidAngleLeft: -0.26,
+            lidAngleRight: 0.18,
+            cuteMode: 0.18,
+            boredIntensity: 0.18,
+            curiousIntensity: 0.52,
+            lookX: -0.18,
+            lookY: -0.08,
+          },
+          timing: {
+            masterSpeed: 1.16,
+            overshootAmount: 0.42,
+            bounceIntensity: 0.58,
+          },
+          meta: {
+            currentStateName: "Mischievous",
+            currentStateNotes: "A sly tilt with crisp movement. The face should feel like it knows something and might be about to say it.",
+          },
+        },
+        "Sleepy": {
+          baseVisual: {
+            glowIntensity: 0.30,
+            mouthEnabled: true,
+            mouthStyle: "small-curve",
+            mouthWidth: 0.10,
+          },
+          expressionModifiers: {
+            lidAmount: 0.58,
+            lidAngleLeft: -0.06,
+            lidAngleRight: 0.06,
+            boredIntensity: 0.72,
+            curiousIntensity: 0.0,
+            lookY: 0.08,
+          },
+          timing: {
+            masterSpeed: 0.72,
+            idleFrequency: 0.16,
+            motionSmoothing: 0.44,
+          },
+          meta: {
+            currentStateName: "Sleepy",
+            currentStateNotes: "Heavy half-lids and long holds. Even the quick movements should feel low-energy.",
+          },
+        },
+        "Alert": {
+          baseVisual: {
+            eyeSize: 0.175,
+            glowIntensity: 0.74,
+            mouthEnabled: true,
+            mouthStyle: "tiny-dash",
+          },
+          expressionModifiers: {
+            lidAmount: 0.0,
+            lidAngleLeft: 0.0,
+            lidAngleRight: 0.0,
+            boredIntensity: 0.0,
+            curiousIntensity: 0.76,
+            lookY: 0.0,
+          },
+          timing: {
+            masterSpeed: 1.22,
+            overshootAmount: 0.38,
+            idleFrequency: 0.52,
+            bounceIntensity: 0.54,
+          },
+          meta: {
+            currentStateName: "Alert",
+            currentStateNotes: "Bright and ready. Quick glances should feel immediate and efficient, not panicked.",
+          },
+        },
+        "Funny tearful": {
+          baseVisual: {
+            sparkleEnabled: true,
+            sparkleSize: 0.065,
+            sparkleOffsetX: 0.19,
+            sparkleOffsetY: -0.02,
+            mouthEnabled: true,
+            mouthStyle: "small-curve",
+            glowIntensity: 0.76,
+          },
+          expressionModifiers: {
+            lidAmount: 0.18,
+            lidAngleLeft: -0.16,
+            lidAngleRight: 0.10,
+            cuteMode: 0.24,
+            boredIntensity: 0.04,
+            curiousIntensity: 0.34,
+            tearfulIntensity: 0.82,
+            lookX: 0.03,
+            lookY: -0.04,
+          },
+          meta: {
+            currentStateName: "Funny tearful",
+            currentStateNotes: "A deliberately overdone sparkle moment that reads funny rather than emotional realism.",
+          },
+        },
+        "Oreo vibe": {
+          baseVisual: {
+            fillMode: "filled",
+            eyeColor: "#63f1ff",
+            eyeSize: 0.175,
+            eyeSpacing: 0.285,
+            roundness: 1.0,
+            glowEnabled: true,
+            glowIntensity: 0.60,
+            mouthEnabled: true,
+            mouthStyle: "tiny-dash",
+            mouthWidth: 0.11,
+          },
+          expressionModifiers: {
+            lidAmount: 0.21,
+            lidAngleLeft: -0.10,
+            lidAngleRight: 0.06,
+            cuteMode: 0.18,
+            boredIntensity: 0.26,
+            curiousIntensity: 0.26,
+            tearfulIntensity: 0.0,
+            lookX: 0.0,
+            lookY: -0.02,
+          },
+          timing: {
+            masterSpeed: 1.02,
+            overshootAmount: 0.28,
+            settleAmount: 0.24,
+            idleFrequency: 0.34,
+            idleIntensity: 0.32,
+          },
+          meta: {
+            currentStateName: "Oreo vibe",
+            currentStateNotes: "Balanced and readable. Cute without being babyish, with a slightly dry sense of humor built into the lids.",
+          },
+        },
+      };
+
+      const CONTROL_SECTIONS = [
+        {
+          mountId: "visualControls",
+          fields: [
+            { path: "baseVisual.faceScale", label: "Overall face scale", type: "range", min: 0.55, max: 1.65, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.eyeSize", label: "Eye size", type: "range", min: 0.10, max: 0.24, step: 0.002, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.eyeSpacing", label: "Eye spacing", type: "range", min: 0.18, max: 0.40, step: 0.002, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.eyeY", label: "Eye vertical position", type: "range", min: -0.20, max: 0.12, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.eyeXOffset", label: "Eye horizontal offset", type: "range", min: -0.12, max: 0.12, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.fillMode", label: "Eye fill mode", type: "select", options: [
+              { value: "filled", label: "Filled" },
+              { value: "outlined", label: "Outlined" },
+            ] },
+            { path: "baseVisual.outlineThickness", label: "Outline thickness", type: "range", min: 2, max: 32, step: 1, format: (value) => Math.round(value) + " px" },
+            { path: "baseVisual.ringShiftIntensity", label: "Inner black shift", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.perspectiveIntensity", label: "Head turn eye size bias", type: "range", min: 0, max: 0.6, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.roundness", label: "Roundness", type: "range", min: 0.65, max: 1.32, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.asymmetry", label: "Subtle asymmetry", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.glowEnabled", label: "Glow enabled", type: "checkbox" },
+            { path: "baseVisual.glowIntensity", label: "Glow intensity", type: "range", min: 0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.eyeColor", label: "Eye color", type: "color" },
+            { path: "baseVisual.lidColor", label: "Lid color", type: "color" },
+            { path: "baseVisual.backgroundColor", label: "Background color", type: "color" },
+            { path: "baseVisual.eyeGradientEnabled", label: "Eye gradient enabled", type: "checkbox" },
+            { path: "baseVisual.lidGradientEnabled", label: "Lid gradient enabled", type: "checkbox" },
+            { path: "baseVisual.gradientStrength", label: "Gradient strength", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.mouthEnabled", label: "Mouth enabled", type: "checkbox" },
+            { path: "baseVisual.mouthWidth", label: "Mouth width", type: "range", min: 0.05, max: 0.34, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.mouthThickness", label: "Mouth thickness", type: "range", min: 2, max: 28, step: 1, format: (value) => Math.round(value) + " px" },
+            { path: "baseVisual.mouthY", label: "Mouth vertical position", type: "range", min: 0.10, max: 0.40, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.mouthStyle", label: "Mouth style", type: "select", options: [
+              { value: "none", label: "None" },
+              { value: "flat-line", label: "Flat line" },
+              { value: "tiny-dash", label: "Tiny dash" },
+              { value: "small-curve", label: "Small curve" },
+            ] },
+            { path: "baseVisual.mouthMotionStyle", label: "Speaking motion style", type: "select", options: [
+              { value: "smooth-open", label: "Smooth open" },
+              { value: "sine-wave", label: "Sine wave" },
+              { value: "signal-pill", label: "Signal pill" },
+            ] },
+            { path: "baseVisual.mouthCurveBias", label: "Mouth curve bias", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.mouthOpenBias", label: "Mouth open bias", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.sparkleEnabled", label: "Sparkle enabled", type: "checkbox" },
+            { path: "baseVisual.sparkleSize", label: "Sparkle size", type: "range", min: 0.015, max: 0.12, step: 0.002, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.sparkleOffsetX", label: "Sparkle X offset", type: "range", min: -0.30, max: 0.30, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.sparkleOffsetY", label: "Sparkle Y offset", type: "range", min: -0.30, max: 0.30, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.eyeReflectionEnabled", label: "Eye reflection enabled", type: "checkbox" },
+            { path: "baseVisual.eyeReflectionSize", label: "Eye reflection size", type: "range", min: 0.02, max: 0.22, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.eyeReflectionOffsetX", label: "Eye reflection X", type: "range", min: -0.8, max: 0.8, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.eyeReflectionOffsetY", label: "Eye reflection Y", type: "range", min: -0.8, max: 0.8, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.eyeReflectionOpacity", label: "Eye reflection opacity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "baseVisual.outerBoxEnabled", label: "Outer box enabled", type: "checkbox" },
+            { path: "baseVisual.outerBoxColor", label: "Outer box color", type: "color" },
+            { path: "baseVisual.outerBoxWidth", label: "Outer box width", type: "range", min: 1, max: 26, step: 1, format: (value) => Math.round(value) + " px" },
+            { path: "baseVisual.outerBoxRadius", label: "Outer box rounding", type: "range", min: 0, max: 120, step: 1, format: (value) => Math.round(value) + " px" },
+            { path: "baseVisual.outerBoxPadding", label: "Outer box padding", type: "range", min: 0.02, max: 0.22, step: 0.005, format: (value) => value.toFixed(3) },
+            { path: "baseVisual.forwardBounceScale", label: "Forward bounce scale", type: "range", min: 0, max: 0.3, step: 0.005, format: (value) => value.toFixed(3) },
+          ],
+        },
+        {
+          mountId: "expressionControls",
+          fields: [
+            { path: "expressionModifiers.lidsEnabled", label: "Lids enabled", type: "checkbox" },
+            { path: "expressionModifiers.lidAmount", label: "Lid amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lidAngleLeft", label: "Lid angle left", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lidAngleRight", label: "Lid angle right", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lidLift", label: "Lid lift / drop", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lidInset", label: "Lid in/out travel", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lidSoftness", label: "Lid softness", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.squishAmount", label: "Eye squish amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.stretchAmount", label: "Eye stretch amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.cuteMode", label: "Cute mode intensity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.boredIntensity", label: "Bored / deadpan intensity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.curiousIntensity", label: "Curious intensity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.tearfulIntensity", label: "Tearful / funny sparkle", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lookX", label: "Look direction X", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "expressionModifiers.lookY", label: "Look direction Y", type: "range", min: -1, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+          ],
+        },
+        {
+          mountId: "motionControls",
+          fields: [
+            { path: "timing.masterSpeed", label: "Master animation speed", type: "range", min: 0.4, max: 2.1, step: 0.01, format: (value) => value.toFixed(2) + "x" },
+            { path: "timing.easeInDuration", label: "Ease-in duration", type: "range", min: 0.02, max: 0.40, step: 0.005, format: (value) => value.toFixed(3) + " s" },
+            { path: "timing.mainMoveDuration", label: "Main move duration", type: "range", min: 0.03, max: 0.60, step: 0.005, format: (value) => value.toFixed(3) + " s" },
+            { path: "timing.easeOutDuration", label: "Ease-out duration", type: "range", min: 0.03, max: 0.50, step: 0.005, format: (value) => value.toFixed(3) + " s" },
+            { path: "timing.overshootAmount", label: "Overshoot amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.settleAmount", label: "Settle amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.blinkSpeed", label: "Blink speed", type: "range", min: 0.04, max: 0.30, step: 0.005, format: (value) => value.toFixed(3) + " s" },
+            { path: "timing.blinkHoldDuration", label: "Blink hold duration", type: "range", min: 0, max: 0.22, step: 0.005, format: (value) => value.toFixed(3) + " s" },
+            { path: "timing.emotionHoldMin", label: "Emotion hold min", type: "range", min: 0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) + " s" },
+            { path: "timing.emotionHoldMax", label: "Emotion hold max", type: "range", min: 0.1, max: 2.5, step: 0.01, format: (value) => value.toFixed(2) + " s" },
+            { path: "timing.bounceIntensity", label: "Bounce intensity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.randomnessAmount", label: "Randomness amount", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.motionSmoothing", label: "Motion smoothing", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.movementAmount", label: "Overall movement amount", type: "range", min: 0, max: 1.4, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.lookTravelAmount", label: "Look moves face amount", type: "range", min: 0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.trapRoamAmount", label: "Within-box roam amount", type: "range", min: 0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.mouthAnimationAmount", label: "Mouth animation amount", type: "range", min: 0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.secondaryMicroMotion", label: "Secondary micro-motion", type: "checkbox" },
+            { path: "motionModifiers.trappedMode", label: "Trapped-in-box mode", type: "checkbox" },
+          ],
+        },
+        {
+          mountId: "idleControls",
+          fields: [
+            { path: "motionModifiers.idleEnabled", label: "Idle system enabled", type: "checkbox" },
+            { path: "timing.idleFrequency", label: "Idle frequency", type: "range", min: 0.08, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.idleIntensity", label: "Idle intensity", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+            { path: "timing.pauseRandomness", label: "Pause / hold randomness", type: "range", min: 0, max: 1, step: 0.01, format: (value) => value.toFixed(2) },
+          ],
+        },
+        {
+          mountId: "debugControls",
+          fields: [
+            { path: "meta.showGuides", label: "Show guides / bounds", type: "checkbox" },
+          ],
+        },
+      ];
+
+      const DOM = {
+        canvas: document.getElementById("faceCanvas"),
+        presetBadge: document.getElementById("presetBadge"),
+        stateBadge: document.getElementById("stateBadge"),
+        activityBadge: document.getElementById("activityBadge"),
+        statusTitle: document.getElementById("statusTitle"),
+        statusSummary: document.getElementById("statusSummary"),
+        behaviorButtons: document.getElementById("behaviorButtons"),
+        presetButtons: document.getElementById("presetButtons"),
+        savedStateList: document.getElementById("savedStateList"),
+        stateNameInput: document.getElementById("stateNameInput"),
+        stateNotesInput: document.getElementById("stateNotesInput"),
+        saveStateButton: document.getElementById("saveStateButton"),
+        updateStateButton: document.getElementById("updateStateButton"),
+        duplicateStateButton: document.getElementById("duplicateStateButton"),
+        deleteStateButton: document.getElementById("deleteStateButton"),
+        copyJsonButton: document.getElementById("copyJsonButton"),
+        copyBriefButton: document.getElementById("copyBriefButton"),
+        copyFullButton: document.getElementById("copyFullButton"),
+        populateBufferButton: document.getElementById("populateBufferButton"),
+        applyJsonButton: document.getElementById("applyJsonButton"),
+        clearBufferButton: document.getElementById("clearBufferButton"),
+        handoffBuffer: document.getElementById("handoffBuffer"),
+        briefPreview: document.getElementById("briefPreview"),
+        randomizeButton: document.getElementById("randomizeButton"),
+        clearMotionButton: document.getElementById("clearMotionButton"),
+        toastMessage: document.getElementById("toastMessage"),
+      };
+
+      const ctx = DOM.canvas.getContext("2d");
+      const controlRegistry = new Map();
+      let selectedSavedStateId = null;
+
+      const state = (() => {
+        try {
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          if (!raw) {
+            return deepClone(DEFAULT_STATE);
+          }
+          const parsed = JSON.parse(raw);
+          const base = deepClone(DEFAULT_STATE);
+          if (parsed.currentState) {
+            mergePatch(base, parsed.currentState);
+            base.savedStates = Array.isArray(parsed.savedStates) ? parsed.savedStates : [];
+          } else {
+            mergePatch(base, parsed);
+            base.savedStates = Array.isArray(parsed.savedStates) ? parsed.savedStates : [];
+          }
+          return base;
+        } catch (error) {
+          console.warn("Failed to restore playground state:", error);
+          return deepClone(DEFAULT_STATE);
+        }
+      })();
+
+      state.savedStates = Array.isArray(state.savedStates) ? state.savedStates : [];
+
+      const runtime = {
+        width: 960,
+        height: 600,
+        dpr: 1,
+        lastTime: performance.now() / 1000,
+        activeClips: [],
+        nextIdleAt: performance.now() / 1000 + 2.0,
+        recentInteractionAt: performance.now() / 1000,
+        suppressMicroUntil: 0,
+        renderPose: null,
+        statusUntil: 0,
+        statusText: "",
+        trap: {
+          x: 0,
+          y: 0,
+          vx: 0,
+          vy: 0,
+          scale: 0,
+          scaleVelocity: 0,
+          impact: 0,
+          impactAxis: "x",
+          activeUntil: 0,
+          lastImpactAt: 0,
+        },
+        micro: {
+          x: 0,
+          y: 0,
+          lookX: 0,
+          lookY: 0,
+          targetX: 0,
+          targetY: 0,
+          targetLookX: 0,
+          targetLookY: 0,
+          nextTargetAt: performance.now() / 1000,
+        },
+      };
+
+      const BEHAVIOR_DEFS = [
+        { name: "Blink", handler: () => triggerBlink() },
+        { name: "Double blink", handler: () => triggerDoubleBlink() },
+        { name: "Look left", handler: () => triggerLook(-0.92, 0.0, "Look left") },
+        { name: "Look right", handler: () => triggerLook(0.92, 0.0, "Look right") },
+        { name: "Look up", handler: () => triggerLook(0.0, -0.92, "Look up") },
+        { name: "Look down", handler: () => triggerLook(0.0, 0.92, "Look down") },
+        { name: "Quick glance left/right", handler: () => triggerQuickGlance() },
+        { name: "Bored half-lid", handler: () => triggerBoredHalfLid() },
+        { name: "Curious look", handler: () => triggerCuriousLook() },
+        { name: "Cute mode", handler: () => triggerCuteMode() },
+        { name: "Thinking", handler: () => triggerThinking() },
+        { name: "Attention mode", handler: () => triggerAttentionMode() },
+        { name: "Surprise", handler: () => triggerSurprise() },
+        { name: "Deadpan stare", handler: () => triggerDeadpanStare() },
+        { name: "Sleep / closed eyes", handler: () => triggerSleepyClose() },
+        { name: "Tiny scoot / swoosh", handler: () => triggerScoot() },
+        { name: "Bounce off edge", handler: () => triggerBounceOffEdge() },
+        { name: "Sparkle tearful/funny", handler: () => triggerSparkleMoment() },
+        { name: "Reset to neutral", handler: () => resetToNeutral() },
+      ];
+
+      // UI generation and bindings.
+      function buildControls() {
+        CONTROL_SECTIONS.forEach((section) => {
+          const mount = document.getElementById(section.mountId);
+          section.fields.forEach((field) => {
+            const card = document.createElement("div");
+            card.className = "control-card" + (field.wide ? " wide" : "");
+
+            if (field.type === "checkbox") {
+              const row = document.createElement("div");
+              row.className = "toggle-row";
+              const label = document.createElement("label");
+              label.textContent = field.label;
+              const input = document.createElement("input");
+              input.type = "checkbox";
+              input.checked = Boolean(getByPath(state, field.path));
+              input.addEventListener("change", () => {
+                setByPath(state, field.path, input.checked);
+                markInteraction(field.label);
+                refreshUi();
+              });
+              row.append(label, input);
+              card.append(row);
+              mount.append(card);
+              controlRegistry.set(field.path, { field, input, valueEl: null });
+              return;
+            }
+
+            const top = document.createElement("div");
+            top.className = "control-top";
+
+            const label = document.createElement("label");
+            label.textContent = field.label;
+
+            const valueEl = document.createElement("span");
+            valueEl.className = "value-tag";
+            top.append(label, valueEl);
+            card.append(top);
+
+            let input;
+            if (field.type === "select") {
+              input = document.createElement("select");
+              field.options.forEach((option) => {
+                const element = document.createElement("option");
+                element.value = option.value;
+                element.textContent = option.label;
+                input.append(element);
+              });
+              input.value = getByPath(state, field.path);
+              input.addEventListener("change", () => {
+                setByPath(state, field.path, input.value);
+                markInteraction(field.label);
+                refreshUi();
+              });
+            } else if (field.type === "color") {
+              input = document.createElement("input");
+              input.type = "color";
+              input.value = getByPath(state, field.path);
+              input.addEventListener("input", () => {
+                setByPath(state, field.path, input.value);
+                markInteraction(field.label);
+                refreshUi();
+              });
+            } else {
+              input = document.createElement("input");
+              input.type = "range";
+              input.min = String(field.min);
+              input.max = String(field.max);
+              input.step = String(field.step);
+              input.value = String(getByPath(state, field.path));
+              input.addEventListener("input", () => {
+                setByPath(state, field.path, Number.parseFloat(input.value));
+                markInteraction(field.label);
+                refreshUi();
+              });
+            }
+
+            card.append(input);
+            mount.append(card);
+            controlRegistry.set(field.path, { field, input, valueEl });
+          });
+        });
+      }
+
+      function buildButtons() {
+        BEHAVIOR_DEFS.forEach((behavior) => {
+          const button = document.createElement("button");
+          button.className = behavior.name === "Reset to neutral" ? "soft-button" : "outline-button";
+          button.textContent = behavior.name;
+          button.addEventListener("click", behavior.handler);
+          DOM.behaviorButtons.append(button);
+        });
+
+        Object.keys(PRESETS).forEach((presetName) => {
+          const button = document.createElement("button");
+          button.className = presetName === "Neutral" ? "pill-button" : "outline-button";
+          button.textContent = presetName;
+          button.addEventListener("click", () => applyPreset(presetName));
+          DOM.presetButtons.append(button);
+        });
+      }
+
+      function bindStaticUi() {
+        DOM.stateNameInput.value = state.meta.currentStateName;
+        DOM.stateNotesInput.value = state.meta.currentStateNotes;
+
+        DOM.stateNameInput.addEventListener("input", () => {
+          state.meta.currentStateName = DOM.stateNameInput.value || "Untitled State";
+          persistState();
+          updateHeadings();
+        });
+
+        DOM.stateNotesInput.addEventListener("input", () => {
+          state.meta.currentStateNotes = DOM.stateNotesInput.value;
+          persistState();
+          updateHeadings();
+          updateBriefPreview();
+        });
+
+        DOM.saveStateButton.addEventListener("click", saveCurrentSnapshot);
+        DOM.updateStateButton.addEventListener("click", updateSelectedSnapshot);
+        DOM.duplicateStateButton.addEventListener("click", duplicateSelectedSnapshot);
+        DOM.deleteStateButton.addEventListener("click", deleteSelectedSnapshot);
+
+        DOM.copyJsonButton.addEventListener("click", () => copyText(JSON.stringify(buildFullExport(), null, 2), "Copied JSON export."));
+        DOM.copyBriefButton.addEventListener("click", () => copyText(generateDesignBrief(), "Copied design brief."));
+        DOM.copyFullButton.addEventListener("click", () => {
+          const payload = [
+            "=== JSON ===",
+            JSON.stringify(buildFullExport(), null, 2),
+            "",
+            "=== DESIGN BRIEF ===",
+            generateDesignBrief(),
+          ].join("\n");
+          copyText(payload, "Copied full handoff package.");
+        });
+        DOM.populateBufferButton.addEventListener("click", () => {
+          DOM.handoffBuffer.value = JSON.stringify(buildFullExport(), null, 2);
+          flashToast("Loaded the current export into the JSON buffer.");
+        });
+        DOM.applyJsonButton.addEventListener("click", applyJsonFromBuffer);
+        DOM.clearBufferButton.addEventListener("click", () => {
+          DOM.handoffBuffer.value = "";
+          flashToast("Cleared the JSON buffer.");
+        });
+
+        DOM.randomizeButton.addEventListener("click", randomizeSafeBounds);
+        DOM.clearMotionButton.addEventListener("click", clearActiveMotion);
+
+        window.addEventListener("resize", resizeCanvas);
+        window.addEventListener("keydown", handleKeydown);
+      }
+
+      // Behavior scheduling and animation clips.
+      function resolveBurstTiming(extraHold = 0, holdScale = 1) {
+        const speed = clamp(state.timing.masterSpeed, 0.2, 3);
+        const attack = state.timing.easeInDuration / speed;
+        const move = state.timing.mainMoveDuration / speed;
+        const holdRandom = lerp(state.timing.emotionHoldMin, state.timing.emotionHoldMax, Math.random());
+        const hold = (
+          extraHold +
+          (holdRandom * holdScale * lerp(0.2, 1, state.timing.pauseRandomness)) +
+          (state.timing.pauseRandomness * 0.06 * Math.random())
+        ) / speed;
+        const release = state.timing.easeOutDuration / speed;
+        const settle = (0.04 + (state.timing.settleAmount * 0.18)) / speed;
+        const total = attack + move + hold + release + settle;
+        return { attack, move, hold, release, settle, total };
+      }
+
+      function sampleBurst(elapsed, timing) {
+        const overshoot = state.timing.overshootAmount;
+        if (elapsed < timing.attack) {
+          return easeOutCubic(elapsed / timing.attack);
+        }
+        if (elapsed < timing.attack + timing.move) {
+          const local = (elapsed - timing.attack) / timing.move;
+          return 1 + (Math.sin(local * Math.PI) * overshoot * 0.34);
+        }
+        if (elapsed < timing.attack + timing.move + timing.hold) {
+          return 1 - (overshoot * 0.06);
+        }
+        if (elapsed < timing.attack + timing.move + timing.hold + timing.release) {
+          const local = (elapsed - timing.attack - timing.move - timing.hold) / timing.release;
+          return 1 - easeInOutCubic(local);
+        }
+        const settleElapsed = elapsed - timing.attack - timing.move - timing.hold - timing.release;
+        const settleLocal = clamp(settleElapsed / timing.settle, 0, 1);
+        const wiggle = Math.sin((1 - settleLocal) * Math.PI * 1.2) * state.timing.settleAmount * 0.12;
+        return wiggle * (1 - settleLocal);
+      }
+
+      function sampleCleanHold(elapsed, timing) {
+        if (elapsed < timing.attack) {
+          return easeOutCubic(elapsed / timing.attack);
+        }
+        if (elapsed < timing.attack + timing.move + timing.hold) {
+          return 1;
+        }
+        if (elapsed < timing.attack + timing.move + timing.hold + timing.release) {
+          const local = (elapsed - timing.attack - timing.move - timing.hold) / timing.release;
+          return 1 - easeInOutCubic(local);
+        }
+        return 0;
+      }
+
+      function queueClip(clip) {
+        runtime.activeClips.push({
+          ...clip,
+          startAt: (clip.startAt || (performance.now() / 1000)),
+        });
+      }
+
+      function clearActiveMotion() {
+        runtime.activeClips = [];
+        runtime.trap.vx = 0;
+        runtime.trap.vy = 0;
+        runtime.trap.x = 0;
+        runtime.trap.y = 0;
+        runtime.trap.scale = 0;
+        runtime.trap.scaleVelocity = 0;
+        runtime.trap.impact = 0;
+        runtime.trap.activeUntil = 0;
+        runtime.trap.lastImpactAt = 0;
+        updateActivity("Motion cleared");
+        flashToast("Cleared active animation clips and trap impulses.");
+      }
+
+      function pushTowardBoundary(dx, dy, power = 1, options = {}) {
+        const strength = state.timing.movementAmount * state.timing.lookTravelAmount;
+        runtime.trap.activeUntil = Math.max(
+          runtime.trap.activeUntil,
+          (performance.now() / 1000) + (options.duration || 1.8)
+        );
+        runtime.trap.vx += dx * power * strength * 0.38;
+        runtime.trap.vy += dy * power * strength * 0.28;
+        if (options.forward) {
+          runtime.trap.scaleVelocity += options.forward * state.baseVisual.forwardBounceScale * 3.8;
+        }
+      }
+
+      function triggerBlink(delay = 0, depth = 1, label = "Blink") {
+        markInteraction(label);
+        const speed = clamp(state.timing.masterSpeed, 0.2, 3);
+        const closeTime = clamp(state.timing.blinkSpeed / speed, 0.03, 0.22);
+        const hold = clamp(state.timing.blinkHoldDuration / speed, 0, 0.24);
+        const openTime = closeTime * 0.92;
+        const duration = closeTime + hold + openTime;
+        queueClip({
+          name: label,
+          startAt: (performance.now() / 1000) + delay,
+          duration,
+          sample(elapsed) {
+            let closedness = 0;
+            if (elapsed < closeTime) {
+              closedness = easeOutCubic(elapsed / closeTime) * depth;
+            } else if (elapsed < closeTime + hold) {
+              closedness = depth;
+            } else {
+              const local = (elapsed - closeTime - hold) / openTime;
+              closedness = (1 - easeInOutCubic(local)) * depth;
+            }
+            return {
+              blinkClosedness: closedness,
+              lidAmount: closedness * depth,
+              mouthOpen: Math.max(0, (closedness - 0.2) * 0.12),
+            };
+          },
+        });
+        updateActivity(label);
+      }
+
+      function triggerDoubleBlink() {
+        const speed = clamp(state.timing.masterSpeed, 0.2, 3);
+        const gap = 0.26 / speed;
+        triggerBlink(0, 1, "Double blink");
+        triggerBlink(gap, 0.94, "Double blink");
+      }
+
+      function triggerLook(dx, dy, label, options = {}) {
+        markInteraction(label);
+        const randomness = state.timing.randomnessAmount;
+        const driftX = dx + ((Math.random() - 0.5) * 0.18 * randomness);
+        const driftY = dy + ((Math.random() - 0.5) * 0.14 * randomness);
+        const holdScale = options.holdScale == null ? 1 : options.holdScale;
+        const timing = resolveBurstTiming(options.hold || 0.04, holdScale);
+        queueClip({
+          name: label,
+          duration: timing.total,
+          sample(elapsed) {
+            const amount = sampleCleanHold(elapsed, timing);
+            return {
+              lookX: driftX * amount * (options.strength || 1),
+              lookY: driftY * amount * (options.strength || 1),
+              motionX: driftX * amount * 0.24,
+              motionY: driftY * amount * 0.16,
+              eyeOpenBoost: amount * 0.68,
+              lidOverride: 0,
+              mouthOpen: Math.abs(driftX) * amount * 0.05,
+            };
+          },
+        });
+        pushTowardBoundary(driftX, driftY, options.wallHit ? 1.65 : 0.68, {
+          duration: timing.total + 0.55,
+          forward: options.forward || 0,
+        });
+        if ((timing.hold > 0.55) && Math.random() < 0.42) {
+          triggerBlink(timing.attack + (timing.move * 0.65), 0.86, label + " blink");
+        }
+        updateActivity(label);
+      }
+
+      function triggerQuickGlance() {
+        const first = Math.random() > 0.5 ? 1 : -1;
+        const now = performance.now() / 1000;
+        const timing = resolveBurstTiming(0.04, 1);
+        const sideOneIn = Math.max(0.05, timing.attack * 0.65);
+        const sideOneHold = timing.hold;
+        const crossTime = Math.max(0.08, timing.move * 0.7);
+        const sideTwoHold = timing.hold;
+        const centerReturn = Math.max(0.06, timing.release * 0.72);
+        const total = sideOneIn + sideOneHold + crossTime + sideTwoHold + centerReturn;
+        runtime.suppressMicroUntil = now + total + 0.24;
+        runtime.micro.x = 0;
+        runtime.micro.y = 0;
+        runtime.micro.lookX = 0;
+        runtime.micro.lookY = 0;
+        runtime.micro.targetX = 0;
+        runtime.micro.targetY = 0;
+        runtime.micro.targetLookX = 0;
+        runtime.micro.targetLookY = 0;
+
+        queueClip({
+          name: "Quick glance left/right",
+          startAt: now,
+          duration: total,
+          sample(elapsed) {
+            let lookX = 0;
+            let motionX = 0;
+            let eyeOpenBoost = 0.72;
+
+            if (elapsed < sideOneIn) {
+              const t = easeOutCubic(elapsed / sideOneIn);
+              lookX = first * 0.98 * t;
+              motionX = first * 0.16 * t;
+            } else if (elapsed < sideOneIn + sideOneHold) {
+              lookX = first * 0.98;
+              motionX = first * 0.16;
+            } else if (elapsed < sideOneIn + sideOneHold + crossTime) {
+              const local = (elapsed - sideOneIn - sideOneHold) / crossTime;
+              const t = easeInOutCubic(local);
+              lookX = lerp(first * 0.98, -first * 0.98, t);
+              motionX = lerp(first * 0.16, -first * 0.16, t);
+            } else if (elapsed < sideOneIn + sideOneHold + crossTime + sideTwoHold) {
+              lookX = -first * 0.98;
+              motionX = -first * 0.16;
+            } else {
+              const local = (elapsed - sideOneIn - sideOneHold - crossTime - sideTwoHold) / centerReturn;
+              const t = easeInOutCubic(clamp(local, 0, 1));
+              lookX = lerp(-first * 0.98, 0, t);
+              motionX = lerp(-first * 0.16, 0, t);
+              eyeOpenBoost = lerp(0.72, 0.56, t);
+            }
+
+            return {
+              lookX,
+              motionX,
+              eyeOpenBoost,
+              lidOverride: 0,
+            };
+          },
+        });
+
+        updateActivity("Quick glance left/right");
+      }
+
+      function triggerBoredHalfLid() {
+        markInteraction("Bored half-lid");
+        const timing = resolveBurstTiming(0.26, 1.2);
+        queueClip({
+          name: "Bored half-lid",
+          duration: timing.total + 0.12,
+          sample(elapsed) {
+            let amount = 0;
+            if (elapsed < timing.attack) {
+              amount = easeOutCubic(elapsed / timing.attack);
+            } else if (elapsed < timing.attack + timing.move + timing.hold) {
+              amount = 1;
+            } else if (elapsed < timing.attack + timing.move + timing.hold + timing.release) {
+              const local = (elapsed - timing.attack - timing.move - timing.hold) / timing.release;
+              amount = 1 - easeInOutCubic(local);
+            }
+            return {
+              lidOverride: 0.48 * amount,
+              boredIntensity: amount * 0.42,
+              lookX: -0.12 * amount,
+              lookY: 0.08 * amount,
+              mouthSmile: -amount * 0.22,
+            };
+          },
+        });
+        updateActivity("Bored half-lid");
+      }
+
+      function triggerCuriousLook() {
+        markInteraction("Curious look");
+        const first = Math.random() > 0.5 ? 1 : -1;
+        const timing = resolveBurstTiming(0.10, 1.05);
+        const sideIn = Math.max(0.06, timing.attack * 0.72);
+        const sideHold = timing.hold * 0.95;
+        const crossTime = Math.max(0.10, timing.move * 0.78);
+        const otherHold = timing.hold * 0.95;
+        const returnTime = Math.max(0.08, timing.release * 0.82);
+        const total = sideIn + sideHold + crossTime + otherHold + returnTime;
+        queueClip({
+          name: "Curious look",
+          duration: total,
+          sample(elapsed) {
+            let phase = 0;
+            if (elapsed < sideIn) {
+              phase = first * easeOutCubic(elapsed / sideIn);
+            } else if (elapsed < sideIn + sideHold) {
+              phase = first;
+            } else if (elapsed < sideIn + sideHold + crossTime) {
+              const local = (elapsed - sideIn - sideHold) / crossTime;
+              phase = lerp(first, -first, easeInOutCubic(local));
+            } else if (elapsed < sideIn + sideHold + crossTime + otherHold) {
+              phase = -first;
+            } else {
+              const local = (elapsed - sideIn - sideHold - crossTime - otherHold) / returnTime;
+              phase = lerp(-first, 0, easeInOutCubic(clamp(local, 0, 1)));
+            }
+
+            const amount = Math.abs(phase);
+            const tilt = phase;
+            const favorLeft = tilt < 0 ? 1 : 0;
+            const favorRight = tilt > 0 ? 1 : 0;
+            return {
+              curiousIntensity: amount * 0.82,
+              lookX: tilt * 0.18,
+              lookY: amount * -0.34,
+              motionX: tilt * 0.12,
+              motionY: amount * -0.05,
+              faceTilt: tilt * 0.24,
+              eyeOpenBoost: amount * 0.56,
+              lidAngleLeft: tilt * -0.16,
+              lidAngleRight: tilt * -0.16,
+              rightSizeBias: (favorRight * 0.10 * amount) + (favorLeft * -0.04 * amount),
+              leftSizeBias: (favorLeft * 0.10 * amount) + (favorRight * -0.04 * amount),
+              leftLidBias: favorRight * -0.05 * amount,
+              rightLidBias: favorLeft * -0.05 * amount,
+              mouthSmile: amount * 0.10,
+              mouthWidthBias: amount * 0.08,
+            };
+          },
+        });
+        pushTowardBoundary(first * 0.16, -0.10, 0.72, { duration: total + 0.3, forward: 0.015 });
+        updateActivity("Curious look");
+      }
+
+      function triggerCuteMode() {
+        markInteraction("Cute mode");
+        const timing = resolveBurstTiming(0.20, 1.12);
+        const direction = Math.random() > 0.5 ? 1 : -1;
+        queueClip({
+          name: "Cute mode",
+          duration: timing.total,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              cuteMode: amount * 0.86,
+              eyeOpenBoost: amount * 0.44,
+              lookX: direction * amount * 0.18,
+              lookY: amount * -0.12,
+              lidAngleLeft: amount * 0.34,
+              lidAngleRight: amount * -0.34,
+              stretchAmount: amount * 0.10,
+              tearfulIntensity: amount * 0.12,
+              leftSizeBias: amount * 0.08,
+              rightSizeBias: amount * 0.08,
+              mouthSmile: amount * 0.26,
+              mouthOpen: amount * 0.10,
+            };
+          },
+        });
+        updateActivity("Cute mode");
+      }
+
+      function triggerThinking() {
+        markInteraction("Thinking");
+        const first = Math.random() > 0.5 ? 1 : -1;
+        const timing = resolveBurstTiming(0.12, 1.05);
+        const sideIn = Math.max(0.06, timing.attack * 0.72);
+        const sideHold = timing.hold * 0.9;
+        const crossTime = Math.max(0.10, timing.move * 0.75);
+        const otherHold = timing.hold * 0.9;
+        const returnTime = Math.max(0.08, timing.release * 0.8);
+        const total = sideIn + sideHold + crossTime + otherHold + returnTime;
+        queueClip({
+          name: "Thinking",
+          duration: total,
+          sample(elapsed) {
+            let phase = 0;
+            let lookX = 0;
+
+            if (elapsed < sideIn) {
+              const t = easeOutCubic(elapsed / sideIn);
+              phase = first * t;
+              lookX = first * 0.16 * t;
+            } else if (elapsed < sideIn + sideHold) {
+              phase = first;
+              lookX = first * 0.16;
+            } else if (elapsed < sideIn + sideHold + crossTime) {
+              const local = (elapsed - sideIn - sideHold) / crossTime;
+              const t = easeInOutCubic(local);
+              phase = lerp(first, -first, t);
+              lookX = lerp(first * 0.16, -first * 0.16, t);
+            } else if (elapsed < sideIn + sideHold + crossTime + otherHold) {
+              phase = -first;
+              lookX = -first * 0.16;
+            } else {
+              const local = (elapsed - sideIn - sideHold - crossTime - otherHold) / returnTime;
+              const t = easeInOutCubic(clamp(local, 0, 1));
+              phase = lerp(-first, 0, t);
+              lookX = lerp(-first * 0.16, 0, t);
+            }
+
+            const amount = Math.abs(phase);
+            const favorLeft = phase < 0 ? 1 : 0;
+            const favorRight = phase > 0 ? 1 : 0;
+            return {
+              curiousIntensity: amount * 0.42,
+              boredIntensity: amount * 0.18,
+              lookX,
+              lookY: amount * -0.42,
+              lidAngleLeft: lerp(0, -0.22, favorRight) + lerp(0, 0.18, favorLeft),
+              lidAngleRight: lerp(0, -0.22, favorLeft) + lerp(0, 0.18, favorRight),
+              leftLidBias: (favorRight * 0.18 * amount) + (favorLeft * -0.06 * amount),
+              rightLidBias: (favorLeft * 0.18 * amount) + (favorRight * -0.06 * amount),
+              leftSizeBias: (favorLeft * 0.12 * amount) + (favorRight * -0.05 * amount),
+              rightSizeBias: (favorRight * 0.12 * amount) + (favorLeft * -0.05 * amount),
+              mouthSmile: -amount * 0.10,
+              mouthOpen: amount * 0.04,
+            };
+          },
+        });
+        pushTowardBoundary(first * 0.12, -0.16, 0.72, { duration: total + 0.3, forward: 0.01 });
+        updateActivity("Thinking");
+      }
+
+      function triggerAttentionMode() {
+        markInteraction("Attention mode");
+        const timing = resolveBurstTiming(0.55, 1.2);
+        queueClip({
+          name: "Attention mode",
+          duration: timing.total + 0.15,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              eyeOpenBoost: amount * 0.70,
+              boredIntensity: -amount * 0.90,
+              curiousIntensity: amount * 0.12,
+              leftSizeBias: amount * 0.04,
+              rightSizeBias: amount * 0.04,
+              lookX: 0,
+              lookY: 0,
+              lidAngleLeft: 0,
+              lidAngleRight: 0,
+              mouthSmile: amount * 0.06,
+              mouthWidthBias: amount * 0.10,
+              mouthStill: amount,
+            };
+          },
+        });
+        updateActivity("Attention mode");
+      }
+
+      function triggerSurprise() {
+        markInteraction("Surprise");
+        const timing = resolveBurstTiming(0.08, 0.55);
+        queueClip({
+          name: "Surprise",
+          duration: timing.total,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              eyeOpenBoost: amount * 0.86,
+              stretchAmount: amount * 0.62,
+              motionY: amount * -0.10,
+              cuteMode: amount * 0.10,
+              tearfulIntensity: amount * 0.55,
+              mouthOpen: amount * 0.78,
+              mouthSmile: amount * 0.04,
+            };
+          },
+        });
+        pushTowardBoundary(0, -0.12, 0.45, { duration: timing.total + 0.2, forward: 0.065 });
+        updateActivity("Surprise");
+      }
+
+      function triggerDeadpanStare() {
+        markInteraction("Deadpan stare");
+        const timing = resolveBurstTiming(0.30, 1.5);
+        queueClip({
+          name: "Deadpan stare",
+          duration: timing.total + 0.18,
+          sample(elapsed) {
+            let amount = 0;
+            if (elapsed < timing.attack) {
+              amount = easeOutCubic(elapsed / timing.attack);
+            } else if (elapsed < timing.attack + timing.move + timing.hold) {
+              amount = 1;
+            } else if (elapsed < timing.attack + timing.move + timing.hold + timing.release) {
+              const local = (elapsed - timing.attack - timing.move - timing.hold) / timing.release;
+              amount = 1 - easeInOutCubic(local);
+            }
+            return {
+              boredIntensity: amount * 1.0,
+              lidOverride: 0.60 * amount,
+              motionX: 0,
+              lookX: 0,
+              lookY: 0,
+              mouthSmile: -amount * 0.18,
+              mouthStill: amount,
+              mouthWidthBias: -amount * 0.10,
+            };
+          },
+        });
+        updateActivity("Deadpan stare");
+      }
+
+      function triggerScoot() {
+        markInteraction("Tiny scoot / swoosh");
+        const timing = resolveBurstTiming(0.04, 0.28);
+        const randomness = state.timing.randomnessAmount;
+        const direction = Math.random() > 0.5 ? 1 : -1;
+        const vertical = (Math.random() - 0.5) * lerp(0.16, 0.35, randomness);
+        const lateral = direction * lerp(0.12, 0.26, randomness);
+        queueClip({
+          name: "Tiny scoot / swoosh",
+          duration: timing.total,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              motionX: lateral * amount,
+              motionY: vertical * amount * 0.18,
+              squishAmount: Math.abs(amount) * 0.14,
+              stretchAmount: Math.abs(amount) * 0.12,
+              mouthOpen: Math.abs(amount) * 0.05,
+            };
+          },
+        });
+        pushTowardBoundary(direction, vertical, 0.86, { duration: timing.total + 0.28, forward: 0.008 });
+        updateActivity("Tiny scoot / swoosh");
+      }
+
+      function triggerBounceOffEdge() {
+        markInteraction("Bounce off edge");
+        runtime.trap.activeUntil = (performance.now() / 1000) + 2.2;
+        const directionX = Math.random() > 0.5 ? 1 : -1;
+        const directionY = (Math.random() - 0.5) * 0.8;
+        const power = 0.90 + (state.timing.bounceIntensity * 0.90);
+        pushTowardBoundary(directionX, directionY * 0.55, power * 1.8, { duration: 2.4, forward: 0.04 });
+        queueClip({
+          name: "Bounce off edge",
+          duration: 1.4 / clamp(state.timing.masterSpeed, 0.2, 3),
+          sample(elapsed, duration) {
+            const local = clamp(elapsed / duration, 0, 1);
+            return {
+              mouthOpen: Math.max(0, Math.sin(local * Math.PI)) * 0.16,
+              curiousIntensity: Math.max(0, Math.sin(local * Math.PI)) * 0.08,
+            };
+          },
+        });
+        updateActivity("Bounce off edge");
+      }
+
+      function triggerSleepyClose() {
+        markInteraction("Sleep / closed eyes");
+        const timing = resolveBurstTiming(0.85, 1.6);
+        queueClip({
+          name: "Sleep / closed eyes",
+          duration: timing.total + 0.3,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              lidOverride: amount * 1.08,
+              boredIntensity: amount * 0.40,
+              lookX: 0,
+              lookY: 0,
+              mouthSmile: -amount * 0.08,
+              mouthOpen: amount * 0.02,
+              mouthStill: amount,
+              sleepLine: amount,
+            };
+          },
+        });
+        updateActivity("Sleep / closed eyes");
+      }
+
+      function triggerSparkleMoment() {
+        markInteraction("Sparkle tearful/funny");
+        const timing = resolveBurstTiming(0.22, 1.08);
+        queueClip({
+          name: "Sparkle tearful/funny",
+          duration: timing.total,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              tearfulIntensity: amount * 0.94,
+              cuteMode: amount * 0.16,
+              mouthSmile: amount * 0.14,
+            };
+          },
+        });
+        updateActivity("Sparkle tearful/funny");
+      }
+
+      function triggerBoundaryPress() {
+        markInteraction("Boundary press");
+        const edges = [
+          { dx: -1, dy: 0, squishX: 0.22, squishY: -0.12 },
+          { dx: 1, dy: 0, squishX: 0.22, squishY: -0.12 },
+          { dx: 0, dy: -1, squishX: -0.12, squishY: 0.22 },
+          { dx: 0, dy: 1, squishX: -0.08, squishY: 0.18 },
+        ];
+        const edge = edges[Math.floor(Math.random() * edges.length)];
+        const timing = resolveBurstTiming(0.55, 1.3);
+        queueClip({
+          name: "Boundary press",
+          duration: timing.total + 0.2,
+          sample(elapsed) {
+            const amount = sampleBurst(elapsed, timing);
+            return {
+              lookX: edge.dx * amount * 0.85,
+              lookY: edge.dy * amount * 0.75,
+              squishAmount: Math.max(0, edge.squishX) * amount,
+              stretchAmount: Math.max(0, edge.squishY) * amount,
+              leftSizeBias: amount * (edge.dx < 0 ? 0.08 : -0.02),
+              rightSizeBias: amount * (edge.dx > 0 ? 0.08 : -0.02),
+              mouthSmile: amount * 0.08,
+            };
+          },
+        });
+        pushTowardBoundary(edge.dx, edge.dy, 1.9, { duration: timing.total + 0.8, forward: 0.03 });
+        updateActivity("Boundary press");
+      }
+
+      function resetToNeutral(force = false) {
+        if (!force) {
+          const ok = window.confirm("Reset the playground to the neutral preset? Your current live tuning will be replaced.");
+          if (!ok) {
+            return;
+          }
+        }
+        runtime.activeClips = [];
+        runtime.trap.vx = 0;
+        runtime.trap.vy = 0;
+        runtime.trap.impact = 0;
+        runtime.trap.x = 0;
+        runtime.trap.y = 0;
+        runtime.trap.activeUntil = 0;
+        applyPreset("Neutral");
+        flashToast("Reset to the neutral baseline.");
+      }
+
+      // Idle scheduler and micro-movement.
+      function updateIdleScheduler(now) {
+        if (!state.motionModifiers.idleEnabled) {
+          return;
+        }
+        if (runtime.activeClips.length > 0) {
+          return;
+        }
+        if (now - runtime.recentInteractionAt < 2.2) {
+          return;
+        }
+        if (now < runtime.nextIdleAt) {
+          return;
+        }
+
+        const choices = [
+          { weight: 0.28, run: () => triggerBlink(0, 1, "Idle blink") },
+          { weight: 0.24, run: () => triggerLook((Math.random() > 0.5 ? 1 : -1) * 0.85, -0.08, "Idle side stare", { strength: 0.9, hold: 0.18, holdScale: 1.25, wallHit: true }) },
+          { weight: 0.14, run: () => triggerQuickGlance() },
+          { weight: 0.12, run: () => triggerBoredHalfLid() },
+          { weight: 0.10, run: () => triggerCuriousLook() },
+          { weight: 0.06, run: () => triggerScoot() },
+          { weight: 0.06, run: () => triggerBoundaryPress() },
+        ];
+
+        const choice = pickWeighted(choices);
+        choice.run();
+
+        const basePause = lerp(6.8, 2.4, state.timing.idleFrequency);
+        const randomPause = lerp(0.8, 3.4, state.timing.pauseRandomness) * Math.random();
+        runtime.nextIdleAt = now + basePause + randomPause;
+      }
+
+      function updateMicroMotion(now, dt) {
+        if (!state.timing.secondaryMicroMotion) {
+          runtime.micro.x *= 0.82;
+          runtime.micro.y *= 0.82;
+          runtime.micro.lookX *= 0.82;
+          runtime.micro.lookY *= 0.82;
+          return;
+        }
+
+        if (now < runtime.suppressMicroUntil) {
+          runtime.micro.x = lerp(runtime.micro.x, 0, 0.26);
+          runtime.micro.y = lerp(runtime.micro.y, 0, 0.26);
+          runtime.micro.lookX = lerp(runtime.micro.lookX, 0, 0.26);
+          runtime.micro.lookY = lerp(runtime.micro.lookY, 0, 0.26);
+          runtime.micro.targetX = 0;
+          runtime.micro.targetY = 0;
+          runtime.micro.targetLookX = 0;
+          runtime.micro.targetLookY = 0;
+          runtime.micro.nextTargetAt = runtime.suppressMicroUntil + 0.24;
+          return;
+        }
+
+        if (now >= runtime.micro.nextTargetAt) {
+          const intensity = state.motionModifiers.idleEnabled ? state.timing.idleIntensity : 0.18;
+          const randomness = lerp(0.35, 1, state.timing.randomnessAmount);
+          runtime.micro.targetX = (Math.random() - 0.5) * 0.010 * intensity * randomness;
+          runtime.micro.targetY = (Math.random() - 0.5) * 0.008 * intensity * randomness;
+          runtime.micro.targetLookX = (Math.random() - 0.5) * 0.045 * intensity * randomness;
+          runtime.micro.targetLookY = (Math.random() - 0.5) * 0.040 * intensity * randomness;
+          runtime.micro.nextTargetAt = now + lerp(2.2, 0.9, state.timing.idleFrequency) + (Math.random() * 0.6);
+        }
+
+        const chase = 1 - Math.exp(-dt * 3.4);
+        runtime.micro.x = lerp(runtime.micro.x, runtime.micro.targetX, chase);
+        runtime.micro.y = lerp(runtime.micro.y, runtime.micro.targetY, chase);
+        runtime.micro.lookX = lerp(runtime.micro.lookX, runtime.micro.targetLookX, chase);
+        runtime.micro.lookY = lerp(runtime.micro.lookY, runtime.micro.targetLookY, chase);
+      }
+
+      function updateTrapMotion(now, dt) {
+        const active = state.motionModifiers.trappedMode || now < runtime.trap.activeUntil;
+        const bounce = state.timing.bounceIntensity;
+        const pull = active ? 0.22 : 0.52;
+        const damping = active ? 0.88 : 0.74;
+        const boundsX = clamp((0.18 + ((0.32 - state.baseVisual.outerBoxPadding) * 0.58)) * state.timing.trapRoamAmount, 0.08, 0.34);
+        const boundsY = clamp((0.12 + ((0.28 - state.baseVisual.outerBoxPadding) * 0.46)) * state.timing.trapRoamAmount, 0.06, 0.26);
+
+        if (state.motionModifiers.trappedMode && active && (Math.abs(runtime.trap.vx) + Math.abs(runtime.trap.vy) < 0.08) && Math.random() < dt * (0.8 + state.timing.idleFrequency)) {
+          runtime.trap.vx += (Math.random() - 0.5) * 0.32 * state.timing.trapRoamAmount;
+          runtime.trap.vy += (Math.random() - 0.5) * 0.24 * state.timing.trapRoamAmount;
+        }
+
+        runtime.trap.x += runtime.trap.vx * dt;
+        runtime.trap.y += runtime.trap.vy * dt;
+        runtime.trap.vx += (-runtime.trap.x * pull) * dt;
+        runtime.trap.vy += (-runtime.trap.y * pull) * dt;
+
+        runtime.trap.vx *= Math.pow(damping, dt * 60);
+        runtime.trap.vy *= Math.pow(damping, dt * 60);
+        runtime.trap.scale += runtime.trap.scaleVelocity * dt;
+        runtime.trap.scaleVelocity += (-runtime.trap.scale * 10.5) * dt;
+        runtime.trap.scaleVelocity *= Math.pow(0.72, dt * 60);
+
+        if (runtime.trap.x > boundsX) {
+          runtime.trap.x = boundsX;
+          runtime.trap.vx = -Math.abs(runtime.trap.vx) * (0.45 + (bounce * 0.5));
+          runtime.trap.impact = 1;
+          runtime.trap.impactAxis = "x";
+          runtime.trap.lastImpactAt = now;
+          runtime.trap.scaleVelocity += state.baseVisual.forwardBounceScale * 2.8;
+        } else if (runtime.trap.x < -boundsX) {
+          runtime.trap.x = -boundsX;
+          runtime.trap.vx = Math.abs(runtime.trap.vx) * (0.45 + (bounce * 0.5));
+          runtime.trap.impact = 1;
+          runtime.trap.impactAxis = "x";
+          runtime.trap.lastImpactAt = now;
+          runtime.trap.scaleVelocity += state.baseVisual.forwardBounceScale * 2.8;
+        }
+
+        if (runtime.trap.y > boundsY) {
+          runtime.trap.y = boundsY;
+          runtime.trap.vy = -Math.abs(runtime.trap.vy) * (0.45 + (bounce * 0.5));
+          runtime.trap.impact = 1;
+          runtime.trap.impactAxis = "y";
+          runtime.trap.lastImpactAt = now;
+          runtime.trap.scaleVelocity += state.baseVisual.forwardBounceScale * 1.6;
+        } else if (runtime.trap.y < -boundsY) {
+          runtime.trap.y = -boundsY;
+          runtime.trap.vy = Math.abs(runtime.trap.vy) * (0.45 + (bounce * 0.5));
+          runtime.trap.impact = 1;
+          runtime.trap.impactAxis = "y";
+          runtime.trap.lastImpactAt = now;
+          runtime.trap.scaleVelocity += state.baseVisual.forwardBounceScale * 1.6;
+        }
+
+        runtime.trap.impact = Math.max(0, runtime.trap.impact - (dt * 2.6));
+        runtime.trap.scale = clamp(runtime.trap.scale, -0.06, 0.12);
+
+        if (!active && Math.abs(runtime.trap.x) < 0.001 && Math.abs(runtime.trap.y) < 0.001) {
+          runtime.trap.x = 0;
+          runtime.trap.y = 0;
+        }
+      }
+
+      function collectBehaviorOverlay(now) {
+        const overlay = {
+          lookX: 0,
+          lookY: 0,
+          motionX: 0,
+          motionY: 0,
+          faceTilt: 0,
+          lidAmount: 0,
+          lidAngleLeft: 0,
+          lidAngleRight: 0,
+          squishAmount: 0,
+          stretchAmount: 0,
+          cuteMode: 0,
+          boredIntensity: 0,
+          curiousIntensity: 0,
+          tearfulIntensity: 0,
+          eyeOpenBoost: 0,
+          blinkClosedness: 0,
+          sleepLine: 0,
+          mouthSmile: 0,
+          mouthOpen: 0,
+          mouthStill: 0,
+          mouthWidthBias: 0,
+          lidOverride: null,
+          leftSizeBias: 0,
+          rightSizeBias: 0,
+          leftLidBias: 0,
+          rightLidBias: 0,
+        };
+
+        runtime.activeClips = runtime.activeClips.filter((clip) => {
+          if (now < clip.startAt) {
+            return true;
+          }
+          const elapsed = now - clip.startAt;
+          if (elapsed > clip.duration) {
+            return false;
+          }
+          const contribution = clip.sample(elapsed, clip.duration) || {};
+          Object.entries(contribution).forEach(([key, value]) => {
+            if (key === "blinkClosedness") {
+              overlay[key] = Math.max(overlay[key], value);
+            } else if (key === "lidOverride") {
+              overlay[key] = value;
+            } else {
+              overlay[key] += value;
+            }
+          });
+          return true;
+        });
+
+        return overlay;
+      }
+
+      // Pose composition and smoothing.
+      function buildTargetPose(now) {
+        const behavior = collectBehaviorOverlay(now);
+        const cute = clamp(state.expressionModifiers.cuteMode + behavior.cuteMode, 0, 1);
+        const bored = clamp(state.expressionModifiers.boredIntensity + behavior.boredIntensity, 0, 1);
+        const curious = clamp(state.expressionModifiers.curiousIntensity + behavior.curiousIntensity, 0, 1);
+        const tearful = clamp(state.expressionModifiers.tearfulIntensity + behavior.tearfulIntensity, 0, 1);
+        const squish = clamp(state.expressionModifiers.squishAmount + behavior.squishAmount, 0, 1);
+        const stretch = clamp(state.expressionModifiers.stretchAmount + behavior.stretchAmount, 0, 1);
+
+        const lookX = clamp(
+          state.expressionModifiers.lookX +
+          behavior.lookX +
+          runtime.micro.lookX +
+          (runtime.trap.vx * 0.12),
+          -1,
+          1
+        );
+        const lookY = clamp(
+          state.expressionModifiers.lookY +
+          behavior.lookY +
+          runtime.micro.lookY +
+          (runtime.trap.vy * 0.12),
+          -1,
+          1
+        );
+
+        const hasActiveClip = runtime.activeClips.length > 0;
+        const idleLidsHidden = !hasActiveClip;
+        const lidBase = idleLidsHidden
+          ? 0
+          : clamp(state.expressionModifiers.lidAmount + (bored * 0.40) - (behavior.eyeOpenBoost * 0.52), 0, 1);
+        const blink = clamp(behavior.blinkClosedness, 0, 1);
+        let lidLeft = clamp(lidBase + behavior.leftLidBias, 0, 1.35);
+        let lidRight = clamp(lidBase + behavior.rightLidBias, 0, 1.35);
+        if (typeof behavior.lidOverride === "number") {
+          lidLeft = behavior.lidOverride;
+          lidRight = behavior.lidOverride;
+        }
+
+        const stageScale = 1.18;
+        const faceScale = state.baseVisual.faceScale * stageScale * (1 + (cute * 0.06) + runtime.trap.scale);
+        const eyeBase = state.baseVisual.eyeSize * faceScale * (1 + (cute * 0.12) + (curious * 0.03));
+        const perspective = state.baseVisual.perspectiveIntensity;
+        const sizeLeft = eyeBase * (1 - (state.baseVisual.asymmetry * 0.05) + behavior.leftSizeBias - (Math.max(0, -lookX) * perspective));
+        const sizeRight = eyeBase * (1 + (state.baseVisual.asymmetry * 0.05) + behavior.rightSizeBias - (Math.max(0, lookX) * perspective));
+        const spacing = state.baseVisual.eyeSpacing * faceScale * (1 - (cute * 0.08));
+        const movementScale = state.timing.movementAmount;
+        const trapTravelX = runtime.trap.x * lerp(0.32, 1, state.timing.trapRoamAmount);
+        const trapTravelY = runtime.trap.y * lerp(0.28, 1, state.timing.trapRoamAmount);
+        const motionEnergy = clamp(
+          Math.abs(runtime.trap.vx) * 0.65 +
+          Math.abs(runtime.trap.vy) * 0.65 +
+          Math.abs(behavior.motionX) * 1.1 +
+          Math.abs(behavior.motionY) * 1.1,
+          0,
+          1
+        );
+
+        const impact = runtime.trap.impact * state.timing.bounceIntensity;
+        let impactSquashX = 0;
+        let impactSquashY = 0;
+        if (runtime.trap.impactAxis === "x") {
+          impactSquashX = impact * 0.20;
+          impactSquashY = -impact * 0.16;
+        } else {
+          impactSquashX = -impact * 0.14;
+          impactSquashY = impact * 0.18;
+        }
+
+        return {
+          faceScale,
+          spacing,
+          faceTilt: behavior.faceTilt,
+          eyeY: state.baseVisual.eyeY,
+          eyeXOffset: state.baseVisual.eyeXOffset,
+          motionX: (
+            behavior.motionX +
+            runtime.micro.x +
+            trapTravelX +
+            (lookX * state.timing.lookTravelAmount * 0.28)
+          ) * movementScale,
+          motionY: (
+            behavior.motionY +
+            runtime.micro.y +
+            trapTravelY +
+            (lookY * state.timing.lookTravelAmount * 0.18)
+          ) * movementScale,
+          lookX,
+          lookY,
+          lidLeft: clamp(lidLeft + blink, 0, 1.35),
+          lidRight: clamp(lidRight + blink, 0, 1.35),
+          lidAngleLeft: state.expressionModifiers.lidAngleLeft + behavior.lidAngleLeft - (bored * 0.06),
+          lidAngleRight: state.expressionModifiers.lidAngleRight + behavior.lidAngleRight + (bored * 0.06),
+          lidsEnabled: Boolean(state.expressionModifiers.lidsEnabled),
+          lidLift: state.expressionModifiers.lidLift,
+          lidInset: state.expressionModifiers.lidInset,
+          lidSoftness: state.expressionModifiers.lidSoftness,
+          cute,
+          bored,
+          curious,
+          tearful,
+          squish,
+          stretch,
+          mouthSmile: clamp(state.baseVisual.mouthCurveBias + behavior.mouthSmile, -1, 1),
+          mouthOpen: clamp(state.baseVisual.mouthOpenBias + behavior.mouthOpen, 0, 1),
+          mouthWidthBias: behavior.mouthWidthBias,
+          mouthTalk: state.timing.mouthAnimationAmount,
+          mouthStill: behavior.mouthStill > 0.25,
+          motionEnergy,
+          eyeSizeLeft: sizeLeft,
+          eyeSizeRight: sizeRight,
+          roundness: state.baseVisual.roundness,
+          ringShiftIntensity: state.baseVisual.ringShiftIntensity,
+          sleepLine: behavior.sleepLine,
+          impactSquashX,
+          impactSquashY,
+        };
+      }
+
+      function smoothPose(target, dt) {
+        if (!runtime.renderPose) {
+          runtime.renderPose = deepClone(target);
+          return runtime.renderPose;
+        }
+        const speed = lerp(18, 5, state.timing.motionSmoothing);
+        const chase = 1 - Math.exp(-dt * speed);
+        Object.keys(target).forEach((key) => {
+          runtime.renderPose[key] = typeof target[key] === "number"
+            ? lerp(runtime.renderPose[key], target[key], chase)
+            : target[key];
+        });
+        return runtime.renderPose;
+      }
+
+      // Rendering.
+      function resizeCanvas() {
+        const rect = DOM.canvas.getBoundingClientRect();
+        runtime.dpr = window.devicePixelRatio || 1;
+        runtime.width = Math.max(320, rect.width);
+        runtime.height = Math.max(220, rect.height);
+        DOM.canvas.width = Math.floor(runtime.width * runtime.dpr);
+        DOM.canvas.height = Math.floor(runtime.height * runtime.dpr);
+        ctx.setTransform(runtime.dpr, 0, 0, runtime.dpr, 0, 0);
+      }
+
+      function getBoxRect() {
+        const padding = clamp(state.baseVisual.outerBoxPadding, 0.02, 0.22);
+        return {
+          x: runtime.width * padding,
+          y: runtime.height * padding,
+          width: runtime.width * (1 - (padding * 2)),
+          height: runtime.height * (1 - (padding * 2)),
+          radius: state.baseVisual.outerBoxRadius,
+        };
+      }
+
+      function drawGlow(x, y, rx, ry, color, strength) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1, ry / Math.max(rx, 1));
+        ctx.globalCompositeOperation = "screen";
+        ctx.beginPath();
+        ctx.arc(0, 0, rx * 1.55, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.shadowBlur = rx * (0.60 + (strength * 1.10));
+        ctx.shadowColor = rgba(color, 0.30 * strength);
+        ctx.strokeStyle = rgba(color, 0.12 * strength);
+        ctx.lineWidth = rx * 0.92;
+        ctx.beginPath();
+        ctx.arc(0, 0, rx * 0.96, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.shadowBlur = rx * (1.10 + (strength * 1.30));
+        ctx.shadowColor = rgba(color, 0.14 * strength);
+        ctx.strokeStyle = rgba(color, 0.06 * strength);
+        ctx.lineWidth = rx * 1.40;
+        ctx.beginPath();
+        ctx.arc(0, 0, rx * 1.06, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawOuterBox(box) {
+        if (!state.baseVisual.outerBoxEnabled) {
+          return;
+        }
+        const color = state.baseVisual.outerBoxColor;
+        const width = state.baseVisual.outerBoxWidth;
+
+        ctx.save();
+        ctx.strokeStyle = rgba(color, 0.22);
+        ctx.lineWidth = width + 10;
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = rgba(color, 0.22);
+        roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawEyeReflection(eye, clipRx, clipRy, mood) {
+        const reflectionActive = state.baseVisual.eyeReflectionEnabled || mood.tearful > 0.06;
+        if (!reflectionActive) {
+          return;
+        }
+
+        const cuteFrontBias = clamp(mood.cute * 1.2, 0, 1);
+        const alpha = clamp(state.baseVisual.eyeReflectionOpacity + (mood.tearful * 0.22), 0, 1);
+        const size = Math.max(2, Math.min(clipRx, clipRy) * state.baseVisual.eyeReflectionSize * (1 + (mood.tearful * 0.4)));
+        const facingOffsetX = clipRx * -0.06;
+        const facingOffsetY = clipRy * -0.22;
+        const trackedOffsetX = (state.baseVisual.eyeReflectionOffsetX * clipRx * 0.6) - (eye.lookX * clipRx * 0.16);
+        const trackedOffsetY = (state.baseVisual.eyeReflectionOffsetY * clipRy * 0.6) - (eye.lookY * clipRy * 0.10);
+        const offsetX = lerp(trackedOffsetX, facingOffsetX, cuteFrontBias);
+        const offsetY = lerp(trackedOffsetY, facingOffsetY, cuteFrontBias);
+
+        ctx.fillStyle = rgba("#ffffff", alpha);
+        ctx.beginPath();
+        ctx.arc(eye.x + offsetX, eye.y + offsetY, size, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = rgba("#ffffff", alpha * 0.55);
+        ctx.beginPath();
+        ctx.arc(eye.x + offsetX + (size * 0.9), eye.y + offsetY + (size * 0.75), Math.max(1, size * 0.42), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawLidOverlay(eye, clipRx, clipRy, mood) {
+        const shouldShowLids = eye.cover > 0.01 && (mood.lidsEnabled || eye.cover > 0.92);
+        if (!shouldShowLids) {
+          return;
+        }
+
+        const lidColor = state.baseVisual.lidColor || state.baseVisual.eyeColor;
+        const inset = clamp(mood.lidInset, 0, 1);
+        const softness = clamp(mood.lidSoftness, 0, 1);
+        const sideInset = clipRx * (0.03 + (inset * 0.18));
+        const topBase = eye.y - clipRy + (eye.cover * clipRy * 2.04) + (mood.lidLift * clipRy * 0.10);
+        const angleShift = eye.lidAngle * clipRy * 0.18;
+        const leftX = eye.x - clipRx + sideInset;
+        const rightX = eye.x + clipRx - sideInset;
+        const crest = clipRy * (0.06 + (softness * 0.10));
+
+        ctx.save();
+        ellipsePath(ctx, eye.x, eye.y, clipRx, clipRy);
+        ctx.clip();
+
+        if (softness > 0.01 && eye.cover < 0.97) {
+          ctx.strokeStyle = rgba(lidColor, 0.08 + (softness * 0.08));
+          ctx.lineWidth = clipRy * (0.26 + (softness * 0.16));
+          ctx.beginPath();
+          ctx.moveTo(leftX, topBase + angleShift);
+          ctx.quadraticCurveTo(eye.x, topBase - crest, rightX, topBase - angleShift);
+          ctx.stroke();
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(eye.x - clipRx * 1.6, eye.y - clipRy * 1.6);
+        ctx.lineTo(eye.x + clipRx * 1.6, eye.y - clipRy * 1.6);
+        ctx.lineTo(eye.x + clipRx * 1.6, topBase - angleShift);
+        ctx.quadraticCurveTo(eye.x, topBase - crest, eye.x - clipRx * 1.6, topBase + angleShift);
+        ctx.closePath();
+        if (state.baseVisual.lidGradientEnabled) {
+          const gradient = ctx.createLinearGradient(eye.x, eye.y - clipRy, eye.x, eye.y + clipRy);
+          gradient.addColorStop(0, rgba(lidColor, 0.98));
+          gradient.addColorStop(1, rgba(lidColor, 0.68 + (state.baseVisual.gradientStrength * 0.24)));
+          ctx.fillStyle = gradient;
+        } else {
+          ctx.fillStyle = lidColor;
+        }
+        ctx.fill();
+
+        ctx.restore();
+
+        if (eye.cover > 0.94) {
+          ctx.strokeStyle = lidColor;
+          ctx.lineWidth = Math.max(3, state.baseVisual.outlineThickness * 0.40);
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(eye.x - clipRx * 0.88, eye.y);
+          ctx.lineTo(eye.x + clipRx * 0.88, eye.y);
+          ctx.stroke();
+        }
+      }
+
+      function drawEye(eye) {
+        const color = state.baseVisual.eyeColor;
+        const background = state.baseVisual.backgroundColor;
+        const thickness = state.baseVisual.outlineThickness;
+        const fillMode = state.baseVisual.fillMode;
+
+        if (state.baseVisual.glowEnabled) {
+          drawGlow(eye.x, eye.y, eye.rx, eye.ry, color, state.baseVisual.glowIntensity);
+        }
+
+        if (fillMode === "filled") {
+          if (state.baseVisual.eyeGradientEnabled) {
+            const gradient = ctx.createLinearGradient(eye.x - eye.rx, eye.y - eye.ry, eye.x + eye.rx, eye.y + eye.ry);
+            gradient.addColorStop(0, rgba(color, 0.95));
+            gradient.addColorStop(1, rgba(color, 0.70 + (state.baseVisual.gradientStrength * 0.20)));
+            ctx.fillStyle = gradient;
+          } else {
+            ctx.fillStyle = color;
+          }
+          ellipsePath(ctx, eye.x, eye.y, eye.rx, eye.ry);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = color;
+          ellipsePath(ctx, eye.x, eye.y, eye.rx, eye.ry);
+          ctx.fill();
+        }
+
+        const ringInset = fillMode === "outlined"
+          ? Math.max(4, thickness)
+          : Math.max(4, thickness * 0.42);
+        const clipRx = Math.max(4, eye.rx - ringInset);
+        const clipRy = Math.max(4, eye.ry - ringInset);
+        const shift = state.baseVisual.ringShiftIntensity;
+        const maxOffsetX = Math.max(0, clipRx * 0.34);
+        const maxOffsetY = Math.max(0, clipRy * 0.26);
+        const offsetX = eye.lookX * maxOffsetX * shift;
+        const offsetY = eye.lookY * maxOffsetY * shift;
+        ctx.save();
+        ellipsePath(ctx, eye.x, eye.y, clipRx, clipRy);
+        ctx.clip();
+        ctx.fillStyle = background;
+        ellipsePath(ctx, eye.x + offsetX, eye.y + offsetY, clipRx, clipRy);
+        ctx.fill();
+        drawEyeReflection(eye, clipRx, clipRy, eye.mood);
+        ctx.restore();
+
+        if (fillMode === "outlined") {
+          ctx.strokeStyle = state.baseVisual.eyeGradientEnabled
+            ? (() => {
+              const gradient = ctx.createLinearGradient(eye.x - eye.rx, eye.y - eye.ry, eye.x + eye.rx, eye.y + eye.ry);
+              gradient.addColorStop(0, rgba(color, 0.92));
+              gradient.addColorStop(1, rgba(color, 0.72 + (state.baseVisual.gradientStrength * 0.22)));
+              return gradient;
+            })()
+            : color;
+          ctx.lineWidth = Math.max(2, thickness);
+          ellipsePath(ctx, eye.x, eye.y, eye.rx - (ctx.lineWidth / 2), eye.ry - (ctx.lineWidth / 2));
+          ctx.stroke();
+        }
+
+        const lidInset = fillMode === "outlined"
+          ? Math.max(4, thickness)
+          : 3;
+        drawLidOverlay(
+          eye,
+          Math.max(4, eye.rx - lidInset),
+          Math.max(4, eye.ry - lidInset),
+          eye.mood
+        );
+
+        if (eye.mood.sleepLine > 0.82) {
+          ctx.strokeStyle = state.baseVisual.backgroundColor;
+          ctx.lineWidth = Math.max(3, thickness * 0.34);
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(eye.x - clipRx * 0.88, eye.y);
+          ctx.lineTo(eye.x + clipRx * 0.88, eye.y);
+          ctx.stroke();
+        }
+      }
+
+      function drawMouth(centerX, eyeCenterY, mood, now) {
+        if (!state.baseVisual.mouthEnabled || state.baseVisual.mouthStyle === "none") {
+          return;
+        }
+
+        const color = state.baseVisual.eyeColor;
+        const faceScale = mood.faceScale;
+        const width = runtime.width * state.baseVisual.mouthWidth * 0.5 * faceScale;
+        const y = eyeCenterY + (runtime.height * state.baseVisual.mouthY * (0.8 + (faceScale * 0.2)));
+        const thickness = state.baseVisual.mouthThickness * faceScale;
+        const smileBias = clamp(
+          state.baseVisual.mouthCurveBias +
+          (mood.cute * 0.62) -
+          (mood.bored * 0.72) +
+          (mood.curious * 0.10) +
+          mood.mouthSmile,
+          -1,
+          1
+        );
+        const expressiveEnergy = clamp((runtime.activeClips.length ? 0.36 : 0.10) + (mood.motionEnergy * 0.84), 0, 1);
+        const talkingEnergy = clamp(state.timing.mouthAnimationAmount * expressiveEnergy, 0, 1);
+        const slowPhase = now * lerp(1.3, 2.4, state.timing.idleIntensity);
+        const fastPhase = now * lerp(4.2, 7.5, talkingEnergy);
+        const slowWave = (Math.sin(slowPhase) * 0.5) + 0.5;
+        const fastWave = (Math.sin(fastPhase) * 0.5) + 0.5;
+        const waveMix = Math.max(slowWave * 0.18, fastWave * talkingEnergy * 0.62);
+        const openAmount = clamp(state.baseVisual.mouthOpenBias + mood.mouthOpen + waveMix, 0, 1);
+        const widthScale = clamp(1 - (mood.bored * 0.22) + (mood.cute * 0.08) + (mood.curious * 0.06) + (openAmount * 0.18) + (mood.mouthWidthBias || 0), 0.55, 1.45);
+        const mouthWidth = width * widthScale;
+        const animateMouth = runtime.activeClips.length > 0 && !mood.mouthStill;
+
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = thickness;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        if (state.baseVisual.glowEnabled) {
+          ctx.strokeStyle = rgba(color, state.baseVisual.glowIntensity * 0.16);
+          ctx.lineWidth = thickness + 12;
+          ctx.beginPath();
+          ctx.moveTo(centerX - mouthWidth, y);
+          ctx.lineTo(centerX + mouthWidth, y);
+          ctx.stroke();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = thickness;
+        }
+
+        if (state.baseVisual.mouthMotionStyle === "signal-pill" && animateMouth && talkingEnergy > 0.16) {
+          const pillHeight = Math.max(thickness * 1.25, 16 + (openAmount * 18 * faceScale));
+          roundedRectPath(ctx, centerX - mouthWidth, y - (pillHeight / 2), mouthWidth * 2, pillHeight, pillHeight / 2);
+          ctx.stroke();
+          const bars = 4;
+          const gap = (mouthWidth * 1.4) / (bars - 1);
+          for (let index = 0; index < bars; index += 1) {
+            const x = centerX - (mouthWidth * 0.7) + (gap * index);
+            const localPhase = fastPhase + (index * 0.75);
+            const barHeight = 3 + ((Math.sin(localPhase) * 0.5 + 0.5) * pillHeight * 0.46);
+            ctx.beginPath();
+            ctx.moveTo(x, y - (barHeight / 2));
+            ctx.lineTo(x, y + (barHeight / 2));
+            ctx.stroke();
+          }
+          return;
+        }
+
+        if (state.baseVisual.mouthMotionStyle === "sine-wave" && animateMouth) {
+          const waveWidth = mouthWidth * 1.65;
+          const amplitude = Math.max(2, (3 + (slowWave * 3) + (talkingEnergy * 8) + (openAmount * 8 * faceScale)));
+          ctx.beginPath();
+          for (let step = 0; step <= 24; step += 1) {
+            const t = step / 24;
+            const x = centerX - (waveWidth / 2) + (t * waveWidth);
+            const activePhase = talkingEnergy > 0.14 ? fastPhase : slowPhase;
+            const yOffset = Math.sin((t * Math.PI * 2) + activePhase) * amplitude * 0.42;
+            if (step === 0) {
+              ctx.moveTo(x, y + yOffset);
+            } else {
+              ctx.lineTo(x, y + yOffset);
+            }
+          }
+          ctx.stroke();
+          return;
+        }
+
+        if (state.baseVisual.mouthStyle === "flat-line") {
+          if (openAmount > 0.12) {
+            const height = Math.max(thickness * 0.9, 10 + (openAmount * 24 * faceScale));
+            roundedRectPath(ctx, centerX - mouthWidth, y - (height / 2), mouthWidth * 2, height, height / 2);
+            ctx.stroke();
+            return;
+          }
+          ctx.beginPath();
+          ctx.moveTo(centerX - mouthWidth, y);
+          ctx.lineTo(centerX + mouthWidth, y);
+          ctx.stroke();
+          return;
+        }
+
+        if (state.baseVisual.mouthStyle === "tiny-dash") {
+          const dashWidth = Math.max(8, mouthWidth * 0.58);
+          if (animateMouth && openAmount > 0.10) {
+            const height = Math.max(thickness * 0.8, 8 + (openAmount * 20 * faceScale));
+            roundedRectPath(ctx, centerX - dashWidth, y - (height / 2), dashWidth * 2, height, height / 2);
+            ctx.stroke();
+            return;
+          }
+          ctx.beginPath();
+          ctx.moveTo(centerX - dashWidth, y);
+          ctx.lineTo(centerX + dashWidth, y);
+          ctx.stroke();
+          return;
+        }
+
+        const radius = Math.max(12, mouthWidth * 0.58);
+        const arcHeight = Math.max(8, 20 + (Math.abs(smileBias) * 14) + (openAmount * 18));
+        ctx.beginPath();
+        if (smileBias >= 0) {
+          ctx.arc(centerX, y - arcHeight * 0.12, radius, 0.18 * Math.PI, 0.82 * Math.PI, false);
+        } else {
+          ctx.arc(centerX, y + arcHeight * 0.48, radius, 1.18 * Math.PI, 1.82 * Math.PI, false);
+        }
+        ctx.stroke();
+
+        if (animateMouth && openAmount > 0.18) {
+          const mouthHeight = Math.max(6, openAmount * 26 * faceScale);
+          roundedRectPath(ctx, centerX - (mouthWidth * 0.42), y - (mouthHeight * 0.28), mouthWidth * 0.84, mouthHeight, mouthHeight / 2);
+          ctx.stroke();
+        }
+      }
+
+      function drawSparkle(anchorX, anchorY, mood, now) {
+        const sparkleActive = state.baseVisual.sparkleEnabled || mood.tearful > 0.05;
+        if (!sparkleActive) {
+          return;
+        }
+
+        const color = state.baseVisual.eyeColor;
+        const size = runtime.width * state.baseVisual.sparkleSize * (1 + (mood.tearful * 0.25));
+        const x = anchorX + (runtime.width * state.baseVisual.sparkleOffsetX);
+        const y = anchorY + (runtime.height * state.baseVisual.sparkleOffsetY);
+        const twinkle = 0.55 + (Math.sin(now * 7.2) * 0.18) + (mood.tearful * 0.18);
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.sin(now * 1.6) * 0.12);
+        ctx.strokeStyle = rgba(color, clamp(twinkle, 0.18, 1));
+        ctx.lineWidth = 3;
+        if (state.baseVisual.glowEnabled) {
+          ctx.strokeStyle = rgba(color, 0.24 * (1 + mood.tearful));
+          ctx.lineWidth = 10;
+          ctx.beginPath();
+          ctx.moveTo(-size, 0);
+          ctx.lineTo(size, 0);
+          ctx.moveTo(0, -size);
+          ctx.lineTo(0, size);
+          ctx.stroke();
+          ctx.strokeStyle = rgba(color, clamp(twinkle, 0.18, 1));
+          ctx.lineWidth = 3;
+        }
+        ctx.beginPath();
+        ctx.moveTo(-size, 0);
+        ctx.lineTo(size, 0);
+        ctx.moveTo(0, -size);
+        ctx.lineTo(0, size);
+        ctx.stroke();
+        ctx.fillStyle = rgba(color, 0.88);
+        ctx.beginPath();
+        ctx.arc(size * 0.82, size * 0.55, Math.max(2, size * 0.18), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawSleepAccents(centerX, centerY, pose, now) {
+        if (pose.sleepLine < 0.72) {
+          return;
+        }
+
+        const color = state.baseVisual.eyeColor;
+        const sleepAlpha = clamp((pose.sleepLine - 0.72) / 0.28, 0, 1);
+        const drift = (now * 18) % 22;
+        const zBaseX = centerX + (runtime.width * 0.10);
+        const zBaseY = centerY - (runtime.height * 0.06);
+
+        ctx.save();
+        ctx.fillStyle = rgba(color, 0.42 * sleepAlpha);
+        ctx.font = `${Math.round(runtime.width * 0.026)}px ui-rounded, "Trebuchet MS", sans-serif`;
+        ctx.fillText("z", zBaseX, zBaseY - drift);
+        ctx.globalAlpha = 0.82;
+        ctx.font = `${Math.round(runtime.width * 0.034)}px ui-rounded, "Trebuchet MS", sans-serif`;
+        ctx.fillText("z", zBaseX + 16, zBaseY - 20 - (drift * 0.78));
+        ctx.globalAlpha = 1;
+        ctx.font = `${Math.round(runtime.width * 0.044)}px ui-rounded, "Trebuchet MS", sans-serif`;
+        ctx.fillText("Z", zBaseX + 34, zBaseY - 44 - (drift * 0.54));
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(centerX + (runtime.width * 0.17), centerY - (runtime.height * 0.14));
+        ctx.rotate(Math.sin(now * 1.4) * 0.18);
+        const size = runtime.width * 0.012 * (0.8 + (sleepAlpha * 0.4));
+        ctx.strokeStyle = rgba(color, 0.55 * sleepAlpha);
+        ctx.lineWidth = 2.5;
+        if (state.baseVisual.glowEnabled) {
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = rgba(color, 0.26 * sleepAlpha);
+        }
+        ctx.beginPath();
+        ctx.moveTo(-size, 0);
+        ctx.lineTo(size, 0);
+        ctx.moveTo(0, -size);
+        ctx.lineTo(0, size);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawGuides(centerX, centerY, leftEye, rightEye) {
+        if (!state.meta.showGuides) {
+          return;
+        }
+
+        ctx.save();
+        ctx.strokeStyle = rgba("#49f4ff", 0.18);
+        ctx.lineWidth = 1;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(runtime.width / 2, 0);
+        ctx.lineTo(runtime.width / 2, runtime.height);
+        ctx.moveTo(0, centerY);
+        ctx.lineTo(runtime.width, centerY);
+        ctx.stroke();
+
+        const box = getBoxRect();
+        roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        [leftEye, rightEye].forEach((eye) => {
+          ctx.beginPath();
+          ctx.arc(eye.x, eye.y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = rgba("#49f4ff", 0.5);
+          ctx.fill();
+        });
+        ctx.restore();
+      }
+
+      function render(pose, now) {
+        const background = state.baseVisual.backgroundColor;
+        ctx.clearRect(0, 0, runtime.width, runtime.height);
+        ctx.fillStyle = background;
+        ctx.fillRect(0, 0, runtime.width, runtime.height);
+        const box = getBoxRect();
+        drawOuterBox(box);
+
+        const minDim = Math.min(runtime.width, runtime.height);
+        let centerX = (runtime.width / 2) + (state.baseVisual.eyeXOffset * minDim * 0.35) + (pose.motionX * minDim * 0.24);
+        let centerY = (runtime.height * 0.47) + (pose.eyeY * runtime.height) + (pose.motionY * minDim * 0.20);
+
+        const baseRadiusLeft = minDim * pose.eyeSizeLeft;
+        const baseRadiusRight = minDim * pose.eyeSizeRight;
+
+        const leftRx = baseRadiusLeft * (1 + (pose.squish * 0.22) - (pose.stretch * 0.08) - pose.impactSquashX);
+        const leftRy = (baseRadiusLeft * pose.roundness) * (1 - (pose.squish * 0.26) + (pose.stretch * 0.20) - pose.impactSquashY);
+        const rightRx = baseRadiusRight * (1 + (pose.squish * 0.22) - (pose.stretch * 0.08) - pose.impactSquashX);
+        const rightRy = (baseRadiusRight * pose.roundness) * (1 - (pose.squish * 0.26) + (pose.stretch * 0.20) - pose.impactSquashY);
+
+        const spacingPx = minDim * pose.spacing;
+        const lookOffsetXLeft = pose.lookX * leftRx * 0.52;
+        const lookOffsetXRight = pose.lookX * rightRx * 0.52;
+        const lookOffsetYLeft = pose.lookY * leftRy * 0.48;
+        const lookOffsetYRight = pose.lookY * rightRy * 0.48;
+        const eyeExtentX = Math.max(leftRx, rightRx) + (spacingPx / 2) + 18;
+        const mouthGuard = state.baseVisual.mouthEnabled
+          ? (runtime.height * state.baseVisual.mouthY * pose.faceScale) + 26
+          : 18;
+        const topGuard = Math.max(leftRy, rightRy) + 20;
+        centerX = clamp(centerX, box.x + eyeExtentX, box.x + box.width - eyeExtentX);
+        centerY = clamp(centerY, box.y + topGuard, box.y + box.height - mouthGuard);
+
+        const leftEye = {
+          x: centerX - (spacingPx / 2) + lookOffsetXLeft,
+          y: centerY + lookOffsetYLeft,
+          rx: Math.max(10, leftRx),
+          ry: Math.max(10, leftRy),
+          cover: clamp(pose.lidLeft, 0, 1.25),
+          lidAngle: pose.lidAngleLeft,
+          lookX: pose.lookX,
+          lookY: pose.lookY,
+          mood: pose,
+        };
+        const rightEye = {
+          x: centerX + (spacingPx / 2) + lookOffsetXRight,
+          y: centerY + lookOffsetYRight,
+          rx: Math.max(10, rightRx),
+          ry: Math.max(10, rightRy),
+          cover: clamp(pose.lidRight, 0, 1.25),
+          lidAngle: pose.lidAngleRight,
+          lookX: pose.lookX,
+          lookY: pose.lookY,
+          mood: pose,
+        };
+
+        drawGuides(centerX, centerY, leftEye, rightEye);
+        ctx.save();
+        if (Math.abs(pose.faceTilt) > 0.0001) {
+          ctx.translate(centerX, centerY);
+          ctx.rotate(pose.faceTilt);
+          ctx.translate(-centerX, -centerY);
+        }
+        drawEye(leftEye);
+        drawEye(rightEye);
+        drawMouth(centerX, centerY, pose, now);
+        drawSparkle(rightEye.x, rightEye.y, pose, now);
+        drawSleepAccents(centerX, centerY, pose, now);
+        ctx.restore();
+      }
+
+      // Export and persistence.
+      function buildCurrentState() {
+        return {
+          baseVisual: deepClone(state.baseVisual),
+          expressionModifiers: deepClone(state.expressionModifiers),
+          motionModifiers: deepClone(state.motionModifiers),
+          timing: deepClone(state.timing),
+          meta: deepClone(state.meta),
+        };
+      }
+
+      function summarizeSavedState(savedState) {
+        const parts = [];
+        const fill = savedState.state.baseVisual.fillMode === "outlined" ? "outlined rings" : "filled eyes";
+        parts.push(fill);
+        if (savedState.state.expressionModifiers.boredIntensity > 0.45) {
+          parts.push("deadpan");
+        }
+        if (savedState.state.expressionModifiers.curiousIntensity > 0.45) {
+          parts.push("curious");
+        }
+        if (savedState.state.expressionModifiers.cuteMode > 0.45) {
+          parts.push("cute");
+        }
+        if (savedState.state.expressionModifiers.tearfulIntensity > 0.4 || savedState.state.baseVisual.sparkleEnabled) {
+          parts.push("sparkle accent");
+        }
+        return parts.join(", ");
+      }
+
+      function generateDesignBrief() {
+        const current = buildCurrentState();
+        const adjectives = [];
+        if (current.expressionModifiers.boredIntensity > 0.45) adjectives.push("deadpan");
+        if (current.expressionModifiers.curiousIntensity > 0.45) adjectives.push("curious");
+        if (current.expressionModifiers.cuteMode > 0.42) adjectives.push("cute but still robotic");
+        if (current.timing.masterSpeed > 1.12) adjectives.push("snappy");
+        if (current.timing.overshootAmount > 0.35 || current.timing.bounceIntensity > 0.45) adjectives.push("playful");
+        if (current.motionModifiers.trappedMode) adjectives.push("box-trapped");
+        if (adjectives.length === 0) adjectives.push("minimal", "slightly bored", "readable");
+
+        const visualFill = current.baseVisual.fillMode === "outlined" ? "outlined eye rings" : "filled circular eyes";
+        const glowText = current.baseVisual.glowEnabled
+          ? "Glow is enabled with a subtle neon intensity around " + current.baseVisual.glowIntensity.toFixed(2) + "."
+          : "Glow is disabled; keep the look flatter and more graphic.";
+        const mouthText = current.baseVisual.mouthEnabled
+          ? "Mouth is enabled in `" + current.baseVisual.mouthStyle + "` mode with `" + current.baseVisual.mouthMotionStyle + "` speaking motion."
+          : "Mouth is currently disabled.";
+        const boxText = current.baseVisual.outerBoxEnabled
+          ? "A visible outer box is enabled with width " + current.baseVisual.outerBoxWidth + " and rounding " + current.baseVisual.outerBoxRadius + "."
+          : "The outer box is hidden, but bounded movement can still be used internally.";
+        const idleText = current.motionModifiers.idleEnabled
+          ? "Idle is enabled with frequency " + current.timing.idleFrequency.toFixed(2) + " and intensity " + current.timing.idleIntensity.toFixed(2) + ". It should favor stillness, then quick bursts, then stillness again."
+          : "Idle is disabled right now; behavior is intended to be triggered manually.";
+        const motionFeel = [
+          current.timing.masterSpeed > 1.08 ? "fast and energetic" : "measured but responsive",
+          current.timing.overshootAmount > 0.32 ? "with visible overshoot" : "with restrained overshoot",
+          current.timing.motionSmoothing > 0.38 ? "and a slightly cushioned settle" : "and a crisp return to readable positions",
+        ].join(" ");
+        const savedSummary = state.savedStates.length
+          ? state.savedStates.map((savedState) => "- " + savedState.name + ": " + (savedState.notes || summarizeSavedState(savedState))).join("\n")
+          : "- No saved states yet.";
+
+        return [
+          "Robot Face Design Brief",
+          "",
+          "State name: " + (current.meta.currentStateName || "Untitled State"),
+          "Active preset: " + (current.meta.currentPresetName || "Custom"),
+          "",
+          "Personality target:",
+          "- " + adjectives.join(", "),
+          "",
+          "Visual style:",
+          "- Use a pitch-black screen with " + visualFill + ".",
+          "- Eye color is " + current.baseVisual.eyeColor + " on background " + current.baseVisual.backgroundColor + ".",
+          "- Face scale is " + current.baseVisual.faceScale.toFixed(2) + " with roundness " + current.baseVisual.roundness.toFixed(2) + ".",
+          "- Eye spacing is " + current.baseVisual.eyeSpacing.toFixed(3) + " and eye size is " + current.baseVisual.eyeSize.toFixed(3) + ".",
+          "- Ring shift intensity is " + current.baseVisual.ringShiftIntensity.toFixed(2) + " and perspective intensity is " + current.baseVisual.perspectiveIntensity.toFixed(2) + ".",
+          "- " + glowText,
+          "- " + boxText,
+          "- " + mouthText,
+          current.baseVisual.sparkleEnabled || current.expressionModifiers.tearfulIntensity > 0.1
+            ? "- Sparkle layer is part of the expression language and should stay stylized rather than emotional-realistic."
+            : "- Sparkles are optional and should stay minimal when used.",
+          current.baseVisual.eyeReflectionEnabled
+            ? "- Eye reflections are enabled and should stay subtle, graphic, and readable."
+            : "- Eye reflections are optional and should stay understated when used.",
+          "",
+          "Expression bias:",
+          "- Lid amount " + current.expressionModifiers.lidAmount.toFixed(2) + " with left/right lid angles " + current.expressionModifiers.lidAngleLeft.toFixed(2) + " / " + current.expressionModifiers.lidAngleRight.toFixed(2) + ".",
+          "- Lids are " + (current.expressionModifiers.lidsEnabled ? "enabled" : "disabled") + " with lift " + current.expressionModifiers.lidLift.toFixed(2) + ", inset " + current.expressionModifiers.lidInset.toFixed(2) + ", softness " + current.expressionModifiers.lidSoftness.toFixed(2) + ".",
+          "- Cute mode " + current.expressionModifiers.cuteMode.toFixed(2) + ", bored intensity " + current.expressionModifiers.boredIntensity.toFixed(2) + ", curious intensity " + current.expressionModifiers.curiousIntensity.toFixed(2) + ".",
+          "- Default look direction is X " + current.expressionModifiers.lookX.toFixed(2) + ", Y " + current.expressionModifiers.lookY.toFixed(2) + ".",
+          "- Use subtle asymmetry around " + current.baseVisual.asymmetry.toFixed(2) + " to keep the face from feeling sterile.",
+          "",
+          "Motion philosophy:",
+          "- Movement should feel " + motionFeel + ".",
+          "- Blink speed is " + current.timing.blinkSpeed.toFixed(3) + " seconds with a hold of " + current.timing.blinkHoldDuration.toFixed(3) + " seconds.",
+          "- Emotion holds range from " + current.timing.emotionHoldMin.toFixed(2) + " to " + current.timing.emotionHoldMax.toFixed(2) + " seconds.",
+          "- Randomness amount is " + current.timing.randomnessAmount.toFixed(2) + " and bounce intensity is " + current.timing.bounceIntensity.toFixed(2) + ".",
+          "- Overall movement amount is " + current.timing.movementAmount.toFixed(2) + " with look-travel " + current.timing.lookTravelAmount.toFixed(2) + " and roam amount " + current.timing.trapRoamAmount.toFixed(2) + ".",
+          current.motionModifiers.trappedMode
+            ? "- Trapped-in-box mode is enabled. Preserve readable recovery after each swoosh or edge bounce."
+            : "- Trapped-in-box mode is optional, but quick bounded swooshes should remain available.",
+          "",
+          "Idle character:",
+          "- " + idleText,
+          current.timing.secondaryMicroMotion
+            ? "- Secondary micro-motion is enabled, so tiny non-floaty adjustments should support liveliness."
+            : "- Secondary micro-motion is disabled, so personality should come mostly from explicit bursts and holds.",
+          "",
+          "Current state notes:",
+          current.meta.currentStateNotes || "- No extra notes.",
+          "",
+          "Saved states:",
+          savedSummary,
+        ].join("\n");
+      }
+
+      function buildFullExport() {
+        return {
+          schemaVersion: SCHEMA_VERSION,
+          currentState: buildCurrentState(),
+          savedStates: state.savedStates.map((savedState) => deepClone(savedState)),
+          activePresetName: state.meta.currentPresetName || "Custom",
+          designBrief: generateDesignBrief(),
+        };
+      }
+
+      function persistState() {
+        try {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(buildFullExport()));
+        } catch (error) {
+          console.warn("Failed to persist playground state:", error);
+        }
+      }
+
+      function updateBriefPreview() {
+        DOM.briefPreview.textContent = generateDesignBrief();
+      }
+
+      function applyImportedState(payload) {
+        const next = deepClone(DEFAULT_STATE);
+        mergePatch(next, payload);
+        state.baseVisual = next.baseVisual;
+        state.expressionModifiers = next.expressionModifiers;
+        state.motionModifiers = next.motionModifiers;
+        state.timing = next.timing;
+        state.meta = next.meta;
+      }
+
+      function applyJsonFromBuffer() {
+        try {
+          const parsed = JSON.parse(DOM.handoffBuffer.value);
+          if (parsed.currentState) {
+            applyImportedState(parsed.currentState);
+            state.savedStates = Array.isArray(parsed.savedStates) ? parsed.savedStates : state.savedStates;
+          } else if (parsed.state && parsed.state.baseVisual && parsed.state.expressionModifiers) {
+            applyImportedState(parsed.state);
+          } else if (parsed.baseVisual && parsed.expressionModifiers) {
+            applyImportedState(parsed);
+          } else {
+            throw new Error("JSON does not look like a playground export.");
+          }
+          selectedSavedStateId = null;
+          syncControlValues();
+          refreshUi();
+          flashToast("Applied JSON from the buffer.");
+        } catch (error) {
+          flashToast("Could not apply JSON: " + error.message);
+        }
+      }
+
+      // Saved states.
+      function saveCurrentSnapshot() {
+        const name = (DOM.stateNameInput.value || state.meta.currentStateName || "Untitled State").trim();
+        const notes = DOM.stateNotesInput.value.trim();
+        const savedState = {
+          id: uid(),
+          name,
+          notes,
+          state: buildCurrentState(),
+        };
+        state.savedStates.unshift(savedState);
+        selectedSavedStateId = savedState.id;
+        persistState();
+        renderSavedStates();
+        updateBriefPreview();
+        flashToast("Saved snapshot `" + name + "`.");
+      }
+
+      function updateSelectedSnapshot() {
+        if (!selectedSavedStateId) {
+          flashToast("Select a saved state first.");
+          return;
+        }
+        const savedState = state.savedStates.find((item) => item.id === selectedSavedStateId);
+        if (!savedState) {
+          flashToast("The selected saved state no longer exists.");
+          return;
+        }
+        savedState.name = (DOM.stateNameInput.value || savedState.name).trim();
+        savedState.notes = DOM.stateNotesInput.value.trim();
+        savedState.state = buildCurrentState();
+        persistState();
+        renderSavedStates();
+        updateBriefPreview();
+        flashToast("Updated `" + savedState.name + "`.");
+      }
+
+      function duplicateSelectedSnapshot() {
+        if (!selectedSavedStateId) {
+          flashToast("Select a saved state to duplicate.");
+          return;
+        }
+        const savedState = state.savedStates.find((item) => item.id === selectedSavedStateId);
+        if (!savedState) {
+          flashToast("The selected saved state no longer exists.");
+          return;
+        }
+        const copy = deepClone(savedState);
+        copy.id = uid();
+        copy.name = savedState.name + " copy";
+        state.savedStates.unshift(copy);
+        selectedSavedStateId = copy.id;
+        persistState();
+        renderSavedStates();
+        updateBriefPreview();
+        flashToast("Duplicated `" + savedState.name + "`.");
+      }
+
+      function deleteSelectedSnapshot() {
+        if (!selectedSavedStateId) {
+          flashToast("Select a saved state to delete.");
+          return;
+        }
+        const index = state.savedStates.findIndex((item) => item.id === selectedSavedStateId);
+        if (index === -1) {
+          flashToast("The selected saved state no longer exists.");
+          return;
+        }
+        const [removed] = state.savedStates.splice(index, 1);
+        selectedSavedStateId = null;
+        persistState();
+        renderSavedStates();
+        updateBriefPreview();
+        flashToast("Deleted `" + removed.name + "`.");
+      }
+
+      function applySavedState(savedState) {
+        applyImportedState(savedState.state);
+        state.meta.currentPresetName = savedState.state.meta.currentPresetName || "Saved State";
+        state.meta.currentStateName = savedState.name;
+        state.meta.currentStateNotes = savedState.notes || savedState.state.meta.currentStateNotes || "";
+        selectedSavedStateId = savedState.id;
+        runtime.activeClips = [];
+        syncControlValues();
+        refreshUi();
+        flashToast("Applied saved state `" + savedState.name + "`.");
+      }
+
+      function renderSavedStates() {
+        DOM.savedStateList.innerHTML = "";
+        if (!state.savedStates.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty-note";
+          empty.textContent = "No saved states yet. Tune the face, name it, add notes, and save a snapshot.";
+          DOM.savedStateList.append(empty);
+          return;
+        }
+
+        state.savedStates.forEach((savedState) => {
+          const card = document.createElement("div");
+          card.className = "saved-card" + (savedState.id === selectedSavedStateId ? " active" : "");
+
+          const head = document.createElement("div");
+          head.className = "saved-card-head";
+
+          const title = document.createElement("h3");
+          title.textContent = savedState.name;
+
+          const meta = document.createElement("span");
+          meta.className = "saved-meta";
+          meta.textContent = summarizeSavedState(savedState);
+          head.append(title, meta);
+          card.append(head);
+
+          const notes = document.createElement("p");
+          notes.textContent = savedState.notes || "No notes yet.";
+          card.append(notes);
+
+          const actions = document.createElement("div");
+          actions.className = "saved-actions";
+
+          const applyButton = document.createElement("button");
+          applyButton.textContent = "Apply";
+          applyButton.addEventListener("click", () => applySavedState(savedState));
+
+          const selectButton = document.createElement("button");
+          selectButton.textContent = "Select";
+          selectButton.addEventListener("click", () => {
+            selectedSavedStateId = savedState.id;
+            DOM.stateNameInput.value = savedState.name;
+            DOM.stateNotesInput.value = savedState.notes || "";
+            renderSavedStates();
+          });
+
+          const quickCopyButton = document.createElement("button");
+          quickCopyButton.textContent = "Copy JSON";
+          quickCopyButton.addEventListener("click", () => {
+            copyText(JSON.stringify(savedState, null, 2), "Copied saved state `" + savedState.name + "`.");
+          });
+
+          actions.append(applyButton, selectButton, quickCopyButton);
+          card.append(actions);
+          DOM.savedStateList.append(card);
+        });
+      }
+
+      // Presets and helpers.
+      function applyPreset(name) {
+        const patch = PRESETS[name];
+        if (!patch) {
+          return;
+        }
+        mergePatch(state, patch);
+        state.meta.currentPresetName = name;
+        state.meta.currentStateName = patch.meta && patch.meta.currentStateName ? patch.meta.currentStateName : name;
+        if (patch.meta && patch.meta.currentStateNotes) {
+          state.meta.currentStateNotes = patch.meta.currentStateNotes;
+        }
+        runtime.activeClips = [];
+        runtime.recentInteractionAt = performance.now() / 1000;
+        runtime.nextIdleAt = runtime.recentInteractionAt + 2.4;
+        syncControlValues();
+        refreshUi();
+        flashToast("Applied `" + name + "` preset.");
+      }
+
+      function randomizeSafeBounds() {
+        const eyeColors = ["#48f8ff", "#63f1ff", "#4cd6ff", "#7fe8ff"];
+        state.baseVisual.faceScale = randomIn(0.88, 1.14);
+        state.baseVisual.eyeSize = randomIn(0.155, 0.205);
+        state.baseVisual.eyeSpacing = randomIn(0.245, 0.325);
+        state.baseVisual.eyeY = randomIn(-0.10, 0.01);
+        state.baseVisual.eyeXOffset = randomIn(-0.04, 0.04);
+        state.baseVisual.fillMode = Math.random() > 0.28 ? "filled" : "outlined";
+        state.baseVisual.outlineThickness = Math.round(randomIn(8, 20));
+        state.baseVisual.innerCutout = randomIn(0.0, 0.48);
+        state.baseVisual.ringShiftIntensity = randomIn(0.08, 0.44);
+        state.baseVisual.perspectiveIntensity = randomIn(0.02, 0.22);
+        state.baseVisual.roundness = randomIn(0.92, 1.10);
+        state.baseVisual.asymmetry = randomIn(0.04, 0.28);
+        state.baseVisual.glowEnabled = Math.random() > 0.12;
+        state.baseVisual.glowIntensity = randomIn(0.34, 0.92);
+        state.baseVisual.eyeColor = eyeColors[Math.floor(Math.random() * eyeColors.length)];
+        state.baseVisual.lidColor = state.baseVisual.eyeColor;
+        state.baseVisual.backgroundColor = "#000000";
+        state.baseVisual.eyeGradientEnabled = Math.random() > 0.64;
+        state.baseVisual.lidGradientEnabled = Math.random() > 0.70;
+        state.baseVisual.gradientStrength = randomIn(0.05, 0.28);
+        state.baseVisual.mouthEnabled = Math.random() > 0.16;
+        state.baseVisual.mouthWidth = randomIn(0.08, 0.18);
+        state.baseVisual.mouthThickness = Math.round(randomIn(4, 12));
+        state.baseVisual.mouthY = randomIn(0.18, 0.27);
+        state.baseVisual.mouthStyle = ["flat-line", "tiny-dash", "small-curve", "none"][Math.floor(Math.random() * 4)];
+        state.baseVisual.mouthMotionStyle = ["smooth-open", "sine-wave", "signal-pill"][Math.floor(Math.random() * 3)];
+        state.baseVisual.mouthCurveBias = randomIn(-0.28, 0.32);
+        state.baseVisual.mouthOpenBias = randomIn(0.0, 0.22);
+        state.baseVisual.sparkleEnabled = Math.random() > 0.62;
+        state.baseVisual.sparkleSize = randomIn(0.025, 0.065);
+        state.baseVisual.sparkleOffsetX = randomIn(0.14, 0.23);
+        state.baseVisual.sparkleOffsetY = randomIn(-0.16, -0.02);
+        state.baseVisual.eyeReflectionEnabled = Math.random() > 0.45;
+        state.baseVisual.eyeReflectionSize = randomIn(0.04, 0.10);
+        state.baseVisual.eyeReflectionOffsetX = randomIn(-0.34, 0.05);
+        state.baseVisual.eyeReflectionOffsetY = randomIn(-0.40, -0.05);
+        state.baseVisual.eyeReflectionOpacity = randomIn(0.28, 0.74);
+        state.baseVisual.outerBoxEnabled = Math.random() > 0.58;
+        state.baseVisual.outerBoxColor = ["#164850", "#1a5f68", "#2f7480", "#2f6170"][Math.floor(Math.random() * 4)];
+        state.baseVisual.outerBoxWidth = Math.round(randomIn(4, 14));
+        state.baseVisual.outerBoxRadius = Math.round(randomIn(12, 46));
+        state.baseVisual.outerBoxPadding = randomIn(0.06, 0.14);
+        state.baseVisual.forwardBounceScale = randomIn(0.03, 0.12);
+
+        state.expressionModifiers.lidsEnabled = Math.random() > 0.08;
+        state.expressionModifiers.lidAmount = randomIn(0.04, 0.34);
+        state.expressionModifiers.lidAngleLeft = randomIn(-0.28, 0.12);
+        state.expressionModifiers.lidAngleRight = randomIn(-0.12, 0.28);
+        state.expressionModifiers.lidLift = randomIn(-0.18, 0.18);
+        state.expressionModifiers.lidInset = randomIn(0.08, 0.34);
+        state.expressionModifiers.lidSoftness = randomIn(0.18, 0.86);
+        state.expressionModifiers.squishAmount = randomIn(0.0, 0.24);
+        state.expressionModifiers.stretchAmount = randomIn(0.0, 0.28);
+        state.expressionModifiers.cuteMode = randomIn(0.0, 0.56);
+        state.expressionModifiers.boredIntensity = randomIn(0.0, 0.58);
+        state.expressionModifiers.curiousIntensity = randomIn(0.0, 0.68);
+        state.expressionModifiers.tearfulIntensity = state.baseVisual.sparkleEnabled ? randomIn(0.0, 0.54) : randomIn(0.0, 0.22);
+        state.expressionModifiers.lookX = randomIn(-0.26, 0.26);
+        state.expressionModifiers.lookY = randomIn(-0.24, 0.12);
+
+        state.timing.masterSpeed = randomIn(0.82, 1.32);
+        state.timing.easeInDuration = randomIn(0.05, 0.14);
+        state.timing.mainMoveDuration = randomIn(0.10, 0.24);
+        state.timing.easeOutDuration = randomIn(0.08, 0.16);
+        state.timing.overshootAmount = randomIn(0.10, 0.46);
+        state.timing.settleAmount = randomIn(0.12, 0.42);
+        state.timing.idleFrequency = randomIn(0.18, 0.58);
+        state.timing.idleIntensity = randomIn(0.12, 0.50);
+        state.timing.blinkSpeed = randomIn(0.07, 0.16);
+        state.timing.blinkHoldDuration = randomIn(0.01, 0.08);
+        state.timing.emotionHoldMin = randomIn(0.06, 0.30);
+        state.timing.emotionHoldMax = randomIn(0.35, 1.40);
+        state.timing.bounceIntensity = randomIn(0.18, 0.68);
+        state.timing.pauseRandomness = randomIn(0.14, 0.68);
+        state.timing.randomnessAmount = randomIn(0.10, 0.56);
+        state.timing.motionSmoothing = randomIn(0.12, 0.42);
+        state.timing.movementAmount = randomIn(0.22, 0.88);
+        state.timing.lookTravelAmount = randomIn(0.18, 0.72);
+        state.timing.trapRoamAmount = randomIn(0.26, 0.98);
+        state.timing.mouthAnimationAmount = randomIn(0.08, 0.68);
+        state.timing.secondaryMicroMotion = Math.random() > 0.16;
+        state.motionModifiers.trappedMode = Math.random() > 0.72;
+        state.motionModifiers.idleEnabled = true;
+        state.meta.currentPresetName = "Randomized Safe";
+        state.meta.currentStateName = "Randomized Safe";
+        state.meta.currentStateNotes = "Randomized within safe bounds for exploration. Keep what feels alive and throw away the rest.";
+
+        syncControlValues();
+        refreshUi();
+        flashToast("Randomized the face inside safe tuning bounds.");
+      }
+
+      function randomIn(min, max) {
+        return min + ((max - min) * Math.random());
+      }
+
+      function pickWeighted(items) {
+        const total = items.reduce((sum, item) => sum + item.weight, 0);
+        let cursor = Math.random() * total;
+        for (const item of items) {
+          cursor -= item.weight;
+          if (cursor <= 0) {
+            return item;
+          }
+        }
+        return items[items.length - 1];
+      }
+
+      function updateHeadings() {
+        DOM.presetBadge.textContent = state.meta.currentPresetName || "Custom";
+        DOM.stateBadge.textContent = state.meta.currentStateName || "Untitled State";
+        const activeBehavior = runtime.activeClips.length ? runtime.activeClips[0].name : (state.motionModifiers.idleEnabled ? "Idle is on" : "Idle is off");
+        DOM.activityBadge.textContent = activeBehavior;
+        DOM.statusTitle.textContent = state.meta.currentStateName || "Untitled State";
+        DOM.statusSummary.textContent = summarizeStateForHud();
+      }
+
+      function summarizeStateForHud() {
+        const parts = [];
+        parts.push(state.baseVisual.fillMode === "outlined" ? "Outlined eyes" : "Filled eyes");
+        if (state.expressionModifiers.boredIntensity > 0.4) parts.push("deadpan lids");
+        if (state.expressionModifiers.curiousIntensity > 0.4) parts.push("curious bias");
+        if (state.expressionModifiers.cuteMode > 0.4) parts.push("cute pressure");
+        if (state.baseVisual.glowEnabled) parts.push("glow on");
+        if (state.baseVisual.outerBoxEnabled) parts.push("outer box on");
+        if (state.motionModifiers.trappedMode) parts.push("trapped mode active");
+        return parts.join(", ") + ".";
+      }
+
+      function updateActivity(label) {
+        runtime.statusText = label;
+        runtime.statusUntil = (performance.now() / 1000) + 1.6;
+        DOM.activityBadge.textContent = label;
+      }
+
+      function markInteraction(label) {
+        runtime.recentInteractionAt = performance.now() / 1000;
+        runtime.nextIdleAt = runtime.recentInteractionAt + 1.8 + (Math.random() * 0.9);
+        if (label) {
+          updateActivity(label);
+        }
+      }
+
+      function syncControlValues() {
+        controlRegistry.forEach(({ field, input, valueEl }, path) => {
+          const value = getByPath(state, path);
+          if (field.type === "checkbox") {
+            input.checked = Boolean(value);
+          } else {
+            input.value = String(value);
+          }
+          if (valueEl) {
+            if (field.type === "color") {
+              valueEl.textContent = value;
+            } else if (field.type === "select") {
+              const match = field.options.find((option) => option.value === value);
+              valueEl.textContent = match ? match.label : value;
+            } else {
+              valueEl.textContent = field.format ? field.format(Number(value)) : String(value);
+            }
+          }
+        });
+        DOM.stateNameInput.value = state.meta.currentStateName || "";
+        DOM.stateNotesInput.value = state.meta.currentStateNotes || "";
+      }
+
+      function refreshUi() {
+        syncControlValues();
+        updateHeadings();
+        updateBriefPreview();
+        renderSavedStates();
+        persistState();
+      }
+
+      function flashToast(text) {
+        DOM.toastMessage.textContent = text;
+        window.clearTimeout(flashToast.timeoutId);
+        flashToast.timeoutId = window.setTimeout(() => {
+          DOM.toastMessage.textContent = "";
+        }, 2600);
+      }
+
+      function copyText(text, successMessage) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text)
+            .then(() => flashToast(successMessage))
+            .catch(() => fallbackCopy(text, successMessage));
+          return;
+        }
+        fallbackCopy(text, successMessage);
+      }
+
+      function fallbackCopy(text, successMessage) {
+        DOM.handoffBuffer.value = text;
+        DOM.handoffBuffer.focus();
+        DOM.handoffBuffer.select();
+        document.execCommand("copy");
+        flashToast(successMessage + " The buffer was also populated.");
+      }
+
+      function handleKeydown(event) {
+        const targetTag = event.target && event.target.tagName;
+        if (targetTag === "INPUT" || targetTag === "TEXTAREA" || targetTag === "SELECT") {
+          return;
+        }
+        if (event.repeat) {
+          return;
+        }
+        if (event.code === "Space") {
+          event.preventDefault();
+          if (event.shiftKey) {
+            triggerDoubleBlink();
+          } else {
+            triggerBlink();
+          }
+          return;
+        }
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          triggerLook(-0.92, 0, "Look left");
+          return;
+        }
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          triggerLook(0.92, 0, "Look right");
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          triggerLook(0, -0.92, "Look up");
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          triggerLook(0, 0.92, "Look down");
+          return;
+        }
+        const key = event.key.toLowerCase();
+        if (key === "a") triggerAttentionMode();
+        if (key === "b") triggerBoredHalfLid();
+        if (key === "c") triggerCuriousLook();
+        if (key === "t") triggerThinking();
+        if (key === "d") triggerDeadpanStare();
+        if (key === "s") triggerSurprise();
+        if (key === "x") triggerSleepyClose();
+        if (key === "r") resetToNeutral();
+      }
+
+      // Main loop.
+      function tick(nowMs) {
+        const now = nowMs / 1000;
+        const dt = clamp(now - runtime.lastTime, 1 / 240, 0.05);
+        runtime.lastTime = now;
+
+        updateIdleScheduler(now);
+        updateMicroMotion(now, dt);
+        updateTrapMotion(now, dt);
+
+        const targetPose = buildTargetPose(now);
+        const pose = smoothPose(targetPose, dt);
+        render(pose, now);
+
+        if (runtime.statusUntil && now > runtime.statusUntil) {
+          DOM.activityBadge.textContent = runtime.activeClips.length
+            ? runtime.activeClips[0].name
+            : (state.motionModifiers.idleEnabled ? "Idle is on" : "Idle is off");
+          runtime.statusUntil = 0;
+        }
+
+        requestAnimationFrame(tick);
+      }
+
+      buildControls();
+      buildButtons();
+      bindStaticUi();
+      resizeCanvas();
+      refreshUi();
+      requestAnimationFrame(tick);
+    })();
+  </script>
+</body>
+</html>
