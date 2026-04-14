@@ -204,11 +204,12 @@ def test_browser_service_publish_launch_sync_and_shutdown_helpers(monkeypatch) -
 
         recorded_commands: list[tuple[str, ...]] = []
 
-        async def fake_run_command(command: tuple[str, ...]) -> None:
+        service._display_blanked = False
+        async def fake_run_command(self, command: tuple[str, ...]) -> None:
+            del self
             recorded_commands.append(command)
 
-        service._display_blanked = False
-        service._run_command = fake_run_command  # type: ignore[assignment]
+        monkeypatch.setattr(BrowserFaceUiService, "_run_command", fake_run_command)
         await service._sync_display_power("sleep", True)
         await service._sync_display_power("face", False)
         await service._wait_for_command_task(service._sleep_command_task)
