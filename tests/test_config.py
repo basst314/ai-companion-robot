@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+import shared.config as config_mod
 from shared.config import load_app_config
+from shared.models import Language
 
 
 def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
@@ -383,3 +385,119 @@ def test_setup_script_help_is_available() -> None:
     assert "--tts-backend <mock|piper>" in result.stdout
     assert "--tts-languages <en,de,id>" in result.stdout
     assert "--skip-system-packages" in result.stdout
+
+
+def test_config_helper_parsers_cover_common_cases(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "# comment line",
+                "AI_COMPANION_FOO=bar",
+                "AI_COMPANION_QUOTED=' spaced value '",
+                "ignored line",
+            ]
+        )
+    )
+    local_file = tmp_path / ".env.local"
+    local_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_FOO=local",
+                "AI_COMPANION_LOCAL=from_local",
+            ]
+        )
+    )
+    monkeypatch.setenv("AI_COMPANION_FOO", "from_env")
+
+    parsed = config_mod._parse_env_file(env_file)
+    assert parsed == {"AI_COMPANION_FOO": "bar", "AI_COMPANION_QUOTED": " spaced value "}
+
+    merged = config_mod._load_environment(tmp_path)
+    assert merged["AI_COMPANION_FOO"] == "from_env"
+    assert merged["AI_COMPANION_LOCAL"] == "from_local"
+
+    assert config_mod._parse_bool(None, True) is True
+    assert config_mod._parse_bool("on", False) is True
+    assert config_mod._parse_int("7", 0) == 7
+    assert config_mod._parse_float("2.5", 0.0) == 2.5
+    assert config_mod._parse_csv_tuple("a|| b || c ", ()) == ("a", "b", "c")
+    assert config_mod._parse_command('aplay "{input_path}" --verbose', ()) == ("aplay", "{input_path}", "--verbose")
+    assert config_mod._parse_path("logs", Path("fallback")) == Path("logs")
+    assert config_mod._parse_optional_path("models/model.bin") == Path("models/model.bin")
+    assert config_mod._parse_optional_path("   ") is None
+    assert config_mod._parse_ui_backend("browser", "mock") == "browser"
+    assert config_mod._parse_browser_launch_mode("connect_only", "windowed") == "connect_only"
+    assert config_mod._parse_language("de", Language.ENGLISH) is Language.GERMAN
+    assert config_mod._parse_input_mode("speech", "manual") == "speech"
+    assert config_mod._parse_stt_backend("whisper_cpp", "mock") == "whisper_cpp"
+    assert config_mod._parse_speech_latency_profile("balanced", "fast") == "balanced"
+    assert config_mod._parse_language_mode("id", "auto") == "id"
+    assert config_mod._parse_tts_backend("piper", "mock") == "piper"
+    assert config_mod._parse_tts_audio_backend("alsa_persistent", "command") == "alsa_persistent"
+    assert config_mod._parse_piper_service_mode("external", "managed") == "external"
+
+
+def test_config_helper_defaults_and_validators(monkeypatch) -> None:
+    runtime = config_mod.RuntimeConfig()
+    config_mod._apply_speech_latency_profile(runtime)
+    assert runtime.speech_silence_seconds == 0.55
+    assert runtime.vad_end_trigger_frames == 4
+    assert runtime.wake_lookback_seconds == 0.5
+    assert runtime.utterance_tail_stable_polls == 1
+
+    runtime.speech_latency_profile = "balanced"
+    config_mod._apply_speech_latency_profile(runtime)
+    assert runtime.speech_silence_seconds == 1.2
+    assert runtime.vad_end_trigger_frames == 5
+    assert runtime.wake_lookback_seconds == 0.8
+    assert runtime.utterance_tail_stable_polls == 2
+
+    monkeypatch.setattr(config_mod.sys, "platform", "linux")
+    assert config_mod._default_tts_audio_backend(("aplay", "{input_path}")) == "alsa_persistent"
+    monkeypatch.setattr(config_mod.sys, "platform", "darwin")
+    assert config_mod._default_tts_audio_backend(("aplay", "{input_path}")) == "command"
+
+    with pytest.raises(ValueError, match="WAKE_WORD_PHRASE"):
+        config_mod._validate_runtime_config(
+            config_mod.RuntimeConfig(wake_word_enabled=True, wake_word_phrase="", wake_word_model="model")
+        )
+    with pytest.raises(ValueError, match="WAKE_WORD_MODEL"):
+        config_mod._validate_runtime_config(
+            config_mod.RuntimeConfig(wake_word_enabled=True, wake_word_phrase="Oreo", wake_word_model="")
+        )
+
+    cloud = config_mod.CloudConfig(enabled=True, provider_name="openai")
+    runtime = config_mod.RuntimeConfig(use_mock_ai=False)
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        config_mod._validate_cloud_config(cloud, runtime=runtime)
+
+    tts = config_mod.TtsConfig(
+        backend="piper",
+        audio_backend="alsa_persistent",
+        piper_base_url="",
+        default_voice_en="",
+        default_voice_de="",
+        default_voice_id="",
+        alsa_device="",
+        alsa_sample_rate=0,
+        alsa_period_frames=0,
+        alsa_buffer_frames=0,
+        alsa_keepalive_interval_ms=0,
+    )
+    with pytest.raises(ValueError, match="ALSA_DEVICE"):
+        config_mod._validate_tts_config(tts)
+
+    ui = config_mod.UiConfig(
+        idle_sleep_seconds=-1,
+        sleeping_eyes_grace_seconds=-1,
+        browser_host="",
+        browser_http_port=-1,
+        browser_ws_port=-1,
+        face_idle_frequency=-1,
+        face_idle_intensity=1.2,
+        face_idle_pause_randomness=1.2,
+        face_idle_behaviors=("blink", ""),
+    )
+    with pytest.raises(ValueError, match="UI_IDLE_SLEEP_SECONDS"):
+        config_mod._validate_ui_config(ui)

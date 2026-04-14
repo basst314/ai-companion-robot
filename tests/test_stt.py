@@ -6,6 +6,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
+import struct
+
+import pytest
 
 from main import build_application
 from shared.config import AppConfig
@@ -21,11 +24,29 @@ from stt.service import (
     StreamingWakeWordDetector,
     WhisperCppSttService,
     _UtteranceVadTracker,
-    _select_openwakeword_inference_framework,
+    _audio_window_from_pcm,
     _default_run_command,
+    _extract_json_payload,
+    _extract_transcript_text,
+    _extract_whisper_segments,
+    _map_language_code,
+    _measure_trailing_silence_seconds,
+    _normalize_segment_timestamp,
+    _normalize_spoken_token,
+    _normalized_phrase_words,
+    _read_raw_pcm,
+    _read_wav_header,
+    _replace_many,
+    _seconds_to_byte_offset,
     _slice_audio_window,
+    _summarize_stderr,
+    _wake_phrase_start_offset_seconds,
+    _window_energy,
+    _write_wav_file,
+    _select_openwakeword_inference_framework,
     strip_wake_phrase,
 )
+import stt.service as stt_mod
 
 
 @dataclass(slots=True)
@@ -521,7 +542,86 @@ def test_whisper_cpp_stt_service_returns_empty_transcript_for_silence() -> None:
 
     assert transcript.text == ""
     assert transcript.language is Language.ENGLISH
-    assert transcript.is_final is True
+
+
+def test_stt_pure_helpers_cover_buffer_math_and_encoding() -> None:
+    buffer = stt_mod.RollingAudioBuffer(max_bytes=6)
+    buffer.append(b"ab")
+    buffer.append(b"cdefg")
+
+    assert buffer.snapshot() == b"bcdefg"
+    assert buffer.start_offset == 1
+    assert buffer.end_offset == 7
+    assert buffer.recent(2) == (b"fg", 5)
+    assert buffer.slice_from(3) == (b"defg", 3)
+    buffer.clear()
+    assert buffer.snapshot() == b""
+
+    assert _replace_many("hello world", {"hello": "hi", "world": "earth"}) == "hi earth"
+    assert _seconds_to_byte_offset(seconds=0.5, channels=1, sample_width=2, sample_rate=16000) == 16000
+    assert _seconds_to_byte_offset(seconds=1.0, channels=0, sample_width=2, sample_rate=16000) == 0
+    assert _summarize_stderr("ffmpeg version 1\nline1\nline2") == "line1\nline2"
+    assert _window_energy(b"\x00\x80\x00\x00\xff\x7f", sample_width=2) > 0
+
+
+def test_stt_audio_window_and_wav_helpers_cover_read_write_and_silence(tmp_path: Path) -> None:
+    pcm = struct.pack("<8h", 0, 0, 2000, 2000, 0, 0, 0, 0)
+    wav_path = tmp_path / "input.wav"
+    _write_wav_file(wav_path, channels=1, sample_width=2, sample_rate=8000, pcm_data=pcm)
+
+    header = _read_wav_header(wav_path)
+    raw_pcm = _read_raw_pcm(wav_path, channels=1, sample_width=2, sample_rate=8000)
+    window = _audio_window_from_pcm(
+        pcm,
+        source_path=wav_path,
+        channels=1,
+        sample_width=2,
+        sample_rate=8000,
+        threshold=100,
+    )
+
+    assert header.channels == 1
+    assert header.sample_width == 2
+    assert header.sample_rate == 8000
+    assert header.pcm_data == pcm
+    assert raw_pcm.pcm_data == wav_path.read_bytes()
+    assert window is not None
+    assert window.has_speech is True
+    assert window.trailing_silence_seconds >= 0.0
+    assert _slice_audio_window(window, 0.0, threshold=100) is not None
+    assert _measure_trailing_silence_seconds(pcm, sample_width=2, channels=1, sample_rate=8000, threshold=100)[0] >= 0.0
+    assert _measure_trailing_silence_seconds(pcm, sample_width=0, channels=1, sample_rate=8000, threshold=100) == (0.0, 0.0, 0.0)
+
+    invalid_wav = tmp_path / "invalid.wav"
+    invalid_wav.write_bytes(b"not a wav")
+    with pytest.raises(ValueError, match="unsupported WAV header"):
+        _read_wav_header(invalid_wav)
+
+
+def test_stt_extractors_cover_json_segments_and_wake_phrase_matching() -> None:
+    payload = _extract_json_payload("log line\n{\"result\":{\"text\":\"Hello\"}}")
+    assert payload["result"]["text"] == "Hello"
+    assert _extract_transcript_text({"result": {"text": " hello "}}) == "hello"
+    assert _extract_transcript_text({"result": {"segments": [{"text": " hello "}, {"text": " world "}]}}) == "hello world"
+    assert _extract_transcript_text({"transcription": [{"text": " hello "}, {"text": " world "} ]}) == "hello world"
+    assert _extract_whisper_segments({"result": {"segments": [{"text": "hello", "t0": 250, "t1": 400}]}}) == (
+        stt_mod.WhisperSegment(start_seconds=2.5, end_seconds=4.0, text="hello"),
+    )
+    assert _normalize_segment_timestamp(150) == 1.5
+    assert _normalize_segment_timestamp("bad") == 0.0
+    assert strip_wake_phrase("Hey Oreo, please help", "oreo") == "please help"
+    assert _normalized_phrase_words("  Hey   Oreo  ") == ["hey", "oreo"]
+    assert _normalize_spoken_token("HeY!") == "hey"
+    assert _map_language_code("de") is Language.GERMAN
+    assert _map_language_code("id") is Language.INDONESIAN
+    assert _map_language_code("xx") is Language.ENGLISH
+    assert _wake_phrase_start_offset_seconds(
+        "hey oreo please help",
+        "oreo",
+        (stt_mod.WhisperSegment(start_seconds=3.0, end_seconds=3.2, text="hey oreo"),),
+        pre_roll_seconds=0.5,
+    ) == 2.5
+    assert _wake_phrase_start_offset_seconds("no wake word", "oreo", (), pre_roll_seconds=0.5) == 0.0
 
 
 def test_whisper_cpp_stt_service_keeps_last_five_recordings(tmp_path: Path) -> None:

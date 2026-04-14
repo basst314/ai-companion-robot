@@ -32,9 +32,28 @@ from tts.service import (
     QueuedTtsService,
     ResolvedSpeechRequest,
     build_piper_tts_service,
+    _apply_wav_fade_out,
+    _build_silent_wav,
+    _clamp_s16,
+    _convert_sample_width_to_s16,
+    _decode_pcm_frames,
+    _default_audio_play_command,
+    _downmix_stereo_to_mono,
+    _encode_pcm_s16,
     _extract_raw_pcm_audio,
+    _extract_wav_sample_rate,
+    _format_input_command,
+    _normalize_pcm_audio,
+    _RawPcmAudio,
+    _prepare_audio_for_alsa_playback,
+    _prepare_audio_for_playback,
+    _resample_interleaved_s16,
+    _reject_playback_futures,
+    _resolve_finished_future,
+    _resolve_started_future,
     _prepare_wav_bytes_for_playback,
 )
+import tts.service as tts_mod
 
 
 @dataclass(slots=True)
@@ -624,3 +643,83 @@ def test_piper_managed_process_shutdown_kills_stuck_process() -> None:
     assert process.terminate_calls == 1
     assert process.kill_calls == 1
     assert managed.process is None
+
+
+def test_tts_helper_functions_cover_commands_and_silent_wavs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_mod.sys, "platform", "darwin")
+    assert _default_audio_play_command() == ("afplay", "{input_path}")
+    monkeypatch.setattr(tts_mod.sys, "platform", "linux")
+    assert _default_audio_play_command() == ("aplay", "{input_path}")
+
+    input_path = Path("/tmp/audio.wav")
+    assert _format_input_command(("aplay", "{input_path}"), input_path) == ("aplay", "/tmp/audio.wav")
+    assert _format_input_command(("aplay", "--verbose"), input_path) == ("aplay", "--verbose", "/tmp/audio.wav")
+    with pytest.raises(RuntimeError, match="audio playback command is not configured"):
+        _format_input_command((), input_path)
+
+    silent = _build_silent_wav(duration_ms=25, sample_rate=8000)
+    with wave.open(io.BytesIO(silent), "rb") as wav_file:
+        assert wav_file.getframerate() == 8000
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+
+
+def test_tts_helper_functions_cover_pcm_and_wav_transforms() -> None:
+    source_wav = _build_test_wav([4000, -4000, 6000, -6000], sample_rate=8000)
+    prepared = _prepare_audio_for_playback(
+        SynthesizedAudio(audio_bytes=source_wav, mime_type="audio/wav", sample_rate_hz=8000, voice_id="v1")
+    )
+    raw_pcm = _extract_raw_pcm_audio(source_wav)
+    assert raw_pcm is not None
+    assert _prepare_audio_for_playback(
+        SynthesizedAudio(audio_bytes=b"raw-bytes", mime_type="application/octet-stream", sample_rate_hz=8000, voice_id="v1")
+    ).audio_bytes == b"raw-bytes"
+    assert prepared.audio_bytes != source_wav
+    assert _extract_raw_pcm_audio(b"not wav") is None
+    assert _extract_wav_sample_rate(source_wav) == 8000
+    assert _extract_wav_sample_rate(b"not wav") is None
+    assert _decode_pcm_frames(b"\x00\x80\xff\x7f", 2) == [-32768, 32767]
+    assert _downmix_stereo_to_mono([0, 1000, 2000, -2000]) == [500, 0]
+    assert _convert_sample_width_to_s16([1, -2], 1) == [1, -2]
+    assert _convert_sample_width_to_s16([1, -2], 4) == [1, -2]
+    with pytest.raises(RuntimeError, match="unsupported sample width"):
+        _convert_sample_width_to_s16([1], 3)
+    assert _resample_interleaved_s16([0, 1000, 2000, 3000], channels=2, source_rate_hz=8000, target_rate_hz=16000)
+    assert _encode_pcm_s16([0, 1, -1]) == b"\x00\x00\x01\x00\xff\xff"
+    assert _clamp_s16(50000) == 32767
+    assert _clamp_s16(-50000) == -32768
+    assert _apply_wav_fade_out(b"\x00\x10" * 20, channels=1, sample_width=2, sample_rate=8000, fade_out_ms=10) != b"\x00\x10" * 20
+    assert _prepare_audio_for_alsa_playback(
+        SynthesizedAudio(audio_bytes=source_wav, mime_type="audio/wav", sample_rate_hz=8000, voice_id="v1"),
+        target_sample_rate_hz=16000,
+        target_channels=1,
+    ) is not None
+    assert _normalize_pcm_audio(
+        _RawPcmAudio(pcm_frames=b"\x01\x00\x02\x00", channels=1, sample_width_bytes=2, sample_rate_hz=8000),
+        target_sample_rate_hz=8000,
+        target_channels=1,
+        add_lead_in=False,
+    ) is not None
+
+
+def test_tts_future_helpers_cover_resolution_and_rejection() -> None:
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        started = loop.create_future()
+        finished = loop.create_future()
+        result = PlaybackResult(duration_ms=42)
+
+        _resolve_started_future(started, True)
+        _resolve_started_future(started, False)
+        assert started.result() is True
+        _resolve_finished_future(started, finished, False, result)
+        assert finished.result() == result
+
+        started2 = loop.create_future()
+        finished2 = loop.create_future()
+        exc = RuntimeError("boom")
+        _reject_playback_futures(started2, finished2, exc)
+        assert started2.exception() is exc
+        assert finished2.exception() is exc
+
+    asyncio.run(run())
