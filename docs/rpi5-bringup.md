@@ -183,37 +183,11 @@ Then launch the full runtime:
 ## 8. Second Pass Hardware Bring-Up
 
 After the core runtime is working, move on to:
-- the small display for robot eyes and face rendering
+- the small display for robot eyes and face rendering in Chromium kiosk mode
 - the camera module
 - audio device tuning
 - wake-word threshold tuning on the Pi
 
 That keeps the first session focused on getting one stable working robot runtime before layering on extra hardware variables.
 
-### Display Diagnostics
-
-If the Pi display powers on but the robot face is not visible, run the standalone display diagnostic:
-
-```bash
-cd ~/ai-companion-robot
-.venv/bin/python scripts/test-display-diagnostics.py --driver kmsdrm
-```
-
-This script:
-- prints SDL/display environment details in the terminal
-- cycles through solid-color fullscreen scenes, a grid, a circle, and simple robot eyes
-- lets you press `space` to advance, `left` to go back, `s` to save screenshots, and `q` to quit
-
-For a windowed test instead of fullscreen:
-
-```bash
-.venv/bin/python scripts/test-display-diagnostics.py --no-fullscreen --size 800x480
-```
-
-If the SDL/KMS test still blanks the screen, run the direct framebuffer fallback instead:
-
-```bash
-.venv/bin/python scripts/test-fb0-display.py --cycles 1
-```
-
-That script writes straight to `/dev/fb0`, which matches the boot-console display path. If this one is visible while the SDL test is black, the panel itself is fine and the remaining issue is specifically the SDL/KMS presentation path.
+If the display is blank, verify that `scripts/start-robot.sh` launched Chromium successfully and that the browser bridge is running. The legacy SDL/framebuffer diagnostics have been retired with the older UI renderers, so Chromium kiosk startup is now the supported path to inspect first.

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import random
 
-import pytest
-
 from shared.events import Event, EventName
 from shared.models import ComponentName
-from ui.face import SUPPORTED_FACE_THEME_NAMES, FaceController, build_face_theme
+from ui.face import FaceController, build_face_theme
 
 
 def _make_controller(*, idle_sleep_seconds: float = 30.0, grace_seconds: float = 8.0) -> FaceController:
@@ -102,17 +100,10 @@ def test_face_controller_speaking_animation_follows_tts_events() -> None:
     assert post_speaking_frame.expression == "responding"
 
 
-def test_build_face_theme_supports_multiple_personalities() -> None:
-    neon = build_face_theme("neon_bot")
+def test_build_face_theme_returns_the_browser_default() -> None:
+    theme = build_face_theme()
 
-    assert "neon_bot" in SUPPORTED_FACE_THEME_NAMES
-    assert neon.name == "neon_bot"
-    assert SUPPORTED_FACE_THEME_NAMES == ("neon_bot",)
-    assert neon.render_mode == "minimal_neon"
-    assert neon.palette.background == (0, 0, 0)
-    assert neon.palette.eye_fill == neon.palette.eye_outline
-
-
-def test_build_face_theme_rejects_unknown_theme_name() -> None:
-    with pytest.raises(ValueError, match="unknown face theme"):
-        build_face_theme("mystery_bot")
+    assert theme.name == "browser_face"
+    assert theme.render_mode == "minimal_neon"
+    assert theme.palette.background == (0, 0, 0)
+    assert theme.palette.eye_fill == theme.palette.eye_outline

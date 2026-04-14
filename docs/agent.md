@@ -189,6 +189,7 @@ Use configuration for:
 - file paths
 - hardware device names
 - feature flags
+- browser-backed UI launch parameters and state overrides
 
 Use environment variables or config files where appropriate.
 

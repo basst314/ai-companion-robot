@@ -126,12 +126,13 @@ Output:
 ### 3.6 UI (Face Display)
 
 Responsibilities:
-- render animated eyes
+- render animated eyes in Chromium kiosk mode
 - reflect emotional state
 - react to events
 
 Input:
 - emotion/state from orchestrator
+- local browser bridge events and state snapshots
 
 ---
 
@@ -192,6 +193,7 @@ Camera
 - capability validation and step execution
 - Vision processing
 - UI rendering
+- browser-backed face rendering and Chromium kiosk launch
 - Orchestrator
 - Memory
 - Hardware control

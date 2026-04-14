@@ -97,20 +97,36 @@ class TtsConfig:
 
 @dataclass(slots=True)
 class UiConfig:
-    """Face/display backend configuration."""
+    """Browser-backed face display configuration."""
 
-    backend: Literal["mock", "pygame", "fb0"] = "mock"
-    fullscreen: bool = True
-    active_fps: int = 30
-    idle_fps: int = 12
+    backend: Literal["mock", "browser"] = "mock"
     idle_sleep_seconds: float = 300.0
     sleeping_eyes_grace_seconds: float = 12.0
     show_text_overlay: bool = True
     sleep_command: tuple[str, ...] = ()
     wake_command: tuple[str, ...] = ()
-    sdl_videodriver: str = ""
-    theme_name: str = "neon_bot"
-    fb_path: str = "/dev/fb0"
+    browser_host: str = "127.0.0.1"
+    browser_http_port: int = 8765
+    browser_ws_port: int = 8766
+    browser_launch_mode: Literal["kiosk", "windowed", "connect_only"] = "windowed"
+    browser_executable: str = ""
+    browser_profile_dir: Path | None = None
+    browser_extra_args: tuple[str, ...] = ()
+    browser_state_path: Path | None = None
+    face_idle_enabled: bool = True
+    face_idle_frequency: float = 0.26
+    face_idle_intensity: float = 0.63
+    face_idle_pause_randomness: float = 0.54
+    face_secondary_micro_motion: bool = True
+    face_idle_behaviors: tuple[str, ...] = (
+        "blink",
+        "look_side",
+        "quick_glance",
+        "bored",
+        "curious",
+        "scoot",
+        "boundary_press",
+    )
 
 
 @dataclass(slots=True)
@@ -382,18 +398,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}UI_BACKEND"),
         default=ui.backend,
     )
-    ui.fullscreen = _parse_bool(
-        env.get(f"{ENV_PREFIX}UI_FULLSCREEN"),
-        default=ui.fullscreen,
-    )
-    ui.active_fps = _parse_int(
-        env.get(f"{ENV_PREFIX}UI_ACTIVE_FPS"),
-        default=ui.active_fps,
-    )
-    ui.idle_fps = _parse_int(
-        env.get(f"{ENV_PREFIX}UI_IDLE_FPS"),
-        default=ui.idle_fps,
-    )
     ui.idle_sleep_seconds = _parse_float(
         env.get(f"{ENV_PREFIX}UI_IDLE_SLEEP_SECONDS"),
         default=ui.idle_sleep_seconds,
@@ -414,9 +418,57 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}UI_WAKE_COMMAND"),
         default=ui.wake_command,
     )
-    ui.sdl_videodriver = env.get(f"{ENV_PREFIX}UI_SDL_VIDEODRIVER", ui.sdl_videodriver).strip()
-    ui.theme_name = env.get(f"{ENV_PREFIX}UI_THEME_NAME", ui.theme_name).strip() or ui.theme_name
-    ui.fb_path = env.get(f"{ENV_PREFIX}UI_FB_PATH", ui.fb_path).strip() or ui.fb_path
+    ui.browser_host = env.get(f"{ENV_PREFIX}UI_BROWSER_HOST", ui.browser_host).strip() or ui.browser_host
+    ui.browser_http_port = _parse_int(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_HTTP_PORT"),
+        default=ui.browser_http_port,
+    )
+    ui.browser_ws_port = _parse_int(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_WS_PORT"),
+        default=ui.browser_ws_port,
+    )
+    ui.browser_launch_mode = _parse_browser_launch_mode(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_LAUNCH_MODE"),
+        default=ui.browser_launch_mode,
+    )
+    ui.browser_executable = env.get(
+        f"{ENV_PREFIX}UI_BROWSER_EXECUTABLE",
+        ui.browser_executable,
+    ).strip()
+    ui.browser_profile_dir = _parse_optional_path(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_PROFILE_DIR"),
+    )
+    ui.browser_extra_args = _parse_command(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_EXTRA_ARGS"),
+        default=ui.browser_extra_args,
+    )
+    ui.browser_state_path = _parse_optional_path(
+        env.get(f"{ENV_PREFIX}UI_BROWSER_STATE_PATH"),
+    )
+    ui.face_idle_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}UI_FACE_IDLE_ENABLED"),
+        default=ui.face_idle_enabled,
+    )
+    ui.face_idle_frequency = _parse_float(
+        env.get(f"{ENV_PREFIX}UI_FACE_IDLE_FREQUENCY"),
+        default=ui.face_idle_frequency,
+    )
+    ui.face_idle_intensity = _parse_float(
+        env.get(f"{ENV_PREFIX}UI_FACE_IDLE_INTENSITY"),
+        default=ui.face_idle_intensity,
+    )
+    ui.face_idle_pause_randomness = _parse_float(
+        env.get(f"{ENV_PREFIX}UI_FACE_IDLE_PAUSE_RANDOMNESS"),
+        default=ui.face_idle_pause_randomness,
+    )
+    ui.face_secondary_micro_motion = _parse_bool(
+        env.get(f"{ENV_PREFIX}UI_FACE_SECONDARY_MICRO_MOTION"),
+        default=ui.face_secondary_micro_motion,
+    )
+    ui.face_idle_behaviors = _parse_csv_tuple(
+        env.get(f"{ENV_PREFIX}UI_FACE_IDLE_BEHAVIORS"),
+        default=ui.face_idle_behaviors,
+    )
     _validate_runtime_config(runtime)
     _validate_cloud_config(config.cloud, runtime=runtime)
     _validate_tts_config(tts)
@@ -487,14 +539,24 @@ def _validate_tts_config(tts: TtsConfig) -> None:
 
 
 def _validate_ui_config(ui: UiConfig) -> None:
-    if ui.active_fps <= 0:
-        raise ValueError("AI_COMPANION_UI_ACTIVE_FPS must be greater than zero")
-    if ui.idle_fps <= 0:
-        raise ValueError("AI_COMPANION_UI_IDLE_FPS must be greater than zero")
     if ui.idle_sleep_seconds < 0:
         raise ValueError("AI_COMPANION_UI_IDLE_SLEEP_SECONDS must be zero or greater")
     if ui.sleeping_eyes_grace_seconds < 0:
         raise ValueError("AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS must be zero or greater")
+    if not ui.browser_host.strip():
+        raise ValueError("AI_COMPANION_UI_BROWSER_HOST must not be empty")
+    if ui.browser_http_port < 0:
+        raise ValueError("AI_COMPANION_UI_BROWSER_HTTP_PORT must be zero or greater")
+    if ui.browser_ws_port < 0:
+        raise ValueError("AI_COMPANION_UI_BROWSER_WS_PORT must be zero or greater")
+    if ui.face_idle_frequency < 0:
+        raise ValueError("AI_COMPANION_UI_FACE_IDLE_FREQUENCY must be zero or greater")
+    if not 0 <= ui.face_idle_intensity <= 1:
+        raise ValueError("AI_COMPANION_UI_FACE_IDLE_INTENSITY must be between zero and one")
+    if not 0 <= ui.face_idle_pause_randomness <= 1:
+        raise ValueError("AI_COMPANION_UI_FACE_IDLE_PAUSE_RANDOMNESS must be between zero and one")
+    if any(not item.strip() for item in ui.face_idle_behaviors):
+        raise ValueError("AI_COMPANION_UI_FACE_IDLE_BEHAVIORS must not contain empty values")
 
 
 def _load_environment(base_dir: Path | None) -> dict[str, str]:
@@ -573,14 +635,28 @@ def _parse_optional_path(value: str | None) -> Path | None:
 
 def _parse_ui_backend(
     value: str | None,
-    default: Literal["mock", "pygame", "fb0"],
-) -> Literal["mock", "pygame", "fb0"]:
+    default: Literal["mock", "browser"],
+) -> Literal["mock", "browser"]:
     if value is None or not value.strip():
         return default
     normalized = value.strip().lower()
-    if normalized in {"mock", "pygame", "fb0"}:
+    if normalized in {"mock", "browser"}:
         return normalized
-    raise ValueError("AI_COMPANION_UI_BACKEND must be one of 'mock', 'pygame', or 'fb0'")
+    raise ValueError("AI_COMPANION_UI_BACKEND must be one of 'mock' or 'browser'")
+
+
+def _parse_browser_launch_mode(
+    value: str | None,
+    default: Literal["kiosk", "windowed", "connect_only"],
+) -> Literal["kiosk", "windowed", "connect_only"]:
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"kiosk", "windowed", "connect_only"}:
+        return normalized
+    raise ValueError(
+        "AI_COMPANION_UI_BROWSER_LAUNCH_MODE must be one of 'kiosk', 'windowed', or 'connect_only'"
+    )
 
 
 def _parse_language(value: str | None, default: Language) -> Language:

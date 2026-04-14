@@ -32,15 +32,13 @@ from stt.service import (
     WhisperCppSttService,
 )
 from tts.service import MockTtsService, TtsService, build_piper_tts_service
-from ui.face import build_face_theme
-from ui.fb0_service import Fb0FaceUiService
-from ui.pygame_service import PygameFaceUiService
+from ui.browser_service import BrowserFaceUiService
 from ui.service import MockUiService, UiService
 from vision.service import MockVisionService
 
 
 def build_application(config: AppConfig | None = None) -> OrchestratorService:
-    """Assemble the default mock runtime used during early development."""
+    """Assemble the application runtime from the current configuration."""
 
     app_config = config or load_app_config()
     capability_registry = build_default_capability_registry()
@@ -129,16 +127,8 @@ def _build_ui_service(
     *,
     terminal_debug: TerminalDebugScreen | None = None,
 ) -> UiService:
-    if app_config.ui.backend == "pygame":
-        return PygameFaceUiService(
-            config=app_config.ui,
-            theme=build_face_theme(app_config.ui.theme_name),
-        )
-    if app_config.ui.backend == "fb0":
-        return Fb0FaceUiService(
-            config=app_config.ui,
-            theme=build_face_theme(app_config.ui.theme_name),
-        )
+    if app_config.ui.backend == "browser":
+        return BrowserFaceUiService(config=app_config.ui)
     return MockUiService(
         echo_state_to_console=terminal_debug is None,
         echo_text_to_console=True,

@@ -45,18 +45,12 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_TTS_SAVE_ARTIFACTS=true",
                 "AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=11.5",
                 "AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=21.0",
-                "AI_COMPANION_UI_BACKEND=fb0",
-                "AI_COMPANION_UI_FULLSCREEN=false",
-                "AI_COMPANION_UI_ACTIVE_FPS=36",
-                "AI_COMPANION_UI_IDLE_FPS=10",
+                "AI_COMPANION_UI_BACKEND=browser",
                 "AI_COMPANION_UI_IDLE_SLEEP_SECONDS=180",
                 "AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS=9",
                 "AI_COMPANION_UI_SHOW_TEXT_OVERLAY=false",
                 "AI_COMPANION_UI_SLEEP_COMMAND=vcgencmd display_power 0",
                 "AI_COMPANION_UI_WAKE_COMMAND=vcgencmd display_power 1",
-                "AI_COMPANION_UI_SDL_VIDEODRIVER=kmsdrm",
-                "AI_COMPANION_UI_THEME_NAME=neon_bot",
-                "AI_COMPANION_UI_FB_PATH=/dev/fb0",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
@@ -115,18 +109,12 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.tts.save_artifacts is True
     assert config.tts.synthesis_timeout_seconds == 11.5
     assert config.tts.playback_timeout_seconds == 21.0
-    assert config.ui.backend == "fb0"
-    assert config.ui.fullscreen is False
-    assert config.ui.active_fps == 36
-    assert config.ui.idle_fps == 10
+    assert config.ui.backend == "browser"
     assert config.ui.idle_sleep_seconds == 180
     assert config.ui.sleeping_eyes_grace_seconds == 9
     assert config.ui.show_text_overlay is False
     assert config.ui.sleep_command == ("vcgencmd", "display_power", "0")
     assert config.ui.wake_command == ("vcgencmd", "display_power", "1")
-    assert config.ui.sdl_videodriver == "kmsdrm"
-    assert config.ui.theme_name == "neon_bot"
-    assert config.ui.fb_path == "/dev/fb0"
     assert config.runtime.input_mode == "speech"
     assert config.runtime.speech_latency_profile == "balanced"
     assert config.runtime.interactive_console is True
@@ -194,6 +182,49 @@ def test_load_app_config_rejects_real_cloud_without_required_openai_fields(tmp_p
 
     with pytest.raises(ValueError, match="OPENAI_RESPONSE_MODEL"):
         load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_reads_browser_face_renderer_settings(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_UI_BACKEND=browser",
+                "AI_COMPANION_UI_BROWSER_HOST=0.0.0.0",
+                "AI_COMPANION_UI_BROWSER_HTTP_PORT=9000",
+                "AI_COMPANION_UI_BROWSER_WS_PORT=9001",
+                "AI_COMPANION_UI_BROWSER_LAUNCH_MODE=connect_only",
+                "AI_COMPANION_UI_BROWSER_EXECUTABLE=/usr/bin/chromium",
+                "AI_COMPANION_UI_BROWSER_PROFILE_DIR=/tmp/oreo-profile",
+                "AI_COMPANION_UI_BROWSER_EXTRA_ARGS=--disable-gpu --kiosk-printing",
+                "AI_COMPANION_UI_BROWSER_STATE_PATH=docs/test.json",
+                "AI_COMPANION_UI_FACE_IDLE_ENABLED=false",
+                "AI_COMPANION_UI_FACE_IDLE_FREQUENCY=0.41",
+                "AI_COMPANION_UI_FACE_IDLE_INTENSITY=0.72",
+                "AI_COMPANION_UI_FACE_IDLE_PAUSE_RANDOMNESS=0.27",
+                "AI_COMPANION_UI_FACE_SECONDARY_MICRO_MOTION=false",
+                "AI_COMPANION_UI_FACE_IDLE_BEHAVIORS=blink||quick_glance||curious",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.ui.backend == "browser"
+    assert config.ui.browser_host == "0.0.0.0"
+    assert config.ui.browser_http_port == 9000
+    assert config.ui.browser_ws_port == 9001
+    assert config.ui.browser_launch_mode == "connect_only"
+    assert config.ui.browser_executable == "/usr/bin/chromium"
+    assert config.ui.browser_profile_dir == Path("/tmp/oreo-profile")
+    assert config.ui.browser_extra_args == ("--disable-gpu", "--kiosk-printing")
+    assert config.ui.browser_state_path == Path("docs/test.json")
+    assert config.ui.face_idle_enabled is False
+    assert config.ui.face_idle_frequency == 0.41
+    assert config.ui.face_idle_intensity == 0.72
+    assert config.ui.face_idle_pause_randomness == 0.27
+    assert config.ui.face_secondary_micro_motion is False
+    assert config.ui.face_idle_behaviors == ("blink", "quick_glance", "curious")
 
 
 def test_load_app_config_rejects_non_positive_reply_token_cap(tmp_path: Path) -> None:
@@ -330,14 +361,6 @@ def test_load_app_config_rejects_non_positive_alsa_keepalive_interval(tmp_path: 
     )
 
     with pytest.raises(ValueError, match="ALSA_KEEPALIVE_INTERVAL_MS"):
-        load_app_config(base_dir=tmp_path)
-
-
-def test_load_app_config_rejects_non_positive_ui_frame_rate(tmp_path: Path) -> None:
-    env_file = tmp_path / ".env.local"
-    env_file.write_text("AI_COMPANION_UI_ACTIVE_FPS=0\n")
-
-    with pytest.raises(ValueError, match="UI_ACTIVE_FPS"):
         load_app_config(base_dir=tmp_path)
 
 

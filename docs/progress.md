@@ -16,7 +16,7 @@ Status: early working local prototype
 Current milestone:
 - the project has a working local-first turn-routing loop
 - the orchestrator can validate and execute multi-step turns that mix local actions, local queries, reactive cues, and a single tool-aware cloud reply path
-- responses can be shown through a mock UI or a real procedural Raspberry Pi face renderer and spoken through queued mock or Piper-backed TTS
+- responses can be shown through a mock UI or the browser-backed Chromium kiosk face renderer and spoken through queued mock or Piper-backed TTS
 - interaction history is stored in memory
 - a bootstrap setup script can prepare the local speech prototype on macOS and Raspberry Pi
 
@@ -175,7 +175,7 @@ Current limitations:
 
 ### UI
 
-Status: working mock plus real Raspberry Pi face prototype
+Status: working mock plus real browser-backed face prototype
 
 Available now:
 - state rendering for lifecycle and emotion
@@ -183,15 +183,14 @@ Available now:
 - response text display
 - `UiService` lifecycle hooks for startup and shutdown
 - content-mode API surface for future `camera` and `image` scenes
-- procedural fullscreen `pygame-ce` robot face renderer for Raspberry Pi
+- browser-backed robot face renderer launched in Chromium kiosk mode
 - smooth state transitions between idle, listening, thinking, responding, speaking, and sleep
 - idle micro-animation including blinks, glances, breathing drift, and playful expression variants
 - sleeping-eyes grace window before optional display blank/off hooks
-- theme-driven tuning for palette, eye geometry, blink timing, idle motion, transitions, and expression presets
+- browser-bridge tuning for idle behavior, state snapshots, and face override payloads
 
 Current limitations:
 - camera and image scenes are placeholders only
-- the real face renderer is not exercised in headless CI because it depends on `pygame-ce` and a display runtime
 - there is still no real vision-driven content takeover yet
 
 ### STT
@@ -256,7 +255,7 @@ Current limitations:
 - failure handling patterns
 - local speech synthesis/playback with Piper
 - playback-accurate TTS lifecycle for UI sync
-- procedural fullscreen face rendering for Raspberry Pi
+- browser-backed face rendering in Chromium kiosk mode
 - integration tests for the main interaction loop
 
 ### Mocked subsystems

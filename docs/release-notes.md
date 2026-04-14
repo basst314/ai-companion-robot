@@ -9,10 +9,20 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-13 — Browser-Backed Face Renderer
+
+### Highlights
+- Introduced the browser-backed face renderer in Chromium kiosk mode on Raspberry Pi, with a matching windowed Chromium mode for desktop development.
+- Replaced the older `pygame` and framebuffer display path with the new browser face bridge, so the robot face now renders through a single browser runtime.
+- Updated setup, env defaults, docs, and tests so new checkouts point at the browser UI flow immediately.
+
+### Why this matters
+This gives the project its first browser-backed face experience while keeping the runtime simpler to reason about. It reduces setup confusion, makes the docs match the shipped path, and leaves future face work focused on one browser renderer instead of multiple parallel implementations.
+
 ## 2026-04-05 — Minimal Neon Face Baseline
 
 ### Highlights
-- Simplified the face system down to a single experimental `neon_bot` theme so visual iteration can focus on one strong direction instead of preserving multiple older variants.
+- Simplified the face system down to a single experimental `neon_bot` theme so visual iteration could focus on one strong direction instead of preserving multiple older variants.
 - Shifted the face style toward an ultra-minimal digital robot look: pitch-black background, solid neon-cyan circular eyes, simple geometric mouths, and a soft glow treatment.
 - Removed the remaining product/docs language that implied several actively supported face themes when the current intent is to iterate on one baseline.
 
@@ -50,7 +60,7 @@ The earlier Pi HDMI fixes solved clipping but forced a tradeoff between startup 
 ### Highlights
 - Added real face-rendering backends for both windowed/fullscreen `pygame-ce` and Raspberry Pi `fb0`, with procedural robot eyes, smooth interpolation between states, playful idle micro-animations, sleeping-eyes behavior, and placeholder scene plumbing for future camera/image takeovers.
 - Added a face/theme layer so palette, eye geometry, blink timing, idle motion, transition durations, and named expression presets can be tuned without rewriting the renderer.
-- Added the `neon_bot` face theme as the current experimental minimal cyan-blue robot look.
+- Added the `neon_bot` face theme as the then-current experimental minimal cyan-blue robot look.
 - Extended `UiService` with `start()`, `shutdown()`, `show_content(...)`, and `clear_content()`, and added new UI runtime config for backend selection, frame rates, sleep timing, display sleep/wake hooks, and theme selection.
 - Updated the orchestrator so visual `speaking` begins on playback start events instead of when speech is merely queued or synthesized.
 - Hardened OpenAI structured-reply parsing so truncated structured outputs surface a clear runtime error instead of a raw JSON decode failure.

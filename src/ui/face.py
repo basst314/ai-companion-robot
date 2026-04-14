@@ -108,10 +108,7 @@ class FaceTheme:
         return self.presets["neutral"]
 
 
-SUPPORTED_FACE_THEME_NAMES = ("neon_bot",)
-
-
-def build_face_theme(name: str = "neon_bot") -> FaceTheme:
+def build_face_theme() -> FaceTheme:
     base_presets = {
         "neutral": ExpressionPreset(
             name="neutral",
@@ -206,8 +203,8 @@ def build_face_theme(name: str = "neon_bot") -> FaceTheme:
             highlight_strength=0.0,
         ),
     }
-    neon_bot = FaceTheme(
-        name="neon_bot",
+    browser_face = FaceTheme(
+        name="browser_face",
         render_mode="minimal_neon",
         palette=FacePalette(
             background=(0, 0, 0),
@@ -253,11 +250,7 @@ def build_face_theme(name: str = "neon_bot") -> FaceTheme:
         ),
         presets=base_presets,
     )
-    normalized = (name or "neon_bot").strip().lower()
-    if normalized != "neon_bot":
-        supported = ", ".join(SUPPORTED_FACE_THEME_NAMES)
-        raise ValueError(f"unknown face theme {name!r}; expected one of: {supported}")
-    return neon_bot
+    return browser_face
 
 
 @dataclass(slots=True, frozen=True)
@@ -347,6 +340,9 @@ class FaceController:
 
     def clear_text(self) -> None:
         self.state.overlay_text = None
+
+    def note_activity(self) -> None:
+        self._mark_activity(time.monotonic())
 
     def show_content(self, mode: str) -> None:
         self._mark_activity(time.monotonic())

@@ -6,7 +6,7 @@
 
 A desktop AI companion robot built on a Raspberry Pi, designed to be conversational, expressive, and personality-driven.
 
-The system combines voice interaction, computer vision, a screen-based face, and a lightweight local control layer with cloud-based AI to create a responsive and engaging companion.
+The system combines voice interaction, computer vision, a browser-backed face, and a lightweight local control layer with cloud-based AI to create a responsive and engaging companion.
 
 The current runtime uses a local-first turn director: fast local reactive behaviors during listening and thinking, a typed local capability registry for actions and queries, a single cloud reply path with optional tool calls, and local speech output on the robot.
 
@@ -32,7 +32,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 - Speech-to-text (Whisper / whisper.cpp)
 - Text-to-speech (mock or local Piper)
 - Camera processing (face detection)
-- Display rendering (eyes and expressions)
+- Browser-backed display rendering in Chromium kiosk mode
 - Hybrid orchestrator and capability executor
 - Memory (local storage)
 - Hardware control (future)
@@ -49,7 +49,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Voice interaction with low latency
 - Multilingual support (English, German, Indonesian)
-- Animated minimalist neon face with expressions and reactions
+- Animated browser-backed face with expressions and reactions
 - Recognition of known individuals
 - Personality-driven responses (humor, sound effects)
 - Hybrid local/cloud execution
@@ -90,6 +90,7 @@ Use the automated bootstrap on a fresh machine such as a Raspberry Pi or your lo
 The script:
 - detects macOS or Raspberry Pi
 - installs system dependencies with `brew` or `apt`
+- on Raspberry Pi, installs Chromium plus the desktop/session packages needed for browser kiosk mode
 - creates `.venv`
 - installs Python project dependencies
 - optionally installs the Piper HTTP TTS runtime
@@ -108,6 +109,14 @@ After setup finishes:
 ```
 
 The runtime will read `.env.local` automatically if it exists.
+
+On Raspberry Pi, the generated `.env.local` now defaults to the browser-backed face renderer in kiosk mode. The Python robot app is still the only process you launch; it starts the local face bridge and launches Chromium itself.
+
+If you want a single command that auto-picks the active Pi Wayland session when you start over SSH, use:
+
+```bash
+./scripts/start-robot.sh
+```
 
 For a fresh Raspberry Pi 5 and SD card bring-up, follow [docs/rpi5-bringup.md](docs/rpi5-bringup.md). That guide covers Raspberry Pi Imager, headless SSH, repo sync, Pi bootstrap, and staged validation.
 
@@ -172,17 +181,11 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
 - `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
 - `AI_COMPANION_UI_BACKEND`
-- `AI_COMPANION_UI_FULLSCREEN`
-- `AI_COMPANION_UI_ACTIVE_FPS`
-- `AI_COMPANION_UI_IDLE_FPS`
 - `AI_COMPANION_UI_IDLE_SLEEP_SECONDS`
 - `AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS`
 - `AI_COMPANION_UI_SHOW_TEXT_OVERLAY`
 - `AI_COMPANION_UI_SLEEP_COMMAND`
 - `AI_COMPANION_UI_WAKE_COMMAND`
-- `AI_COMPANION_UI_SDL_VIDEODRIVER`
-- `AI_COMPANION_UI_THEME_NAME`
-- `AI_COMPANION_UI_FB_PATH`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
@@ -216,7 +219,6 @@ On Raspberry Pi:
 On macOS:
 - `python@3.11`
 
-The current experimental face theme is `neon_bot`, an ultra-minimal cyan-on-black digital face baseline for the Raspberry Pi display.
 - `cmake`
 - `sox`
 - `git`
@@ -261,7 +263,7 @@ source .venv/bin/activate
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,ui]"
+python -m pip install -e ".[dev]"
 ```
 
 ### 4. Verify the setup

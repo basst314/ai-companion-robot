@@ -280,6 +280,9 @@ class OrchestratorService:
             Event(
                 name=EventName.LISTENING_STARTED,
                 source=ComponentName.ORCHESTRATOR,
+                payload={
+                    "trigger": self._active_speech_trigger or "manual",
+                },
             )
         )
         await self._apply_reactive_steps(

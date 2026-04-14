@@ -24,9 +24,6 @@ tts = [
   "piper-tts[http]>=1.4,<2",
   "pyalsaaudio>=0.10,<1; platform_system == 'Linux'",
 ]
-ui = [
-  "pygame-ce>=2.5,<3",
-]
 
 [project.scripts]
 ai-companion-robot = "main:main"

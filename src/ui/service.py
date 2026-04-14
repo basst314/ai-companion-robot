@@ -30,6 +30,9 @@ class UiService(Protocol):
     async def shutdown(self) -> None:
         """Release renderer resources during app shutdown."""
 
+    async def handle_event(self, event: Event) -> None:
+        """Receive orchestrator events that may drive renderer-side embodiment."""
+
 
 @dataclass(slots=True)
 class MockUiService:

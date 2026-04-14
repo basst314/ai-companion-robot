@@ -183,7 +183,45 @@ install_system_packages() {
   require_command sudo
   log "installing Raspberry Pi system dependencies with apt"
   sudo apt-get update
-  sudo apt-get install -y build-essential cmake git python3 python3-venv python3-pip alsa-utils libasound2-dev curl
+  local chromium_package="chromium-browser"
+  local chromium_browser_candidate
+  local chromium_candidate
+  chromium_browser_candidate="$(apt-cache policy chromium-browser 2>/dev/null | awk '/Candidate:/ {print $2; exit}')"
+  chromium_candidate="$(apt-cache policy chromium 2>/dev/null | awk '/Candidate:/ {print $2; exit}')"
+  if [[ -n "${chromium_browser_candidate}" ]] && [[ "${chromium_browser_candidate}" != "(none)" ]]; then
+    chromium_package="chromium-browser"
+  elif [[ -n "${chromium_candidate}" ]] && [[ "${chromium_candidate}" != "(none)" ]]; then
+    chromium_package="chromium"
+  else
+    fail "could not find a supported Chromium package on this Raspberry Pi image"
+  fi
+
+  sudo apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    python3 \
+    python3-venv \
+    python3-pip \
+    alsa-utils \
+    libasound2-dev \
+    curl \
+    "${chromium_package}" \
+    wtype
+
+  if apt-cache show rpd-wayland-core >/dev/null 2>&1; then
+    log "installing Raspberry Pi desktop packages for Wayland kiosk sessions"
+    sudo apt-get install -y --no-install-recommends rpd-wayland-core rpd-theme rpd-preferences
+    return 0
+  fi
+
+  if apt-cache show raspberrypi-ui-mods >/dev/null 2>&1; then
+    log "installing Raspberry Pi desktop packages for X11 kiosk sessions"
+    sudo apt-get install -y --no-install-recommends xserver-xorg lightdm raspberrypi-ui-mods
+    return 0
+  fi
+
+  fail "could not find a supported Raspberry Pi desktop package set for browser kiosk mode"
 }
 
 python_at_least_311() {
@@ -405,8 +443,8 @@ EOF
     "${REPO_DIR}/.venv/bin/python" -m pip install \
       "pytest>=8.0" \
       "pytest-cov>=5.0" \
-      "pygame-ce>=2.5,<3" \
       "onnxruntime<2,>=1.10.0" \
+      "pyalsaaudio>=0.10,<1" \
       "requests<3,>=2.0" \
       "tqdm<5.0,>=4.0" \
       "scipy<2,>=1.3" \
@@ -419,10 +457,10 @@ EOF
     return 0
   fi
   if [[ "${tts_backend}" == "piper" ]]; then
-    "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts,ui]"
+    "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,tts]"
     return 0
   fi
-  "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev,ui]"
+  "${REPO_DIR}/.venv/bin/python" -m pip install -e "${REPO_DIR}[dev]"
 }
 
 resolve_wake_model() {
@@ -709,19 +747,34 @@ write_env_file() {
   local tts_audio_backend
   local tts_alsa_device
   local ui_backend
+  local ui_browser_launch_mode
+  local ui_browser_executable
+  local ui_browser_extra_args
 
   if [[ "${PLATFORM}" == "macos" ]]; then
     audio_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
     playback_command="afplay {input_path}"
     tts_audio_backend="command"
     tts_alsa_device="default"
-    ui_backend="mock"
+    ui_backend="browser"
+    ui_browser_launch_mode="windowed"
+    ui_browser_executable=""
+    ui_browser_extra_args=""
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
     playback_command='aplay {input_path}'
     tts_audio_backend="alsa_persistent"
     tts_alsa_device="default:CARD=vc4hdmi1"
-    ui_backend="fb0"
+    ui_backend="browser"
+    ui_browser_launch_mode="kiosk"
+    if command -v chromium-browser >/dev/null 2>&1; then
+      ui_browser_executable="chromium-browser"
+    elif command -v chromium >/dev/null 2>&1; then
+      ui_browser_executable="chromium"
+    else
+      ui_browser_executable="chromium-browser"
+    fi
+    ui_browser_extra_args="--ozone-platform=wayland"
   fi
 
   if [[ -f "${ENV_FILE}" ]] && [[ "${FORCE}" -eq 0 ]] && ! confirm "Overwrite existing ${ENV_FILE}?"; then
@@ -767,17 +820,25 @@ AI_COMPANION_TTS_SAVE_ARTIFACTS=false
 AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS=20
 AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS=60
 AI_COMPANION_UI_BACKEND=${ui_backend}
-AI_COMPANION_UI_FULLSCREEN=true
-AI_COMPANION_UI_ACTIVE_FPS=30
-AI_COMPANION_UI_IDLE_FPS=12
 AI_COMPANION_UI_IDLE_SLEEP_SECONDS=300
 AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS=12
 AI_COMPANION_UI_SHOW_TEXT_OVERLAY=true
 AI_COMPANION_UI_SLEEP_COMMAND=
 AI_COMPANION_UI_WAKE_COMMAND=
-AI_COMPANION_UI_SDL_VIDEODRIVER=
-AI_COMPANION_UI_THEME_NAME=retro_bot
-AI_COMPANION_UI_FB_PATH=/dev/fb0
+AI_COMPANION_UI_BROWSER_HOST=127.0.0.1
+AI_COMPANION_UI_BROWSER_HTTP_PORT=8765
+AI_COMPANION_UI_BROWSER_WS_PORT=8766
+AI_COMPANION_UI_BROWSER_LAUNCH_MODE=${ui_browser_launch_mode}
+AI_COMPANION_UI_BROWSER_EXECUTABLE=${ui_browser_executable}
+AI_COMPANION_UI_BROWSER_PROFILE_DIR=
+AI_COMPANION_UI_BROWSER_EXTRA_ARGS=${ui_browser_extra_args}
+AI_COMPANION_UI_BROWSER_STATE_PATH=
+AI_COMPANION_UI_FACE_IDLE_ENABLED=true
+AI_COMPANION_UI_FACE_IDLE_FREQUENCY=0.26
+AI_COMPANION_UI_FACE_IDLE_INTENSITY=0.63
+AI_COMPANION_UI_FACE_IDLE_PAUSE_RANDOMNESS=0.54
+AI_COMPANION_UI_FACE_SECONDARY_MICRO_MOTION=true
+AI_COMPANION_UI_FACE_IDLE_BEHAVIORS=blink||look_side||quick_glance||bored||curious||scoot||boundary_press
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
@@ -801,6 +862,82 @@ AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=1
 AI_COMPANION_LANGUAGE_MODE=${selected_language_mode}
 # Provisioned Piper voice languages: ${tts_languages}
 EOF
+}
+
+configure_labwc_hide_cursor() {
+  if [[ "${PLATFORM}" != "rpi" ]]; then
+    return 0
+  fi
+
+  local labwc_dir="${HOME}/.config/labwc"
+  local rc_xml="${labwc_dir}/rc.xml"
+  mkdir -p "${labwc_dir}"
+  if [[ ! -f "${rc_xml}" ]]; then
+    cat > "${rc_xml}" <<'EOF'
+<?xml version="1.0"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+</openbox_config>
+EOF
+  fi
+
+  python3 - "${rc_xml}" <<'EOF'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+path = Path(sys.argv[1])
+ns = {"rc": "http://openbox.org/3.4/rc"}
+ET.register_namespace("", ns["rc"])
+
+tree = ET.parse(path)
+root = tree.getroot()
+
+keyboard = root.find("rc:keyboard", ns)
+if keyboard is None:
+    keyboard = ET.Element(f"{{{ns['rc']}}}keyboard")
+    touch = root.find("rc:touch", ns)
+    if touch is not None:
+        index = list(root).index(touch)
+        root.insert(index, keyboard)
+    else:
+        root.append(keyboard)
+
+for keybind in list(keyboard.findall("rc:keybind", ns)):
+    if keybind.get("key") == "F12":
+        keyboard.remove(keybind)
+
+keybind = ET.Element(f"{{{ns['rc']}}}keybind", {"key": "F12"})
+action = ET.SubElement(keybind, f"{{{ns['rc']}}}action", {"name": "HideCursor"})
+keyboard.append(keybind)
+
+path.write_text(
+    "<?xml version=\"1.0\"?>\n" + ET.tostring(root, encoding="unicode") + "\n"
+)
+EOF
+
+  log "configured LabWC HideCursor keybind in ${rc_xml}"
+}
+
+configure_labwc_cursor_autostart() {
+  if [[ "${PLATFORM}" != "rpi" ]]; then
+    return 0
+  fi
+
+  local labwc_dir="${HOME}/.config/labwc"
+  local autostart_script="${labwc_dir}/autostart"
+  mkdir -p "${labwc_dir}"
+  cat > "${autostart_script}" <<'EOF'
+#!/usr/bin/env sh
+
+if command -v wtype >/dev/null 2>&1; then
+  (
+    sleep 4
+    wtype -k F12 >/dev/null 2>&1 || true
+  ) &
+fi
+EOF
+  chmod +x "${autostart_script}"
+  log "configured LabWC cursor autostart helper in ${autostart_script}"
 }
 
 run_verification() {
@@ -919,6 +1056,8 @@ main() {
     "${selected_tts_languages}" \
     "${selected_tts_service_mode}" \
     "${selected_tts_expressive_de}"
+  configure_labwc_hide_cursor
+  configure_labwc_cursor_autostart
   run_verification
 
   cat <<EOF
