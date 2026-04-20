@@ -9,6 +9,17 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-19 — Pi Voice Pipeline Cleanup
+
+### Highlights
+- Tuned the Raspberry Pi speech path for faster final STT, with `base.en` as the practical default and reduced partial-transcript overhead.
+- Added explicit ReSpeaker channel selection so the robot captures the board's processed channel 0 instead of relying on ALSA's mono conversion.
+- Restored the Pi playback path to the persistent HDMI ALSA backend on `vc4hdmi1` and updated the startup/docs to match the current hardware defaults.
+- Improved terminal trace logging for wake word, VAD, Whisper, cloud reply, and TTS timing so future audio debugging is much easier.
+
+### Why this matters
+The robot is now much closer to a usable voice-first setup on the Pi: speech turns finalize faster, the mic input path is cleaner, and the shipped defaults line up with the hardware.
+
 ## 2026-04-13 — Browser-Backed Face Renderer
 
 ### Highlights

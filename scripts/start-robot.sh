@@ -42,8 +42,11 @@ cleanup_previous_run() {
 cleanup_previous_run
 
 has_capture_device() {
-  if command -v arecord >/dev/null 2>&1; then
-    arecord -l 2>/dev/null | grep -q '^card '
+  if command -v arecord >/dev/null 2>&1 && arecord -l 2>/dev/null | grep -q '^card '; then
+    return 0
+  fi
+  if command -v pw-dump >/dev/null 2>&1 && pw-dump 2>/dev/null | grep -q '"media.class": "Audio/Source"'; then
+    return 0
   else
     return 1
   fi
@@ -60,12 +63,11 @@ launch_robot() {
   fi
   runtime_env=(
     "AI_COMPANION_INTERACTIVE_CONSOLE=true"
-    "AI_COMPANION_TTS_AUDIO_BACKEND=${AI_COMPANION_TTS_AUDIO_BACKEND:-command}"
-    "AI_COMPANION_TTS_AUDIO_PLAY_COMMAND=${AI_COMPANION_TTS_AUDIO_PLAY_COMMAND:-true}"
     "AI_COMPANION_UI_BROWSER_PROFILE_DIR=${AI_COMPANION_UI_BROWSER_PROFILE_DIR:-${browser_profile_dir}}"
     "AI_COMPANION_UI_BROWSER_EXTRA_ARGS=${AI_COMPANION_UI_BROWSER_EXTRA_ARGS:---ozone-platform=wayland --password-store=basic --use-mock-keychain}"
   )
   if ! has_capture_device; then
+    printf '[start-robot] WARNING: no audio capture source found; falling back to manual mode and disabling wake-word.\n' >&2
     runtime_env+=(
       "AI_COMPANION_INPUT_MODE=manual"
       "AI_COMPANION_WAKE_WORD_ENABLED=false"

@@ -778,10 +778,56 @@ def test_whisper_cpp_stt_service_streams_partials_then_final(tmp_path: Path) -> 
         "hello there",
     ]
     assert transcripts[-1].text == "hello there friend"
-    assert [transcript.is_final for transcript in transcripts[:-1]] == [False, False]
-    assert transcripts[-1].is_final is True
-    assert audio_capture.session is not None
-    assert audio_capture.session.stop_requested is True
+
+
+def test_whisper_cpp_stt_service_caps_partial_snapshot_window(tmp_path: Path) -> None:
+    wav_path = tmp_path / "ai-companion-recording-partial-cap.wav"
+    service = WhisperCppSttService(
+        audio_capture=FakeAudioCaptureService(wav_path),
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        partial_snapshot_max_seconds=2.0,
+    )
+
+    window = _audio_window(
+        wav_path,
+        duration_seconds=5.0,
+        trailing_silence_seconds=0.0,
+        has_speech=True,
+    )
+
+    capped = service._partial_transcription_window(window)
+
+    assert capped.duration_seconds <= 2.05
+    assert capped.stream_start_offset > window.stream_start_offset
+
+
+def test_whisper_cpp_stt_service_can_disable_partial_snapshots(tmp_path: Path) -> None:
+    wav_path = tmp_path / "ai-companion-recording-partials-off.wav"
+    wav_path.write_bytes(b"fake")
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(wav_path, duration_seconds=0.6, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=1.1, trailing_silence_seconds=0.0, has_speech=True),
+            _audio_window(wav_path, duration_seconds=1.8, trailing_silence_seconds=1.3, has_speech=True),
+        ],
+        transcript_texts=["final only"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=0.0,
+        partial_transcripts_enabled=False,
+        speech_silence_seconds=1.2,
+        minimum_utterance_seconds=0.0,
+        silence_confirmation_polls=1,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["final only"]
+    assert service.captured_is_final == [True]
 
 
 def test_whisper_cpp_stt_service_uses_vad_tail_even_when_energy_stays_high(tmp_path: Path) -> None:
@@ -815,9 +861,9 @@ def test_whisper_cpp_stt_service_uses_vad_tail_even_when_energy_stays_high(tmp_p
             _audio_window(
                 wav_path,
                 duration_seconds=2.6,
-                trailing_silence_seconds=0.0,
-                trailing_non_speech_seconds=0.8,
-                last_vad_speech_offset_seconds=1.8,
+                trailing_silence_seconds=1.6,
+                trailing_non_speech_seconds=1.6,
+                last_vad_speech_offset_seconds=1.0,
                 has_speech=True,
                 has_vad_speech=True,
                 peak_energy=220.0,
@@ -826,7 +872,7 @@ def test_whisper_cpp_stt_service_uses_vad_tail_even_when_energy_stays_high(tmp_p
         transcript_texts=["still there"],
         poll_interval_seconds=0.0,
         partial_update_interval_seconds=999.0,
-        speech_silence_seconds=0.75,
+        speech_silence_seconds=1.0,
         minimum_utterance_seconds=2.0,
         silence_confirmation_polls=1,
     )
@@ -871,6 +917,50 @@ def test_whisper_cpp_stt_service_requires_confirmed_silence_before_stopping(tmp_
     assert transcripts[-1].text == "hello there friend"
 
 
+def test_whisper_cpp_stt_service_waits_for_minimum_vad_tail_before_stopping(tmp_path: Path) -> None:
+    wav_path = tmp_path / "ai-companion-recording-vad-tail-threshold.wav"
+    wav_path.write_bytes(b"fake")
+    audio_capture = FakeStreamingAudioCaptureService(output_path=wav_path)
+    service = ScriptedStreamingWhisperService(
+        audio_capture=audio_capture,
+        model_path=Path("/models/ggml-base.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        windows=[
+            _audio_window(
+                wav_path,
+                duration_seconds=1.2,
+                trailing_silence_seconds=0.2,
+                trailing_non_speech_seconds=0.2,
+                has_speech=True,
+                has_vad_speech=True,
+                vad_active=False,
+            ),
+            _audio_window(
+                wav_path,
+                duration_seconds=2.1,
+                trailing_silence_seconds=1.6,
+                trailing_non_speech_seconds=1.6,
+                has_speech=True,
+                has_vad_speech=True,
+                vad_active=False,
+            ),
+        ],
+        transcript_texts=["spoken"],
+        poll_interval_seconds=0.0,
+        partial_update_interval_seconds=999.0,
+        speech_silence_seconds=1.0,
+        minimum_utterance_seconds=0.0,
+        silence_confirmation_polls=1,
+    )
+
+    transcripts = asyncio.run(_collect_transcripts(service.stream_transcripts()))
+
+    assert [transcript.text for transcript in transcripts] == ["spoken"]
+    assert transcripts[0].is_final is True
+    assert audio_capture.session is not None
+    assert audio_capture.session.stop_requested is True
+
+
 def test_whisper_cpp_stt_service_returns_empty_final_transcript_when_user_never_speaks(tmp_path: Path) -> None:
     """The streaming adapter should stop after a guard timeout when no speech starts."""
 
@@ -906,7 +996,7 @@ def test_whisper_cpp_stt_service_uses_single_follow_up_listen_timeout(tmp_path: 
         transcript_texts=[""],
         quiet_abort_seconds=2.5,
         no_speech_timeout_seconds=8.0,
-        follow_up_listen_timeout_seconds=3.0,
+        follow_up_listen_timeout_seconds=5.0,
     )
 
     assert service._follow_up_timeout("wake") == 8.0

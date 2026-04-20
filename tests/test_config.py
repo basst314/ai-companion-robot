@@ -59,7 +59,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_STT_BACKEND=whisper_cpp",
                 "AI_COMPANION_WHISPER_BINARY_PATH=/opt/whisper/whisper-cli",
                 "AI_COMPANION_WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.en.bin",
+                "AI_COMPANION_WHISPER_COMMAND_EXTRA_ARGS=--threads 4 --processors 1 --best-of 1 --beam-size 1 --no-fallback",
                 "AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}",
+                "AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED=false",
                 "AI_COMPANION_SPEECH_SILENCE_SECONDS=1.8",
                 "AI_COMPANION_VAD_THRESHOLD=0.55",
                 "AI_COMPANION_VAD_FRAME_MS=20",
@@ -68,7 +70,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_MAX_RECORDING_SECONDS=11.5",
                 "AI_COMPANION_WAKE_WORD_ENABLED=true",
                 "AI_COMPANION_FOLLOW_UP_MODE_ENABLED=true",
-                "AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=3.3",
+                "AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=5.3",
                 "AI_COMPANION_FOLLOW_UP_MAX_TURNS=5",
                 "AI_COMPANION_WAKE_WORD_PHRASE=Oreo",
                 "AI_COMPANION_WAKE_WORD_MODEL=/models/oreo.tflite",
@@ -123,7 +125,9 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.stt_backend == "whisper_cpp"
     assert config.runtime.whisper_binary_path == Path("/opt/whisper/whisper-cli")
     assert config.runtime.whisper_model_path == Path("/opt/whisper/models/ggml-base.en.bin")
+    assert config.runtime.whisper_command_extra_args[:4] == ("--threads", "4", "--processors", "1")
     assert config.runtime.audio_record_command[:4] == ("rec", "-q", "-c", "1")
+    assert config.runtime.partial_transcripts_enabled is False
     assert config.runtime.speech_silence_seconds == 1.8
     assert config.runtime.vad_threshold == 0.55
     assert config.runtime.vad_frame_ms == 20
@@ -132,7 +136,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.runtime.max_recording_seconds == 11.5
     assert config.runtime.wake_word_enabled is True
     assert config.runtime.follow_up_mode_enabled is True
-    assert config.runtime.follow_up_listen_timeout_seconds == 3.3
+    assert config.runtime.follow_up_listen_timeout_seconds == 5.3
     assert config.runtime.follow_up_max_turns == 5
     assert config.runtime.wake_word_phrase == "Oreo"
     assert config.runtime.wake_word_model == "/models/oreo.tflite"
@@ -261,9 +265,11 @@ def test_load_app_config_applies_fast_speech_profile_defaults(tmp_path: Path) ->
     config = load_app_config(base_dir=tmp_path)
 
     assert config.runtime.speech_latency_profile == "fast"
-    assert config.runtime.speech_silence_seconds == 0.55
+    assert config.runtime.speech_silence_seconds == 1.0
+    assert config.runtime.vad_threshold == 0.5
     assert config.runtime.wake_lookback_seconds == 0.5
-    assert config.runtime.utterance_finalize_timeout_seconds == 0.25
+    assert config.runtime.vad_end_trigger_frames == 5
+    assert config.runtime.utterance_finalize_timeout_seconds == 0.3
     assert config.runtime.utterance_tail_stable_polls == 1
 
 
@@ -381,7 +387,7 @@ def test_setup_script_help_is_available() -> None:
 
     assert result.returncode == 0
     assert "--platform <macos|rpi>" in result.stdout
-    assert "--model <tiny|base|small>" in result.stdout
+    assert "--model <tiny|tiny.en|base|base.en|small|small.en>" in result.stdout
     assert "--tts-backend <mock|piper>" in result.stdout
     assert "--tts-languages <en,de,id>" in result.stdout
     assert "--skip-system-packages" in result.stdout
@@ -441,8 +447,8 @@ def test_config_helper_parsers_cover_common_cases(monkeypatch, tmp_path: Path) -
 def test_config_helper_defaults_and_validators(monkeypatch) -> None:
     runtime = config_mod.RuntimeConfig()
     config_mod._apply_speech_latency_profile(runtime)
-    assert runtime.speech_silence_seconds == 0.55
-    assert runtime.vad_end_trigger_frames == 4
+    assert runtime.speech_silence_seconds == 1.0
+    assert runtime.vad_end_trigger_frames == 5
     assert runtime.wake_lookback_seconds == 0.5
     assert runtime.utterance_tail_stable_polls == 1
 

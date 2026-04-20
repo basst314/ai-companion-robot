@@ -88,7 +88,7 @@ class _StaticHttpServer:
         return _Handler
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _WebSocketPeer:
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
@@ -383,29 +383,46 @@ class BrowserFaceUiService:
             await peer.close()
 
     async def _read_ws_frames(self, peer: _WebSocketPeer) -> None:
-        while not self._stopped:
-            first = await peer.reader.readexactly(2)
-            opcode = first[0] & 0x0F
-            masked = bool(first[1] & 0x80)
-            length = first[1] & 0x7F
-            if length == 126:
-                length = int.from_bytes(await peer.reader.readexactly(2), "big")
-            elif length == 127:
-                length = int.from_bytes(await peer.reader.readexactly(8), "big")
-            mask = await peer.reader.readexactly(4) if masked else b""
-            payload = await peer.reader.readexactly(length) if length else b""
-            if masked and payload:
-                payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-            if opcode == 0x8:
-                return
-            if opcode == 0x9:
-                peer.writer.write(b"\x8A\x00")
-                await peer.writer.drain()
-                continue
-            if opcode == 0x1 and payload:
-                with contextlib.suppress(Exception):
-                    message = json.loads(payload.decode("utf-8"))
-                    logger.debug("browser bridge inbound message: %s", message)
+        try:
+            while not self._stopped:
+                try:
+                    first = await peer.reader.readexactly(2)
+                except asyncio.IncompleteReadError:
+                    return
+                opcode = first[0] & 0x0F
+                masked = bool(first[1] & 0x80)
+                length = first[1] & 0x7F
+                if length == 126:
+                    try:
+                        length = int.from_bytes(await peer.reader.readexactly(2), "big")
+                    except asyncio.IncompleteReadError:
+                        return
+                elif length == 127:
+                    try:
+                        length = int.from_bytes(await peer.reader.readexactly(8), "big")
+                    except asyncio.IncompleteReadError:
+                        return
+                try:
+                    mask = await peer.reader.readexactly(4) if masked else b""
+                    payload = await peer.reader.readexactly(length) if length else b""
+                except asyncio.IncompleteReadError:
+                    return
+                if masked and payload:
+                    payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+                if opcode == 0x8:
+                    return
+                if opcode == 0x9:
+                    peer.writer.write(b"\x8A\x00")
+                    await peer.writer.drain()
+                    continue
+                if opcode == 0x1 and payload:
+                    with contextlib.suppress(Exception):
+                        message = json.loads(payload.decode("utf-8"))
+                        logger.debug("browser bridge inbound message: %s", message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("browser websocket reader failed")
 
     def _launch_browser_if_needed(self) -> None:
         if self.config.browser_launch_mode == "connect_only":

@@ -263,6 +263,10 @@ class OrchestratorService:
         detection = await self.wake_word.wait_for_wake_word()
         if not detection.detected:
             return False
+        logger.info(
+            "turn_trace wake_word_handled trigger=wake phrase=%s",
+            self.config.runtime.wake_word_phrase,
+        )
         self._active_speech_trigger = "wake"
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="wake", detection=detection)
@@ -299,6 +303,11 @@ class OrchestratorService:
                     transcript = self._strip_wake_phrase_from_transcript(transcript)
                 if transcript.is_final:
                     final_transcript = transcript
+                    logger.info(
+                        "turn_trace final_transcript_ready text_len=%s trigger=%s",
+                        len(transcript.text),
+                        self._active_speech_trigger or "manual",
+                    )
                     if transcript.text.strip():
                         self._show_transcript_update(transcript, is_final=True)
                     break
@@ -354,6 +363,11 @@ class OrchestratorService:
         """Accept a partial transcript and update listening state only."""
 
         self._debug_transcript(transcript, kind="partial")
+        logger.info(
+            "turn_trace partial_transcript_accepted text_len=%s trigger=%s",
+            len(transcript.text),
+            self._active_speech_trigger or "manual",
+        )
         self.state.current_transcript = transcript
         self.state.active_language = transcript.language
         self.state.last_step_results = ()
@@ -373,6 +387,11 @@ class OrchestratorService:
         """Process a final transcript through local routing, execution, and response."""
 
         self._debug_transcript(transcript, kind="final")
+        logger.info(
+            "turn_trace final_transcript_accepted text_len=%s trigger=%s",
+            len(transcript.text),
+            self._active_speech_trigger or "manual",
+        )
         self.state.last_error = None
         self.state.interaction_id += 1
         self.state.current_transcript = transcript
@@ -401,6 +420,11 @@ class OrchestratorService:
                 response_active=False,
                 plan_preview="routing...",
                 response_preview=None,
+            )
+            logger.info(
+                "turn_trace routing_started route_director=%s transcript_len=%s",
+                type(self.turn_director).__name__,
+                len(transcript.text),
             )
             plan = await self.turn_director.direct_turn(transcript, context, available_capabilities)
             await self.handle_event(
@@ -565,6 +589,35 @@ class OrchestratorService:
         self.event_history.append(event)
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
+        if event.name is EventName.TTS_SYNTHESIS_STARTED:
+            logger.info(
+                "turn_trace tts_synthesis_started job_id=%s text_len=%s",
+                event.payload.get("job_id", "--"),
+                len(str(event.payload.get("text", ""))),
+            )
+        elif event.name is EventName.TTS_SYNTHESIS_FINISHED:
+            logger.info(
+                "turn_trace tts_synthesis_finished job_id=%s text_len=%s",
+                event.payload.get("job_id", "--"),
+                len(str(event.payload.get("text", ""))),
+            )
+        elif event.name is EventName.TTS_PLAYBACK_STARTED:
+            logger.info(
+                "turn_trace tts_playback_started job_id=%s text_len=%s",
+                event.payload.get("job_id", "--"),
+                len(str(event.payload.get("text", ""))),
+            )
+        elif event.name is EventName.TTS_PLAYBACK_FINISHED:
+            logger.info(
+                "turn_trace tts_playback_finished job_id=%s duration_ms=%s",
+                event.payload.get("job_id", "--"),
+                event.payload.get("duration_ms", "--"),
+            )
+        elif event.name is EventName.RESPONSE_READY:
+            logger.info(
+                "turn_trace response_ready text_len=%s",
+                len(str(getattr(event.payload.get("response"), "text", ""))),
+            )
         await self._apply_tts_lifecycle_event(event)
         await self.event_bus.publish(event)
 
@@ -842,6 +895,13 @@ class OrchestratorService:
     ) -> AiResponse:
         previous_response_id = self._resumable_openai_response_id()
         try:
+            logger.info(
+                "turn_trace cloud_request_sent model=%s previous_response_id=%s transcript_len=%s plan_steps=%s",
+                getattr(self.cloud_response, "model", "cloud"),
+                previous_response_id or "--",
+                len(transcript.text),
+                len(plan.steps),
+            )
             reply_result = await self.cloud_response.generate_reply(
                 transcript,
                 context,
@@ -851,6 +911,11 @@ class OrchestratorService:
                 tool_handler=self._handle_cloud_tool_request,
             )
             self._record_openai_reply(reply_result.response_id)
+            logger.info(
+                "turn_trace cloud_response_received response_id=%s text_len=%s",
+                reply_result.response_id or "--",
+                len(reply_result.response.text),
+            )
             return reply_result.response
         except Exception as exc:
             logger.exception("cloud response failed")

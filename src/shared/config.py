@@ -44,7 +44,9 @@ class RuntimeConfig:
     speech_latency_profile: Literal["fast", "balanced"] = "fast"
     whisper_model_path: Path | None = None
     whisper_binary_path: Path | None = None
+    whisper_command_extra_args: tuple[str, ...] = ()
     audio_record_command: tuple[str, ...] = ()
+    partial_transcripts_enabled: bool = True
     speech_silence_seconds: float = 1.2
     vad_threshold: float = 0.45
     vad_frame_ms: int = 30
@@ -53,7 +55,7 @@ class RuntimeConfig:
     max_recording_seconds: float = 15.0
     wake_word_enabled: bool = False
     follow_up_mode_enabled: bool = True
-    follow_up_listen_timeout_seconds: float = 3.0
+    follow_up_listen_timeout_seconds: float = 5.0
     follow_up_max_turns: int = 10
     wake_word_phrase: str = ""
     wake_word_model: str = ""
@@ -223,9 +225,17 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     )
     runtime.whisper_model_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_MODEL_PATH"))
     runtime.whisper_binary_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_BINARY_PATH"))
+    runtime.whisper_command_extra_args = _parse_command(
+        env.get(f"{ENV_PREFIX}WHISPER_COMMAND_EXTRA_ARGS"),
+        default=runtime.whisper_command_extra_args,
+    )
     runtime.audio_record_command = _parse_command(
         env.get(f"{ENV_PREFIX}AUDIO_RECORD_COMMAND"),
         default=runtime.audio_record_command,
+    )
+    runtime.partial_transcripts_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}PARTIAL_TRANSCRIPTS_ENABLED"),
+        default=runtime.partial_transcripts_enabled,
     )
     _apply_speech_latency_profile(runtime)
     runtime.speech_silence_seconds = _parse_float(
@@ -301,7 +311,7 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     elif runtime.wake_word_threshold > 1.0:
         runtime.wake_word_threshold = 1.0
     if runtime.follow_up_listen_timeout_seconds <= 0:
-        runtime.follow_up_listen_timeout_seconds = 3.0
+        runtime.follow_up_listen_timeout_seconds = 5.0
     runtime.follow_up_max_turns = max(1, runtime.follow_up_max_turns)
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
@@ -747,11 +757,11 @@ def _apply_speech_latency_profile(runtime: RuntimeConfig) -> None:
         runtime.utterance_tail_stable_polls = 2
         return
 
-    runtime.speech_silence_seconds = 0.55
-    runtime.vad_threshold = 0.45
+    runtime.speech_silence_seconds = 1.0
+    runtime.vad_threshold = 0.5
     runtime.vad_frame_ms = 30
     runtime.vad_start_trigger_frames = 2
-    runtime.vad_end_trigger_frames = 4
+    runtime.vad_end_trigger_frames = 5
     runtime.wake_lookback_seconds = 0.5
-    runtime.utterance_finalize_timeout_seconds = 0.25
+    runtime.utterance_finalize_timeout_seconds = 0.3
     runtime.utterance_tail_stable_polls = 1

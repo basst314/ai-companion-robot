@@ -1,0 +1,36 @@
+"""Helpers for extracting one channel from the ReSpeaker multichannel stream."""
+
+from __future__ import annotations
+
+
+def extract_interleaved_channel(
+    pcm_chunk: bytes,
+    *,
+    channels: int,
+    channel_index: int,
+    sample_width: int = 2,
+) -> bytes:
+    """Return one channel from interleaved PCM frames."""
+
+    if channels <= 0:
+        raise ValueError("channels must be positive")
+    if sample_width <= 0:
+        raise ValueError("sample_width must be positive")
+    if not 0 <= channel_index < channels:
+        raise ValueError("channel_index out of range")
+
+    frame_bytes = channels * sample_width
+    complete_bytes = len(pcm_chunk) - (len(pcm_chunk) % frame_bytes)
+    if complete_bytes <= 0:
+        return b""
+
+    source = memoryview(pcm_chunk)[:complete_bytes]
+    channel_offset = channel_index * sample_width
+    extracted = bytearray((complete_bytes // frame_bytes) * sample_width)
+    write_offset = 0
+    for frame_offset in range(0, complete_bytes, frame_bytes):
+        extracted[write_offset : write_offset + sample_width] = source[
+            frame_offset + channel_offset : frame_offset + channel_offset + sample_width
+        ]
+        write_offset += sample_width
+    return bytes(extracted)

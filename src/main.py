@@ -160,7 +160,9 @@ def _build_speech_services(
             audio_capture=audio_capture,
             model_path=runtime.whisper_model_path,
             binary_path=runtime.whisper_binary_path,
+            command_extra_args=runtime.whisper_command_extra_args,
             language_mode=runtime.language_mode,
+            partial_transcripts_enabled=runtime.partial_transcripts_enabled,
             speech_silence_seconds=runtime.speech_silence_seconds,
             vad_threshold=runtime.vad_threshold,
             vad_frame_ms=runtime.vad_frame_ms,
@@ -197,13 +199,15 @@ def _speech_latency_kwargs(runtime) -> dict[str, float]:
             "minimum_transcribe_seconds": 0.45,
             "partial_update_interval_seconds": 1.0,
             "minimum_utterance_seconds": 2.0,
+            "partial_snapshot_max_seconds": 4.0,
             "utterance_end_grace_seconds": 0.25,
         }
     return {
         "poll_interval_seconds": 0.10,
-        "minimum_transcribe_seconds": 0.30,
-        "partial_update_interval_seconds": 0.35,
+        "minimum_transcribe_seconds": 0.20,
+        "partial_update_interval_seconds": 0.20,
         "minimum_utterance_seconds": 0.80,
+        "partial_snapshot_max_seconds": 3.0,
         "utterance_end_grace_seconds": 0.05,
     }
 

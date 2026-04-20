@@ -30,7 +30,7 @@ Bootstrap the AI Companion Robot development/runtime environment.
 
 Options:
   --platform <macos|rpi>       Override detected platform
-  --model <tiny|base|small>
+  --model <tiny|tiny.en|base|base.en|small|small.en>
                                Whisper model to download
   --language-mode <auto|en|de|id>
                                Default runtime language mode
@@ -257,6 +257,9 @@ select_python() {
 
 choose_model() {
   local default_model="base"
+  if [[ "${PLATFORM}" == "rpi" ]]; then
+    default_model="tiny.en"
+  fi
   if [[ -n "${MODEL}" ]]; then
     printf '%s' "${MODEL}"
     return 0
@@ -266,17 +269,25 @@ choose_model() {
 
 Whisper model options:
   tiny  - smallest and fastest, lowest accuracy
-  base  - recommended for Raspberry Pi, better multilingual accuracy with manageable speed
-  small - slower and larger, but more accurate than base
+  tiny.en - smallest English-only model and fastest overall
+  base    - smaller multilingual model with manageable speed
+  base.en - English-only middle ground with better accuracy than tiny.en
+  small   - slower and larger, but more accurate than base
+  small.en - English-only model with better accuracy than base.en, but slower
 
+For English-only realtime use, tiny.en is the fastest option.
+For a better balance between speed and accuracy on the Pi, base.en is a good middle ground.
 For multilingual use, the non-.en models are preferred because they support language detection
 and transcription beyond English.
 EOF
-  printf '%s' "$(prompt_with_default "Whisper model (tiny, base, small)" "${default_model}")"
+  printf '%s' "$(prompt_with_default "Whisper model (tiny, tiny.en, base, base.en, small, small.en)" "${default_model}")"
 }
 
 choose_language_mode() {
   local default_language="auto"
+  if [[ "${PLATFORM}" == "rpi" ]]; then
+    default_language="en"
+  fi
   if [[ -n "${LANGUAGE_MODE}" ]]; then
     printf '%s' "${LANGUAGE_MODE}"
     return 0
@@ -740,6 +751,7 @@ write_env_file() {
   local tts_languages="$9"
   local tts_service_mode="${10}"
   local tts_expressive_de="${11}"
+  local whisper_command_extra_args="${12}"
   local whisper_binary="${WHISPER_REPO_DIR}/build/bin/whisper-cli"
   local whisper_model="${WHISPER_REPO_DIR}/models/ggml-${selected_model}.bin"
   local audio_command
@@ -762,7 +774,7 @@ write_env_file() {
     ui_browser_extra_args=""
   else
     audio_command='arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}'
-    playback_command='aplay {input_path}'
+    playback_command='aplay -D default:CARD=vc4hdmi1 {input_path}'
     tts_audio_backend="alsa_persistent"
     tts_alsa_device="default:CARD=vc4hdmi1"
     ui_backend="browser"
@@ -841,23 +853,25 @@ AI_COMPANION_UI_FACE_SECONDARY_MICRO_MOTION=true
 AI_COMPANION_UI_FACE_IDLE_BEHAVIORS=blink||look_side||quick_glance||bored||curious||scoot||boundary_press
 AI_COMPANION_WHISPER_BINARY_PATH=${whisper_binary}
 AI_COMPANION_WHISPER_MODEL_PATH=${whisper_model}
+AI_COMPANION_WHISPER_COMMAND_EXTRA_ARGS=${whisper_command_extra_args}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_command}
 AI_COMPANION_SPEECH_LATENCY_PROFILE=fast
-AI_COMPANION_SPEECH_SILENCE_SECONDS=0.55
-AI_COMPANION_VAD_THRESHOLD=0.45
+AI_COMPANION_SPEECH_SILENCE_SECONDS=1.0
+AI_COMPANION_VAD_THRESHOLD=0.5
 AI_COMPANION_VAD_FRAME_MS=30
 AI_COMPANION_VAD_START_TRIGGER_FRAMES=2
-AI_COMPANION_VAD_END_TRIGGER_FRAMES=4
+AI_COMPANION_VAD_END_TRIGGER_FRAMES=5
 AI_COMPANION_MAX_RECORDING_SECONDS=15
 AI_COMPANION_WAKE_WORD_ENABLED=$([[ "${wake_setup}" == "off" ]] && printf '%s' "false" || printf '%s' "true")
 AI_COMPANION_FOLLOW_UP_MODE_ENABLED=true
-AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=3.0
+AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS=5.0
 AI_COMPANION_FOLLOW_UP_MAX_TURNS=10
+AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED=$([[ "${PLATFORM}" == "rpi" ]] && printf '%s' "false" || printf '%s' "true")
 AI_COMPANION_WAKE_WORD_PHRASE=${wake_phrase}
 AI_COMPANION_WAKE_WORD_MODEL=${wake_model}
 AI_COMPANION_WAKE_WORD_THRESHOLD=0.5
 AI_COMPANION_WAKE_LOOKBACK_SECONDS=0.5
-AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.25
+AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS=0.3
 AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS=1
 AI_COMPANION_LANGUAGE_MODE=${selected_language_mode}
 # Provisioned Piper voice languages: ${tts_languages}
@@ -957,7 +971,7 @@ main() {
   local selected_model
   selected_model="$(choose_model)"
   case "${selected_model}" in
-    tiny|base|small) ;;
+    tiny|tiny.en|base|base.en|small|small.en) ;;
     *) fail "unsupported Whisper model '${selected_model}'" ;;
   esac
 
@@ -1022,6 +1036,11 @@ main() {
     openai_api_key="$(choose_openai_api_key)"
   fi
 
+  local whisper_command_extra_args=""
+  if [[ "${PLATFORM}" == "rpi" ]]; then
+    whisper_command_extra_args="--threads 4 --processors 1 --best-of 1 --beam-size 1 --no-fallback --no-prints --no-timestamps"
+  fi
+
   install_system_packages
 
   local python_cmd
@@ -1055,7 +1074,8 @@ main() {
     "${selected_tts_backend}" \
     "${selected_tts_languages}" \
     "${selected_tts_service_mode}" \
-    "${selected_tts_expressive_de}"
+    "${selected_tts_expressive_de}" \
+    "${whisper_command_extra_args}"
   configure_labwc_hide_cursor
   configure_labwc_cursor_autostart
   run_verification

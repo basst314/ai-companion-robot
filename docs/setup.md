@@ -65,7 +65,9 @@ Current supported variables:
 - `AI_COMPANION_UI_WAKE_COMMAND`
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
+- `AI_COMPANION_WHISPER_COMMAND_EXTRA_ARGS`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
+- `AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED`
 - `AI_COMPANION_SPEECH_LATENCY_PROFILE`
 - `AI_COMPANION_SPEECH_SILENCE_SECONDS`
 - `AI_COMPANION_VAD_THRESHOLD`
@@ -87,6 +89,7 @@ Current supported variables:
 
 You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
 The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after the bundled Silero VAD confirms trailing non-speech. Custom recorder commands therefore need to support raw PCM output to standard output.
+If you are using the ReSpeaker 4 Mic Array v3.0, the Pi setup in this repo now routes through `scripts/respeaker_capture.py`, which selects the board's processed channel 0 from the six-channel USB stream before handing audio to the robot.
 The supported UI path is the browser-backed face renderer launched in Chromium kiosk mode on Raspberry Pi. `AI_COMPANION_UI_BACKEND=browser` is the generated default.
 `AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
@@ -105,6 +108,7 @@ Raspberry Pi:
 - playback backend: `alsa_persistent`
 - ALSA device: `default:CARD=vc4hdmi1`
 - intended target: Raspberry Pi OS or another Debian-family Raspberry Pi image
+- fast English-only Whisper default: `tiny.en`; `base.en` is a good middle ground when you want a little more accuracy on the Pi
 
 macOS:
 - package manager: `brew`
@@ -119,7 +123,8 @@ Use these when you want repeatable automation:
 
 ```bash
 ./scripts/setup.sh --yes
-./scripts/setup.sh --yes --platform rpi --model base --language-mode auto
+./scripts/setup.sh --yes --platform rpi --model base.en --language-mode en
+./scripts/setup.sh --yes --platform rpi --model tiny.en --language-mode en
 ./scripts/setup.sh --yes --tts-backend piper --tts-languages en,de,id
 ./scripts/setup.sh --yes --skip-system-packages
 ```
@@ -133,7 +138,7 @@ If the script cannot support your environment yet, install manually:
 1. Install Python 3.11+, Git, CMake, and a recorder tool.
 2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS. On Raspberry Pi/Linux, the `tts` extra also installs `pyalsaaudio` for the ALSA-native playback backend. The browser-backed face renderer is part of the base app.
 3. Clone and build `whisper.cpp`.
-4. Download a model such as `base`.
+4. Download a model such as `base.en` for English-only Pi use, or `base` if you need multilingual transcription.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
 6. If you want real cloud replies, also fill in the OpenAI settings, set `AI_COMPANION_USE_MOCK_AI=false`, and prefer `gpt-5.2` for `AI_COMPANION_OPENAI_RESPONSE_MODEL` unless you are intentionally testing a different model.
 7. Run `.venv/bin/pytest -q`.

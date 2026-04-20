@@ -464,6 +464,11 @@ class TerminalDebugScreen(TerminalDebugSink):
     def emit_log(self, styled_text: str, *, plain_text: str, end: str, flush: bool) -> None:
         """Write a scrolling log message while preserving the sticky header."""
 
+        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        timestamp_styled = ConsoleFormatter(stream=self.stream).style(timestamp, "90")
+        styled_text = f"{timestamp_styled} {styled_text}"
+        plain_text = f"{timestamp} {plain_text}"
+
         if not self.active:
             self.stream.write(styled_text + end)
             if flush:
@@ -530,7 +535,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         return (status_row, audio_row, ring_row, ai_row, tts_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
-        current_time = datetime.now().strftime("%H:%M:%S")
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         elapsed = "--"
         if self.state.turn_started_at is not None:
             elapsed_seconds = max(0.0, (datetime.now(UTC) - self.state.turn_started_at).total_seconds())

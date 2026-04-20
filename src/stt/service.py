@@ -960,6 +960,8 @@ class WhisperCppSttService:
     minimum_transcribe_seconds: float = 0.45
     partial_update_interval_seconds: float = 1.0
     minimum_utterance_seconds: float = 2.0
+    partial_snapshot_max_seconds: float = 3.0
+    partial_transcripts_enabled: bool = True
     utterance_end_grace_seconds: float = 0.25
     utterance_finalize_timeout_seconds: float = 0.6
     utterance_tail_stable_polls: int = 2
@@ -1067,7 +1069,11 @@ class WhisperCppSttService:
                 if partial_transcript is not None:
                     last_partial_text = partial_transcript.text
                     speech_started = True
-                    logger.info("stt partial_ready text_len=%s", len(partial_transcript.text))
+                    logger.info(
+                        "turn_trace partial_transcript_ready text_len=%s duration=%.2f",
+                        len(partial_transcript.text),
+                        elapsed_seconds,
+                    )
                     yield partial_transcript
                 live_audio_path = getattr(session, "pcm_path", session.output_path)
                 audio_window = self._read_audio_window(live_audio_path)
@@ -1083,7 +1089,8 @@ class WhisperCppSttService:
                         last_duration_seconds = audio_window.duration_seconds
 
                     if (
-                        audio_window.duration_seconds >= self.minimum_transcribe_seconds
+                        self.partial_transcripts_enabled
+                        and audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
                         and self._allows_follow_up_transcription(audio_window, active_trigger=active_trigger)
@@ -1091,15 +1098,17 @@ class WhisperCppSttService:
                         and (datetime.now(UTC) - started_at).total_seconds() - last_partial_request_at
                         >= self.partial_update_interval_seconds
                     ):
+                        partial_audio_window = self._partial_transcription_window(audio_window)
                         logger.info(
-                            "stt partial_requested bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f",
+                            "turn_trace partial_requested bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f window_duration=%.2f",
                             len(audio_window.pcm_data),
                             audio_window.duration_seconds,
                             audio_window.peak_energy,
                             audio_window.trailing_non_speech_seconds,
+                            partial_audio_window.duration_seconds,
                         )
                         partial_task = asyncio.create_task(
-                            self._transcribe_snapshot(audio_window, started_at, is_final=False)
+                            self._transcribe_snapshot(partial_audio_window, started_at, is_final=False)
                         )
                         last_partial_request_at = (datetime.now(UTC) - started_at).total_seconds()
                         self._publish_audio_status(
@@ -1115,11 +1124,15 @@ class WhisperCppSttService:
                             partial_pending=True,
                         )
 
+                    silence_ready = (
+                        self.speech_silence_seconds <= 0
+                        or audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
+                    )
                     if (
                         speech_started
                         and audio_window.duration_seconds >= self.minimum_utterance_seconds
-                        and audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
-                        and audio_window.has_vad_speech
+                        and not audio_window.vad_active
+                        and silence_ready
                         and duration_progressed
                     ):
                         silence_poll_count += 1
@@ -1128,11 +1141,16 @@ class WhisperCppSttService:
 
                     if silence_poll_count >= self.silence_confirmation_polls:
                         logger.info(
-                            "stt stop_reason=confirmed_vad_tail duration=%.2f peak=%.1f vad_tail=%.2f",
+                            "turn_trace vad_end_confirmed duration=%.2f peak=%.1f vad_tail=%.2f",
                             audio_window.duration_seconds,
                             audio_window.peak_energy,
                             audio_window.trailing_non_speech_seconds,
                         )
+                        if partial_task is not None and not partial_task.done():
+                            partial_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await partial_task
+                            partial_task = None
                         if self.utterance_end_grace_seconds > 0:
                             await asyncio.sleep(self.utterance_end_grace_seconds)
                         break
@@ -1252,6 +1270,14 @@ class WhisperCppSttService:
                 vad_active=final_audio_window.vad_active,
                 partial_pending=False,
             )
+            logger.info(
+                "turn_trace final_audio_ready bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f path=%s",
+                len(final_audio_window.pcm_data),
+                final_audio_window.duration_seconds,
+                final_audio_window.peak_energy,
+                final_audio_window.trailing_non_speech_seconds,
+                final_audio_path,
+            )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
             self._prune_recording_artifacts(final_audio_path)
             yield Transcript(
@@ -1301,9 +1327,6 @@ class WhisperCppSttService:
         silence_poll_count = 0
         last_partial_request_at = 0.0
         partial_task: asyncio.Task[Transcript] | None = None
-        finalize_started_at: datetime | None = None
-        stable_tail_polls = 0
-        last_speech_endpoint_seconds = 0.0
 
         try:
             while True:
@@ -1315,6 +1338,11 @@ class WhisperCppSttService:
                 if partial_transcript is not None:
                     last_partial_text = partial_transcript.text
                     speech_started = True
+                    logger.info(
+                        "turn_trace partial_transcript_ready text_len=%s duration=%.2f",
+                        len(partial_transcript.text),
+                        elapsed_seconds,
+                    )
                     yield partial_transcript
 
                 audio_window = self.shared_live_state.current_utterance_window(
@@ -1327,57 +1355,50 @@ class WhisperCppSttService:
                     if self._speech_started(audio_window, active_trigger=active_trigger):
                         speech_started = True
 
+                    silence_ready = (
+                        self.speech_silence_seconds <= 0
+                        or audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
+                    )
                     if (
-                        audio_window.duration_seconds >= self.minimum_transcribe_seconds
+                        self.partial_transcripts_enabled
+                        and audio_window.duration_seconds >= self.minimum_transcribe_seconds
                         and partial_task is None
                         and audio_window.peak_energy >= self.speech_start_energy_threshold
                         and self._allows_follow_up_transcription(audio_window, active_trigger=active_trigger)
                         and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
                         and elapsed_seconds - last_partial_request_at >= self.partial_update_interval_seconds
                     ):
+                        partial_audio_window = self._partial_transcription_window(audio_window)
                         partial_task = asyncio.create_task(
-                            self._transcribe_snapshot(audio_window, started_at, is_final=False)
+                            self._transcribe_snapshot(partial_audio_window, started_at, is_final=False)
                         )
                         last_partial_request_at = elapsed_seconds
 
                     if (
                         speech_started
                         and audio_window.duration_seconds >= self.minimum_utterance_seconds
-                        and audio_window.trailing_non_speech_seconds >= self.speech_silence_seconds
-                        and audio_window.has_vad_speech
+                        and not audio_window.vad_active
+                        and silence_ready
                     ):
                         silence_poll_count += 1
                     else:
                         silence_poll_count = 0
-                        if (
-                            finalize_started_at is not None
-                            and audio_window.trailing_non_speech_seconds < self.speech_silence_seconds
-                        ):
-                            finalize_started_at = None
-                            stable_tail_polls = 0
 
-                    speech_endpoint_seconds = audio_window.last_vad_speech_offset_seconds
-                    if finalize_started_at is None and silence_poll_count >= self.silence_confirmation_polls:
-                        finalize_started_at = datetime.now(UTC)
-                        stable_tail_polls = 0
-                        last_speech_endpoint_seconds = speech_endpoint_seconds
-                    elif finalize_started_at is not None:
-                        if speech_endpoint_seconds > last_speech_endpoint_seconds + 0.05:
-                            finalize_started_at = None
-                            stable_tail_polls = 0
-                            silence_poll_count = 0
-                        else:
-                            if speech_endpoint_seconds <= last_speech_endpoint_seconds + 0.02:
-                                stable_tail_polls += 1
-                            else:
-                                stable_tail_polls = 0
-                            last_speech_endpoint_seconds = max(last_speech_endpoint_seconds, speech_endpoint_seconds)
-                            if (
-                                stable_tail_polls >= max(1, self.utterance_tail_stable_polls)
-                                or (datetime.now(UTC) - finalize_started_at).total_seconds()
-                                >= self.utterance_finalize_timeout_seconds
-                            ):
-                                break
+                    if silence_poll_count >= self.silence_confirmation_polls:
+                        logger.info(
+                            "turn_trace vad_end_confirmed duration=%.2f peak=%.1f vad_tail=%.2f",
+                            audio_window.duration_seconds,
+                            audio_window.peak_energy,
+                            audio_window.trailing_non_speech_seconds,
+                        )
+                        if partial_task is not None and not partial_task.done():
+                            partial_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await partial_task
+                            partial_task = None
+                        if self.utterance_end_grace_seconds > 0:
+                            await asyncio.sleep(self.utterance_end_grace_seconds)
+                        break
 
                     self._publish_audio_status(
                         current_noise=audio_window.current_energy,
@@ -1464,6 +1485,14 @@ class WhisperCppSttService:
                 vad_active=final_audio_window.vad_active,
                 partial_pending=False,
             )
+            logger.info(
+                "turn_trace final_audio_ready bytes=%s duration=%.2f peak=%.1f vad_tail=%.2f path=%s",
+                len(final_audio_window.pcm_data),
+                final_audio_window.duration_seconds,
+                final_audio_window.peak_energy,
+                final_audio_window.trailing_non_speech_seconds,
+                final_audio_path,
+            )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
             self._prune_recording_artifacts(final_audio_path)
             yield Transcript(
@@ -1539,6 +1568,19 @@ class WhisperCppSttService:
     ) -> AudioWindow:
         return vad_tracker.apply(audio_window)
 
+    def _partial_transcription_window(self, audio_window: AudioWindow) -> AudioWindow:
+        if self.partial_snapshot_max_seconds <= 0:
+            return audio_window
+        if audio_window.duration_seconds <= self.partial_snapshot_max_seconds:
+            return audio_window
+        start_offset_seconds = max(0.0, audio_window.duration_seconds - self.partial_snapshot_max_seconds)
+        sliced = _slice_audio_window(
+            audio_window,
+            start_offset_seconds,
+            threshold=self.speech_energy_threshold,
+        )
+        return sliced or audio_window
+
     async def _capture_failed(self, session: RecordingSession) -> bool:
         return session.returncode not in (None, 0) and not session.stop_requested
 
@@ -1582,7 +1624,12 @@ class WhisperCppSttService:
     ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
         snapshot_path = self._write_snapshot_wav(audio_window)
         try:
-            logger.info("stt whisper_snapshot is_final=%s path=%s bytes=%s", is_final, snapshot_path, len(audio_window.pcm_data))
+            logger.info(
+                "turn_trace transcription_started is_final=%s path=%s bytes=%s",
+                is_final,
+                snapshot_path,
+                len(audio_window.pcm_data),
+            )
             transcript, segments = await self._transcribe_file_with_segments(snapshot_path, started_at, is_final=is_final)
         finally:
             with contextlib.suppress(OSError):
@@ -1605,7 +1652,7 @@ class WhisperCppSttService:
     ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
         output_path = audio_path.with_suffix("")
         command = self._build_command(audio_path, output_path)
-        logger.info("stt whisper_start is_final=%s path=%s", is_final, audio_path)
+        logger.info("turn_trace whisper_cli_started is_final=%s path=%s", is_final, audio_path)
         whisper_started_at = datetime.now(UTC)
         self._publish_whisper_status("running")
         try:
@@ -1614,7 +1661,11 @@ class WhisperCppSttService:
             if result.returncode != 0:
                 error_text = result.stderr.strip() or result.stdout.strip() or "whisper.cpp transcription failed"
                 raise RuntimeError(error_text)
-            logger.info("stt whisper_done is_final=%s stdout_len=%s", is_final, len(result.stdout))
+            logger.info(
+                "turn_trace whisper_cli_finished is_final=%s stdout_len=%s",
+                is_final,
+                len(result.stdout),
+            )
             elapsed_seconds = max(0.0, (ended_at - whisper_started_at).total_seconds())
             self._publish_whisper_status(f"{elapsed_seconds:0.2f}s")
         except Exception:
@@ -2111,6 +2162,12 @@ class OpenWakeWordWakeWordService:
             self.shared_live_state.start_utterance(stream_start_offset=utterance_start_stream_offset)
             self._publish_ring_buffer_state(self.wake_lookback_seconds)
             self._publish_wake_status("awake", wake_phrase)
+            logger.info(
+                "turn_trace wake_word_detected phrase=%s stream_offset=%s lookback_seconds=%.2f",
+                wake_phrase,
+                utterance_start_stream_offset,
+                self.wake_lookback_seconds,
+            )
             return WakeDetectionResult(
                 detected=True,
                 audio_window=self.shared_live_state.current_wake_window(

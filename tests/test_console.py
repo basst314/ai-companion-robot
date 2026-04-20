@@ -47,6 +47,23 @@ def test_console_formatter_adds_timestamp_prefix(monkeypatch) -> None:
     assert " message" in stamped
 
 
+def test_terminal_debug_screen_prefixes_emitted_logs_with_timestamp(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    log_path = tmp_path / "console.log"
+    configure_console_log(log_path)
+    try:
+        stream = FakeTty()
+        screen = TerminalDebugScreen(stream=stream)
+        screen.emit_log("[DBG] hello", plain_text="[DBG] hello", end="\n", flush=False)
+    finally:
+        configure_console_log(None)
+
+    output = stream.getvalue()
+    assert output.startswith("[")
+    assert "[DBG] hello" in output
+    assert log_path.read_text(encoding="utf-8").startswith("[")
+
+
 def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     screen = TerminalDebugScreen(stream=FakeTty())
     screen.update_runtime(
@@ -367,4 +384,6 @@ def test_console_log_mirror_stays_plain_text_with_terminal_debug(tmp_path: Path)
     configure_terminal_debug_screen(None)
     configure_console_log(None)
 
-    assert (tmp_path / "console.log").read_text() == "hello\n"
+    mirrored = (tmp_path / "console.log").read_text()
+    assert mirrored.startswith("[")
+    assert mirrored.endswith(" hello\n")

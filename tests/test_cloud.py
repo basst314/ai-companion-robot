@@ -324,6 +324,8 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     assert "I can currently see Basti." in log_text
     assert "Robot wake-word/name: 'Oreo'" in log_text
     assert "leftover wake-word audio" in log_text
+    assert "turn_trace cloud_request_sent" in log_text
+    assert "turn_trace cloud_response_received" in log_text
     assert "[AI] reply output" in log_text
     assert "I can see you, and I am looking your way." in log_text
 

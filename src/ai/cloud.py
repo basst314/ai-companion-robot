@@ -261,6 +261,12 @@ class OpenAiCloudResponseService:
         )
         reply_schema = _spoken_reply_schema()
         tools = [_camera_snapshot_tool_definition()] if tool_handler is not None else None
+        logger.info(
+            "turn_trace cloud_request_sent model=%s previous_response_id=%s prompt_chars=%s",
+            self.model,
+            previous_response_id or "--",
+            len(prompt),
+        )
         response_payload = await self.client.create_response(
             model=self.model,
             instructions=instructions,
@@ -281,6 +287,11 @@ class OpenAiCloudResponseService:
             f"model={self.model}\nmax_output_tokens={self.max_output_tokens}\nInstructions:\n{instructions}\n\nInput:\n{prompt}",
         )
         _log_ai_text_block("reply output", json.dumps(response_payload, indent=2, ensure_ascii=True))
+        logger.info(
+            "turn_trace cloud_response_received model=%s response_id=%s",
+            self.model,
+            str(response_payload.get("id", "")).strip() or "--",
+        )
         return await self._resolve_response(
             transcript,
             context,

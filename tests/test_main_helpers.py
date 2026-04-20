@@ -179,11 +179,15 @@ def test_build_speech_and_wake_word_services_cover_error_and_success_paths(monke
         real_build_wake_word_service(config, shared_live_state=object())
 
 
-def test_speech_latency_kwargs_and_wake_word_helper_branches() -> None:
+def test_speech_latency_kwargs_and_wake_word_helper_branches(monkeypatch) -> None:
     runtime = _base_config().runtime
     assert main_mod._speech_latency_kwargs(runtime)["poll_interval_seconds"] == 0.10
+    assert main_mod._speech_latency_kwargs(runtime)["minimum_transcribe_seconds"] == 0.20
+    assert main_mod._speech_latency_kwargs(runtime)["partial_update_interval_seconds"] == 0.20
+    assert main_mod._speech_latency_kwargs(runtime)["partial_snapshot_max_seconds"] == 3.0
     runtime.speech_latency_profile = "balanced"
     assert main_mod._speech_latency_kwargs(runtime)["poll_interval_seconds"] == 0.35
+    assert main_mod._speech_latency_kwargs(runtime)["partial_snapshot_max_seconds"] == 4.0
 
     config = _base_config()
     config.runtime.wake_word_enabled = False
@@ -204,6 +208,18 @@ def test_speech_latency_kwargs_and_wake_word_helper_branches() -> None:
     config.runtime.stt_backend = "mock"
     with pytest.raises(RuntimeError, match="speech input mode"):
         main_mod._build_wake_word_service(config, shared_live_state=object())
+
+    config = _base_config()
+    config.runtime.stt_backend = "whisper_cpp"
+    config.runtime.whisper_model_path = Path("/models/ggml-tiny.en.bin")
+    config.runtime.whisper_binary_path = Path("/usr/local/bin/whisper-cli")
+    config.runtime.whisper_command_extra_args = ("--threads", "4", "--best-of", "1")
+    config.runtime.partial_transcripts_enabled = False
+    monkeypatch.setattr(main_mod, "WhisperCppSttService", _FakeWhisperStt)
+    stt, _wake_word = main_mod._build_speech_services(config)
+    assert isinstance(stt, _FakeWhisperStt)
+    assert stt.kwargs["command_extra_args"] == ("--threads", "4", "--best-of", "1")
+    assert stt.kwargs["partial_transcripts_enabled"] is False
 
 
 def test_resolve_runtime_path_and_runtime_logging(monkeypatch, tmp_path: Path) -> None:
