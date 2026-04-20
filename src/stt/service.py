@@ -955,7 +955,7 @@ class WhisperCppSttService:
     max_recording_seconds: float = 15.0
     no_speech_timeout_seconds: float = 8.0
     quiet_abort_seconds: float = 2.5
-    follow_up_listen_timeout_seconds: float = 3.0
+    follow_up_listen_timeout_seconds: float = 5.0
     poll_interval_seconds: float = 0.35
     minimum_transcribe_seconds: float = 0.45
     partial_update_interval_seconds: float = 1.0

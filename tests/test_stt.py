@@ -1000,7 +1000,7 @@ def test_whisper_cpp_stt_service_uses_single_follow_up_listen_timeout(tmp_path: 
     )
 
     assert service._follow_up_timeout("wake") == 8.0
-    assert service._follow_up_timeout("follow_up") == 3.0
+    assert service._follow_up_timeout("follow_up") == 5.0
 
 
 def test_whisper_cpp_stt_service_follow_up_requires_vad_speech_before_transcribing(tmp_path: Path) -> None:
