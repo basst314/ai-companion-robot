@@ -34,6 +34,7 @@ from shared.models import (
     SpeechStyle,
     SynthesizedAudio,
 )
+from shared.process_utils import parent_death_signal_preexec_fn
 from tts.alsa_backend import AlsaPcmConfig, AlsaPlaybackWorker, AlsaQueuedPcmJob
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,7 @@ class PiperManagedProcess:
             *command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            preexec_fn=parent_death_signal_preexec_fn(),
         )
         if self.process.stderr is not None:
             self._stderr_task = asyncio.create_task(self._capture_stderr(self.process))
@@ -299,6 +301,8 @@ class PiperManagedProcess:
             if not line:
                 return
             message = line.decode("utf-8", errors="replace").rstrip()
+            if not message:
+                continue
             if "This is a development server. Do not use it in a production deployment." in message:
                 continue
             logger.info("piper.stderr %s", message)

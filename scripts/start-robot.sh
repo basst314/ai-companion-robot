@@ -62,7 +62,6 @@ launch_robot() {
     ) &
   fi
   runtime_env=(
-    "AI_COMPANION_INTERACTIVE_CONSOLE=true"
     "AI_COMPANION_UI_BROWSER_PROFILE_DIR=${AI_COMPANION_UI_BROWSER_PROFILE_DIR:-${browser_profile_dir}}"
     "AI_COMPANION_UI_BROWSER_EXTRA_ARGS=${AI_COMPANION_UI_BROWSER_EXTRA_ARGS:---ozone-platform=wayland --password-store=basic --use-mock-keychain}"
   )

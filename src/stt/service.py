@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import os
 import platform
@@ -15,12 +16,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequen
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
+from urllib import parse
+
+from shared.http_client import AsyncPersistentHttpClient, encode_multipart_form_data
+from shared.process_utils import parent_death_signal_preexec_fn
 
 from shared.models import Language, Transcript
 
 import logging
 from shared.console import ConsoleFormatter, TerminalDebugSink
+from stt.respeaker_capture import InterleavedChannelExtractor
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,9 @@ def _emit_whisper_terminal_status(message: str, terminal_debug: TerminalDebugSin
 
 class SttService(Protocol):
     """Interface for streaming transcript updates."""
+
+    async def start(self) -> None:
+        """Prepare any background dependencies before the first utterance."""
 
     async def listen_once(self) -> Transcript:
         """Capture one utterance and return the final transcript."""
@@ -412,6 +421,9 @@ class MockSttService:
     _sequences: tuple[tuple[Transcript, ...], ...] = field(default_factory=tuple)
     _listen_index: int = 0
 
+    async def start(self) -> None:
+        return None
+
     async def listen_once(self) -> Transcript:
         if self._sequences:
             if self._listen_index >= len(self._sequences):
@@ -553,6 +565,8 @@ class ShellAudioCaptureService:
     startup_timeout_seconds: float = 2.0
     sample_rate: int = 16000
     channels: int = 1
+    input_channels: int = 1
+    channel_index: int = 0
     sample_width: int = 2
     stream_format: str = "s16le"
 
@@ -648,16 +662,36 @@ class ShellAudioCaptureService:
     ) -> None:
         if process.stdout is None:
             return
+        extractor = None
+        if self.input_channels > 1:
+            extractor = InterleavedChannelExtractor(
+                channels=self.input_channels,
+                channel_index=self.channel_index,
+                sample_width=self.sample_width,
+            )
         with session.pcm_path.open("ab") if on_chunk is None else contextlib.nullcontext() as handle:
             while True:
                 chunk = await process.stdout.read(4096)
                 if not chunk:
                     break
-                session.note_chunk(chunk)
-                if on_chunk is not None:
-                    on_chunk(chunk)
+                processed_chunk = extractor.feed(chunk) if extractor is not None else chunk
+                if not processed_chunk:
                     continue
-                handle.write(chunk)
+                session.note_chunk(processed_chunk)
+                if on_chunk is not None:
+                    on_chunk(processed_chunk)
+                    continue
+                handle.write(processed_chunk)
+                handle.flush()
+            if extractor is not None:
+                final_chunk = extractor.flush()
+                if not final_chunk:
+                    return
+                session.note_chunk(final_chunk)
+                if on_chunk is not None:
+                    on_chunk(final_chunk)
+                    return
+                handle.write(final_chunk)
                 handle.flush()
 
     async def _capture_stderr(self, process: asyncio.subprocess.Process, session: ShellRecordingSession) -> None:
@@ -677,6 +711,182 @@ def _replace_many(value: str, replacements: dict[str, str]) -> str:
     for key, replacement in replacements.items():
         rendered = rendered.replace(key, replacement)
     return rendered
+
+
+@dataclass(slots=True, frozen=True)
+class WhisperServerResponse:
+    """Structured whisper-server response plus transport timings."""
+
+    payload: dict[str, object]
+    first_byte_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class WhisperServerClient:
+    """Persistent whisper-server HTTP client."""
+
+    base_url: str
+    timeout_seconds: float = 20.0
+    _http_client: AsyncPersistentHttpClient | None = field(default=None, init=False, repr=False)
+
+    async def start(self) -> None:
+        await self._ensure_http_client()
+
+    async def shutdown(self) -> None:
+        if self._http_client is not None:
+            await self._http_client.close()
+
+    async def transcribe_wav(
+        self,
+        wav_bytes: bytes,
+        *,
+        language_mode: str,
+        file_name: str = "input.wav",
+    ) -> WhisperServerResponse:
+        client = await self._ensure_http_client()
+        body, content_type = encode_multipart_form_data(
+            {
+                "response_format": "verbose_json",
+                "language": language_mode,
+                "no_fallback": "true",
+                "no_language_probabilities": "true",
+            },
+            file_field="file",
+            file_name=file_name,
+            file_content=wav_bytes,
+            file_content_type="audio/wav",
+        )
+        response = await client.post(
+            path="/inference",
+            body=body,
+            headers={"Content-Type": content_type},
+        )
+        if response.status >= 400:
+            raise RuntimeError(f"whisper-server failed with HTTP {response.status}: {response.text()}")
+        payload = json.loads(response.body.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError("whisper-server response was not a JSON object")
+        return WhisperServerResponse(
+            payload=payload,
+            first_byte_at=response.first_byte_at,
+            finished_at=response.finished_at,
+        )
+
+    async def _ensure_http_client(self) -> AsyncPersistentHttpClient:
+        if self._http_client is None:
+            self._http_client = AsyncPersistentHttpClient(
+                base_url=self.base_url,
+                timeout_seconds=self.timeout_seconds,
+            )
+        return self._http_client
+
+
+@dataclass(slots=True)
+class WhisperManagedProcess:
+    """Managed whisper-server lifecycle used on the Pi latency path."""
+
+    base_url: str
+    model_path: Path
+    binary_path: Path | None = None
+    language_mode: str = "auto"
+    command_extra_args: tuple[str, ...] = ()
+    startup_timeout_seconds: float = 8.0
+    shutdown_timeout_seconds: float = 3.0
+    process: asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
+    _stderr_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+
+    async def ensure_running(self) -> None:
+        if await self._healthy():
+            return
+        if self.process is not None and self.process.returncode is None:
+            return
+
+        command = self._default_command()
+        logger.info("starting managed whisper-server: %s", " ".join(command))
+        self.process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            preexec_fn=parent_death_signal_preexec_fn(),
+        )
+        if self.process.stderr is not None:
+            self._stderr_task = asyncio.create_task(self._capture_stderr(self.process))
+
+        deadline = asyncio.get_running_loop().time() + self.startup_timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            if await self._healthy():
+                return
+            await asyncio.sleep(0.1)
+
+        await self.shutdown()
+        raise RuntimeError(f"managed whisper-server at {self.base_url} did not become ready in time")
+
+    async def shutdown(self) -> None:
+        process = self.process
+        stderr_task = self._stderr_task
+        self.process = None
+        self._stderr_task = None
+
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=self.shutdown_timeout_seconds)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    await process.wait()
+
+        if stderr_task is not None:
+            stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stderr_task
+
+    async def _healthy(self) -> bool:
+        try:
+            client = AsyncPersistentHttpClient(base_url=self.base_url, timeout_seconds=1.0)
+            try:
+                response = await client.get("/")
+            finally:
+                await client.close()
+            return response.status == 200
+        except Exception:
+            return False
+
+    def _default_command(self) -> tuple[str, ...]:
+        if self.binary_path is None:
+            raise RuntimeError("whisper binary path is not configured")
+        parsed_base_url = self.base_url.rstrip("/")
+        command = [
+            str(self.binary_path).replace("whisper-cli", "whisper-server"),
+            "--host",
+            parse.urlparse(parsed_base_url).hostname or "127.0.0.1",
+            "--port",
+            str(parse.urlparse(parsed_base_url).port or 8080),
+            "-m",
+            str(self.model_path),
+            "-l",
+            self.language_mode,
+        ]
+        command.extend(self._server_safe_extra_args())
+        return tuple(command)
+
+    def _server_safe_extra_args(self) -> tuple[str, ...]:
+        unsupported_flags = {"--no-prints"}
+        return tuple(arg for arg in self.command_extra_args if arg not in unsupported_flags)
+
+    async def _capture_stderr(self, process: asyncio.subprocess.Process) -> None:
+        assert process.stderr is not None
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                return
+            message = line.decode("utf-8", errors="replace").rstrip()
+            if not message:
+                continue
+            logger.info("whisper-server.stderr %s", message)
 
 
 @dataclass(slots=True, frozen=True)
@@ -943,6 +1153,9 @@ class WhisperCppSttService:
     audio_capture: AudioCaptureService
     model_path: Path
     binary_path: Path | None = None
+    whisper_transport: Literal["cli", "server"] = "cli"
+    whisper_server_base_url: str = "http://127.0.0.1:8080"
+    whisper_server_mode: Literal["managed", "external"] = "external"
     language_mode: str = "auto"
     runner: SubprocessRunner = _default_run_command
     command_extra_args: tuple[str, ...] = ()
@@ -972,9 +1185,40 @@ class WhisperCppSttService:
     terminal_debug: TerminalDebugSink | None = None
     shared_live_state: SharedLiveSpeechState | None = None
     endpoint_vad_factory: Callable[[], EndpointVadModel] = _default_endpoint_vad_factory
+    whisper_server_client_factory: Callable[[str, float], WhisperServerClient] = field(
+        default=lambda base_url, timeout_seconds: WhisperServerClient(
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    whisper_server_process_factory: Callable[..., WhisperManagedProcess] = WhisperManagedProcess
     _primed_audio_window: AudioWindow | None = field(default=None, init=False, repr=False)
     _endpoint_vad_ready: bool = field(default=False, init=False, repr=False)
     _current_utterance_trigger: str | None = field(default=None, init=False, repr=False)
+    _server_client: WhisperServerClient | None = field(default=None, init=False, repr=False)
+    _server_process: WhisperManagedProcess | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.whisper_transport != "server":
+            return
+        self._server_client = self.whisper_server_client_factory(
+            self.whisper_server_base_url,
+            max(1.0, self.utterance_finalize_timeout_seconds + self.max_recording_seconds + 5.0),
+        )
+        if self.whisper_server_mode == "managed":
+            self._server_process = self.whisper_server_process_factory(
+                base_url=self.whisper_server_base_url,
+                model_path=self.model_path,
+                binary_path=self.binary_path,
+                language_mode=self.language_mode,
+                command_extra_args=self.command_extra_args,
+            )
+
+    async def start(self) -> None:
+        if self._server_process is not None:
+            await self._server_process.ensure_running()
+        if self._server_client is not None:
+            await self._server_client.start()
 
     def prime_wake_audio(self, audio_window: AudioWindow | None) -> None:
         """Seed the next speech turn with audio already captured during wake detection."""
@@ -1021,6 +1265,10 @@ class WhisperCppSttService:
 
         if self.shared_live_state is not None:
             await self.shared_live_state.close()
+        if self._server_client is not None:
+            await self._server_client.shutdown()
+        if self._server_process is not None:
+            await self._server_process.shutdown()
 
     def ensure_endpoint_vad_ready(self) -> None:
         """Fail early if endpoint VAD cannot initialize for streaming speech mode."""
@@ -1060,6 +1308,7 @@ class WhisperCppSttService:
         last_duration_seconds = 0.0
         last_partial_request_at = 0.0
         partial_task: asyncio.Task[Transcript] | None = None
+        vad_end_at: datetime | None = None
 
         try:
             while True:
@@ -1140,6 +1389,7 @@ class WhisperCppSttService:
                         silence_poll_count = 0
 
                     if silence_poll_count >= self.silence_confirmation_polls:
+                        vad_end_at = datetime.now(UTC)
                         logger.info(
                             "turn_trace vad_end_confirmed duration=%.2f peak=%.1f vad_tail=%.2f",
                             audio_window.duration_seconds,
@@ -1280,13 +1530,11 @@ class WhisperCppSttService:
             )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
             self._prune_recording_artifacts(final_audio_path)
-            yield Transcript(
-                text=final_transcript.text,
-                language=final_transcript.language,
-                confidence=final_transcript.confidence,
-                is_final=True,
+            yield self._finalize_transcript_result(
+                final_transcript,
                 started_at=started_at,
                 ended_at=ended_at,
+                vad_end_at=vad_end_at,
             )
         finally:
             if partial_task is not None and not partial_task.done():
@@ -1327,6 +1575,7 @@ class WhisperCppSttService:
         silence_poll_count = 0
         last_partial_request_at = 0.0
         partial_task: asyncio.Task[Transcript] | None = None
+        vad_end_at: datetime | None = None
 
         try:
             while True:
@@ -1385,6 +1634,7 @@ class WhisperCppSttService:
                         silence_poll_count = 0
 
                     if silence_poll_count >= self.silence_confirmation_polls:
+                        vad_end_at = datetime.now(UTC)
                         logger.info(
                             "turn_trace vad_end_confirmed duration=%.2f peak=%.1f vad_tail=%.2f",
                             audio_window.duration_seconds,
@@ -1495,13 +1745,11 @@ class WhisperCppSttService:
             )
             final_transcript = await self._transcribe_snapshot(final_audio_window, started_at, is_final=True)
             self._prune_recording_artifacts(final_audio_path)
-            yield Transcript(
-                text=final_transcript.text,
-                language=final_transcript.language,
-                confidence=final_transcript.confidence,
-                is_final=True,
+            yield self._finalize_transcript_result(
+                final_transcript,
                 started_at=started_at,
                 ended_at=ended_at,
+                vad_end_at=vad_end_at,
             )
         finally:
             if partial_task is not None and not partial_task.done():
@@ -1622,10 +1870,24 @@ class WhisperCppSttService:
         *,
         is_final: bool,
     ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
+        if self.whisper_transport == "server":
+            logger.info(
+                "turn_trace transcription_started transport=server is_final=%s source=%s bytes=%s",
+                is_final,
+                audio_window.source_path,
+                len(audio_window.pcm_data),
+            )
+            return await self._transcribe_wav_bytes_with_segments(
+                self._audio_window_wav_bytes(audio_window),
+                started_at,
+                is_final=is_final,
+                file_name=f"{audio_window.source_path.stem}.wav",
+            )
+
         snapshot_path = self._write_snapshot_wav(audio_window)
         try:
             logger.info(
-                "turn_trace transcription_started is_final=%s path=%s bytes=%s",
+                "turn_trace transcription_started transport=cli is_final=%s path=%s bytes=%s",
                 is_final,
                 snapshot_path,
                 len(audio_window.pcm_data),
@@ -1650,6 +1912,15 @@ class WhisperCppSttService:
         *,
         is_final: bool,
     ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
+        if self.whisper_transport == "server":
+            logger.info("turn_trace whisper_server_started is_final=%s path=%s", is_final, audio_path)
+            return await self._transcribe_wav_bytes_with_segments(
+                audio_path.read_bytes(),
+                started_at,
+                is_final=is_final,
+                file_name=audio_path.name,
+            )
+
         output_path = audio_path.with_suffix("")
         command = self._build_command(audio_path, output_path)
         logger.info("turn_trace whisper_cli_started is_final=%s path=%s", is_final, audio_path)
@@ -1675,6 +1946,50 @@ class WhisperCppSttService:
         data = _extract_json_payload(transcript_json)
         transcript = self._parse_transcript_payload(data, started_at, ended_at, is_final=is_final)
         return transcript, _extract_whisper_segments(data)
+
+    async def _transcribe_wav_bytes_with_segments(
+        self,
+        wav_bytes: bytes,
+        started_at: datetime,
+        *,
+        is_final: bool,
+        file_name: str,
+    ) -> tuple[Transcript, tuple[WhisperSegment, ...]]:
+        client = await self._ensure_server_client()
+        whisper_started_at = datetime.now(UTC)
+        self._publish_whisper_status("running")
+        try:
+            response = await client.transcribe_wav(
+                wav_bytes,
+                language_mode=self.language_mode,
+                file_name=file_name,
+            )
+            ended_at = datetime.now(UTC)
+            logger.info(
+                "turn_trace whisper_server_finished is_final=%s payload_keys=%s",
+                is_final,
+                len(response.payload),
+            )
+            elapsed_seconds = max(0.0, (ended_at - whisper_started_at).total_seconds())
+            self._publish_whisper_status(f"{elapsed_seconds:0.2f}s")
+        except Exception:
+            self._publish_whisper_status(None)
+            raise
+        transcript = self._parse_transcript_payload(response.payload, started_at, ended_at, is_final=is_final)
+        return transcript, _extract_whisper_segments(response.payload)
+
+    async def _ensure_server_client(self) -> WhisperServerClient:
+        if self.whisper_transport != "server":
+            raise RuntimeError("server client requested while whisper transport is not 'server'")
+        if self._server_process is not None:
+            await self._server_process.ensure_running()
+        if self._server_client is None:
+            self._server_client = self.whisper_server_client_factory(
+                self.whisper_server_base_url,
+                max(1.0, self.utterance_finalize_timeout_seconds + self.max_recording_seconds + 5.0),
+            )
+        await self._server_client.start()
+        return self._server_client
 
     def _publish_audio_status(
         self,
@@ -1853,7 +2168,11 @@ class WhisperCppSttService:
     ) -> Transcript:
         transcript_text = _extract_transcript_text(data)
         result = data.get("result")
-        language_code = result.get("language") if isinstance(result, dict) else None
+        language_code = (
+            result.get("language")
+            if isinstance(result, dict)
+            else data.get("language", data.get("lang"))
+        )
         language = _map_language_code(language_code)
         return Transcript(
             text=transcript_text,
@@ -1903,6 +2222,37 @@ class WhisperCppSttService:
             pcm_data=audio_window.pcm_data,
         )
         return snapshot_path
+
+    def _audio_window_wav_bytes(self, audio_window: AudioWindow) -> bytes:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(audio_window.channels)
+            wav_file.setsampwidth(audio_window.sample_width)
+            wav_file.setframerate(audio_window.sample_rate)
+            wav_file.writeframes(audio_window.pcm_data)
+        return buffer.getvalue()
+
+    def _finalize_transcript_result(
+        self,
+        transcript: Transcript,
+        *,
+        started_at: datetime,
+        ended_at: datetime,
+        vad_end_at: datetime | None,
+    ) -> Transcript:
+        metadata = dict(transcript.metadata)
+        if vad_end_at is not None:
+            metadata["vad_end_at"] = vad_end_at
+        metadata["stt_final_ready_at"] = transcript.ended_at or datetime.now(UTC)
+        return Transcript(
+            text=transcript.text,
+            language=transcript.language,
+            confidence=transcript.confidence,
+            is_final=True,
+            started_at=started_at,
+            ended_at=ended_at,
+            metadata=metadata,
+        )
 
     def _persist_final_audio(self, audio_window: AudioWindow) -> Path:
         if self.shared_live_state is not None:
@@ -2412,6 +2762,10 @@ def _extract_json_payload(stdout: str) -> dict[str, object]:
 def _extract_transcript_text(data: dict[str, object]) -> str:
     """Support a couple of plausible whisper.cpp JSON result shapes."""
 
+    top_level_text = data.get("text")
+    if isinstance(top_level_text, str):
+        return top_level_text.strip()
+
     result = data.get("result")
     if isinstance(result, dict):
         text = result.get("text")
@@ -2429,6 +2783,18 @@ def _extract_transcript_text(data: dict[str, object]) -> str:
             if pieces:
                 return " ".join(piece for piece in pieces if piece).strip()
             return ""
+
+    segments = data.get("segments")
+    if isinstance(segments, list):
+        pieces = []
+        for segment in segments:
+            if isinstance(segment, dict):
+                segment_text = segment.get("text")
+                if isinstance(segment_text, str):
+                    pieces.append(segment_text.strip())
+        if pieces:
+            return " ".join(piece for piece in pieces if piece).strip()
+        return ""
 
     transcription = data.get("transcription")
     if isinstance(transcription, str):
@@ -2449,9 +2815,9 @@ def _extract_transcript_text(data: dict[str, object]) -> str:
 
 def _extract_whisper_segments(data: dict[str, object]) -> tuple[WhisperSegment, ...]:
     result = data.get("result")
-    if not isinstance(result, dict):
-        return ()
-    segments = result.get("segments")
+    segments = result.get("segments") if isinstance(result, dict) else None
+    if not isinstance(segments, list):
+        segments = data.get("segments")
     if not isinstance(segments, list):
         return ()
 

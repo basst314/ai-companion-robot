@@ -44,8 +44,13 @@ class RuntimeConfig:
     speech_latency_profile: Literal["fast", "balanced"] = "fast"
     whisper_model_path: Path | None = None
     whisper_binary_path: Path | None = None
+    whisper_transport: Literal["cli", "server"] = "cli"
+    whisper_server_base_url: str = "http://127.0.0.1:8080"
+    whisper_server_mode: Literal["managed", "external"] = "external"
     whisper_command_extra_args: tuple[str, ...] = ()
     audio_record_command: tuple[str, ...] = ()
+    audio_input_channels: int = 1
+    audio_channel_index: int = 0
     partial_transcripts_enabled: bool = True
     speech_silence_seconds: float = 1.2
     vad_threshold: float = 0.45
@@ -225,6 +230,18 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     )
     runtime.whisper_model_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_MODEL_PATH"))
     runtime.whisper_binary_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_BINARY_PATH"))
+    runtime.whisper_transport = _parse_whisper_transport(
+        env.get(f"{ENV_PREFIX}WHISPER_TRANSPORT"),
+        default=runtime.whisper_transport,
+    )
+    runtime.whisper_server_base_url = env.get(
+        f"{ENV_PREFIX}WHISPER_SERVER_BASE_URL",
+        runtime.whisper_server_base_url,
+    ).strip() or runtime.whisper_server_base_url
+    runtime.whisper_server_mode = _parse_whisper_server_mode(
+        env.get(f"{ENV_PREFIX}WHISPER_SERVER_MODE"),
+        default=runtime.whisper_server_mode,
+    )
     runtime.whisper_command_extra_args = _parse_command(
         env.get(f"{ENV_PREFIX}WHISPER_COMMAND_EXTRA_ARGS"),
         default=runtime.whisper_command_extra_args,
@@ -232,6 +249,14 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.audio_record_command = _parse_command(
         env.get(f"{ENV_PREFIX}AUDIO_RECORD_COMMAND"),
         default=runtime.audio_record_command,
+    )
+    runtime.audio_input_channels = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_INPUT_CHANNELS"),
+        default=runtime.audio_input_channels,
+    )
+    runtime.audio_channel_index = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_CHANNEL_INDEX"),
+        default=runtime.audio_channel_index,
     )
     runtime.partial_transcripts_enabled = _parse_bool(
         env.get(f"{ENV_PREFIX}PARTIAL_TRANSCRIPTS_ENABLED"),
@@ -306,6 +331,10 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         runtime.vad_frame_ms = 30
     runtime.vad_start_trigger_frames = max(1, runtime.vad_start_trigger_frames)
     runtime.vad_end_trigger_frames = max(1, runtime.vad_end_trigger_frames)
+    runtime.audio_input_channels = max(1, runtime.audio_input_channels)
+    runtime.audio_channel_index = max(0, runtime.audio_channel_index)
+    if runtime.audio_channel_index >= runtime.audio_input_channels:
+        runtime.audio_channel_index = runtime.audio_input_channels - 1
     if runtime.wake_word_threshold <= 0:
         runtime.wake_word_threshold = 0.5
     elif runtime.wake_word_threshold > 1.0:
@@ -490,6 +519,14 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
 def _validate_runtime_config(runtime: RuntimeConfig) -> None:
     """Reject obviously incomplete wake-word configurations early."""
 
+    if runtime.audio_input_channels <= 0:
+        raise ValueError("AI_COMPANION_AUDIO_INPUT_CHANNELS must be greater than zero")
+    if runtime.audio_channel_index < 0:
+        raise ValueError("AI_COMPANION_AUDIO_CHANNEL_INDEX must be zero or greater")
+    if runtime.audio_channel_index >= runtime.audio_input_channels:
+        raise ValueError("AI_COMPANION_AUDIO_CHANNEL_INDEX must be smaller than AI_COMPANION_AUDIO_INPUT_CHANNELS")
+    if runtime.whisper_transport == "server" and not runtime.whisper_server_base_url.strip():
+        raise ValueError("AI_COMPANION_WHISPER_SERVER_BASE_URL must be configured for server transport")
     if not runtime.wake_word_enabled:
         return
     if not runtime.wake_word_phrase.strip():
@@ -690,6 +727,24 @@ def _parse_stt_backend(
     default: Literal["mock", "whisper_cpp"],
 ) -> Literal["mock", "whisper_cpp"]:
     if value in {"mock", "whisper_cpp"}:
+        return value
+    return default
+
+
+def _parse_whisper_transport(
+    value: str | None,
+    default: Literal["cli", "server"],
+) -> Literal["cli", "server"]:
+    if value in {"cli", "server"}:
+        return value
+    return default
+
+
+def _parse_whisper_server_mode(
+    value: str | None,
+    default: Literal["managed", "external"],
+) -> Literal["managed", "external"]:
+    if value in {"managed", "external"}:
         return value
     return default
 

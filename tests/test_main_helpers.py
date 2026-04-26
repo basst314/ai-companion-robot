@@ -63,6 +63,30 @@ class _FakeService:
         del event
 
 
+class _StartableStt:
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.shutdown_calls = 0
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
+class _StartableCloud:
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.shutdown_calls = 0
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
 def _base_config() -> AppConfig:
     config = AppConfig()
     config.mocks.active_user_id = "sebastian"
@@ -213,11 +237,19 @@ def test_speech_latency_kwargs_and_wake_word_helper_branches(monkeypatch) -> Non
     config.runtime.stt_backend = "whisper_cpp"
     config.runtime.whisper_model_path = Path("/models/ggml-tiny.en.bin")
     config.runtime.whisper_binary_path = Path("/usr/local/bin/whisper-cli")
+    config.runtime.whisper_transport = "server"
+    config.runtime.whisper_server_base_url = "http://127.0.0.1:8080"
+    config.runtime.whisper_server_mode = "managed"
     config.runtime.whisper_command_extra_args = ("--threads", "4", "--best-of", "1")
+    config.runtime.audio_input_channels = 6
+    config.runtime.audio_channel_index = 0
     config.runtime.partial_transcripts_enabled = False
     monkeypatch.setattr(main_mod, "WhisperCppSttService", _FakeWhisperStt)
     stt, _wake_word = main_mod._build_speech_services(config)
     assert isinstance(stt, _FakeWhisperStt)
+    assert stt.kwargs["whisper_transport"] == "server"
+    assert stt.kwargs["whisper_server_base_url"] == "http://127.0.0.1:8080"
+    assert stt.kwargs["whisper_server_mode"] == "managed"
     assert stt.kwargs["command_extra_args"] == ("--threads", "4", "--best-of", "1")
     assert stt.kwargs["partial_transcripts_enabled"] is False
 
@@ -248,6 +280,33 @@ def test_resolve_runtime_path_and_runtime_logging(monkeypatch, tmp_path: Path) -
             root_logger.removeHandler(handler)
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+def test_build_application_start_and_stop_warm_stt_and_cloud(monkeypatch) -> None:
+    config = _base_config()
+    config.runtime.use_mock_ai = False
+    config.cloud.enabled = True
+    config.cloud.provider_name = "openai"
+    config.cloud.openai_api_key = "test-key"
+    config.cloud.openai_response_model = "gpt-5.2"
+
+    fake_stt = _StartableStt()
+    fake_cloud = _StartableCloud()
+
+    monkeypatch.setattr(main_mod, "_build_speech_services", lambda *args, **kwargs: (fake_stt, None))
+    monkeypatch.setattr(main_mod, "_build_cloud_services", lambda *args, **kwargs: fake_cloud)
+    monkeypatch.setattr(main_mod, "_build_tts_service", lambda *args, **kwargs: MockTtsService())
+    monkeypatch.setattr(main_mod, "_build_ui_service", lambda *args, **kwargs: MockUiService())
+
+    service = main_mod.build_application(config)
+
+    asyncio.run(service.start())
+    asyncio.run(service.stop())
+
+    assert fake_stt.start_calls == 1
+    assert fake_stt.shutdown_calls == 1
+    assert fake_cloud.start_calls == 1
+    assert fake_cloud.shutdown_calls == 1
 
 
 def test_main_auto_run_invokes_runtime_branch(monkeypatch, tmp_path: Path) -> None:

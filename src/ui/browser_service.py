@@ -436,7 +436,12 @@ class BrowserFaceUiService:
                 "browser UI backend requested launch mode "
                 f"{self.config.browser_launch_mode!r} but no Chromium executable was found"
             )
-        self._browser_process = subprocess.Popen(command)
+        self._browser_process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     @property
     def runtime_url(self) -> str:

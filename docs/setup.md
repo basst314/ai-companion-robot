@@ -94,7 +94,7 @@ The supported UI path is the browser-backed face renderer launched in Chromium k
 `AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 The generated speech config also enables wake-free follow-up mode by default. After a spoken reply finishes, the robot opens a short follow-up listen window and only continues if VAD confirms real speech inside `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` puts a hard cap on how many wake-free follow-up turns can chain before the robot falls back to ordinary wake-word listening again.
-If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output still stays local.
+If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output still stays local. For lower turn latency on the Pi, the generated config now prefers `gpt-5.4-mini`.
 That same OpenAI path keeps short-term turn continuity by reusing the previous response thread for immediate follow-ups and for a short wake-word resume window after the conversation pauses.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
 If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.
@@ -104,7 +104,7 @@ On Raspberry Pi, the generated TTS config now defaults to `AI_COMPANION_TTS_AUDI
 
 Raspberry Pi:
 - package manager: `apt`
-- recorder command: `arecord -t raw -f S16_LE -r 16000 -c 1 {output_path}` (`{output_path}` becomes `-` at runtime)
+- recorder command: `arecord -t raw -f S16_LE -r 16000 -c 6 {output_path}` (`{output_path}` becomes `-` at runtime)
 - playback backend: `alsa_persistent`
 - ALSA device: `default:CARD=vc4hdmi1`
 - intended target: Raspberry Pi OS or another Debian-family Raspberry Pi image
@@ -140,6 +140,6 @@ If the script cannot support your environment yet, install manually:
 3. Clone and build `whisper.cpp`.
 4. Download a model such as `base.en` for English-only Pi use, or `base` if you need multilingual transcription.
 5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
-6. If you want real cloud replies, also fill in the OpenAI settings, set `AI_COMPANION_USE_MOCK_AI=false`, and prefer `gpt-5.2` for `AI_COMPANION_OPENAI_RESPONSE_MODEL` unless you are intentionally testing a different model.
+6. If you want real cloud replies, also fill in the OpenAI settings, set `AI_COMPANION_USE_MOCK_AI=false`, and prefer `gpt-5.4-mini` for `AI_COMPANION_OPENAI_RESPONSE_MODEL` unless you are intentionally testing a different model.
 7. Run `.venv/bin/pytest -q`.
 8. Launch `.venv/bin/python src/main.py` and then either type a phrase, press Enter on an empty line to start listening immediately, or say the configured wake word.

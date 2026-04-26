@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib import error, request
 
+from shared.http_client import AsyncPersistentHttpClient
 from shared.models import (
     AiResponse,
     EmotionState,
@@ -52,6 +53,17 @@ class CloudReplyResult:
 
     response: AiResponse
     response_id: str | None = None
+    first_byte_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class OpenAiResponseEnvelope:
+    """Response payload plus transport timing metadata."""
+
+    payload: dict[str, Any]
+    first_byte_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class CloudResponseService(Protocol):
@@ -136,11 +148,12 @@ class MockCloudResponseService:
 
 @dataclass(slots=True)
 class OpenAiResponsesClient:
-    """Small stdlib-based client for the OpenAI Responses API."""
+    """Small persistent client for the OpenAI Responses API."""
 
     api_key: str
     base_url: str
     timeout_seconds: float = 20.0
+    _http_client: AsyncPersistentHttpClient | None = field(default=None, init=False, repr=False)
 
     async def create_response(
         self,
@@ -154,7 +167,7 @@ class OpenAiResponsesClient:
         max_output_tokens: int | None = None,
         parallel_tool_calls: bool = False,
         stream: bool = False,
-    ) -> dict[str, Any]:
+    ) -> OpenAiResponseEnvelope:
         payload: dict[str, Any] = {
             "model": model,
             "instructions": instructions,
@@ -172,7 +185,7 @@ class OpenAiResponsesClient:
             payload["parallel_tool_calls"] = True
         if stream:
             payload["stream"] = True
-        return await asyncio.to_thread(self._post_json, payload)
+        return await self._post_json_async(payload)
 
     async def create_text_response(
         self,
@@ -181,12 +194,14 @@ class OpenAiResponsesClient:
         instructions: str,
         input_text: str,
     ) -> str:
-        response = await self.create_response(
-            model=model,
-            instructions=instructions,
-            input_items=input_text,
+        response = _coerce_response_envelope(
+            await self.create_response(
+                model=model,
+                instructions=instructions,
+                input_items=input_text,
+            )
         )
-        return _extract_output_text(response)
+        return _extract_output_text(response.payload)
 
     async def create_structured_response(
         self,
@@ -210,11 +225,47 @@ class OpenAiResponsesClient:
             },
             "input": input_text,
         }
-        response = await asyncio.to_thread(self._post_json, payload)
-        raw_text = _extract_output_text(response)
+        response = await self._post_json_async(payload)
+        raw_text = _extract_output_text(response.payload)
         return json.loads(raw_text)
 
+    async def start(self) -> None:
+        await self._ensure_http_client()
+
+    async def shutdown(self) -> None:
+        if self._http_client is not None:
+            await self._http_client.close()
+
+    async def _post_json_async(self, payload: dict[str, Any]) -> OpenAiResponseEnvelope:
+        client = await self._ensure_http_client()
+        response = await client.post(
+            body=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        if response.status >= 400:
+            raise RuntimeError(f"OpenAI request failed with HTTP {response.status}: {response.text()}")
+        return OpenAiResponseEnvelope(
+            payload=response.json(),
+            first_byte_at=response.first_byte_at,
+            finished_at=response.finished_at,
+        )
+
+    async def _ensure_http_client(self) -> AsyncPersistentHttpClient:
+        if self._http_client is None:
+            self._http_client = AsyncPersistentHttpClient(
+                base_url=self.base_url,
+                timeout_seconds=self.timeout_seconds,
+            )
+        return self._http_client
+
     def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Synchronous compatibility helper used by tests."""
+
+        from urllib import error, request
+
         body = json.dumps(payload).encode("utf-8")
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -240,6 +291,12 @@ class OpenAiCloudResponseService:
     max_output_tokens: int = 120
     max_tool_rounds: int = 3
     wake_word_phrase: str | None = None
+
+    async def start(self) -> None:
+        await self.client.start()
+
+    async def shutdown(self) -> None:
+        await self.client.shutdown()
 
     async def generate_reply(
         self,
@@ -267,21 +324,24 @@ class OpenAiCloudResponseService:
             previous_response_id or "--",
             len(prompt),
         )
-        response_payload = await self.client.create_response(
-            model=self.model,
-            instructions=instructions,
-            input_items=[
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
-                }
-            ],
-            tools=tools,
-            text_format=reply_schema,
-            previous_response_id=previous_response_id,
-            max_output_tokens=self.max_output_tokens,
-            parallel_tool_calls=True,
+        response_envelope = _coerce_response_envelope(
+            await self.client.create_response(
+                model=self.model,
+                instructions=instructions,
+                input_items=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    }
+                ],
+                tools=tools,
+                text_format=reply_schema,
+                previous_response_id=previous_response_id,
+                max_output_tokens=self.max_output_tokens,
+                parallel_tool_calls=True,
+            )
         )
+        response_payload = response_envelope.payload
         _log_ai_text_block(
             "reply request",
             f"model={self.model}\nmax_output_tokens={self.max_output_tokens}\nInstructions:\n{instructions}\n\nInput:\n{prompt}",
@@ -298,7 +358,7 @@ class OpenAiCloudResponseService:
             step_results,
             instructions=instructions,
             tools=tools,
-            payload=response_payload,
+            payload=response_envelope,
             tool_handler=tool_handler,
         )
 
@@ -310,15 +370,16 @@ class OpenAiCloudResponseService:
         *,
         instructions: str,
         tools: list[dict[str, Any]] | None,
-        payload: dict[str, Any],
+        payload: OpenAiResponseEnvelope,
         tool_handler: ToolExecutionHandler | None,
     ) -> CloudReplyResult:
-        current_payload = payload
+        current_payload = _coerce_response_envelope(payload)
+        first_byte_at = current_payload.first_byte_at
         for _round in range(self.max_tool_rounds + 1):
-            tool_calls = _extract_function_calls(current_payload)
+            tool_calls = _extract_function_calls(current_payload.payload)
             if not tool_calls:
-                reply_payload = _extract_structured_reply(current_payload)
-                response_id = str(current_payload.get("id", "")).strip() or None
+                reply_payload = _extract_structured_reply(current_payload.payload)
+                response_id = str(current_payload.payload.get("id", "")).strip() or None
                 return CloudReplyResult(
                     response=AiResponse(
                         text=reply_payload["text"],
@@ -327,12 +388,14 @@ class OpenAiCloudResponseService:
                         intent="cloud_chat",
                     ),
                     response_id=response_id,
+                    first_byte_at=first_byte_at,
+                    finished_at=current_payload.finished_at,
                 )
 
             if tool_handler is None:
                 raise RuntimeError("cloud reply requested tools but no local tool handler was provided")
 
-            response_id = str(current_payload.get("id", "")).strip()
+            response_id = str(current_payload.payload.get("id", "")).strip()
             if not response_id:
                 raise RuntimeError("tool-calling response was missing a response id")
 
@@ -341,17 +404,19 @@ class OpenAiCloudResponseService:
                 tool_result = await tool_handler(tool_call)
                 tool_outputs.append(_tool_result_input_item(tool_result))
 
-            current_payload = await self.client.create_response(
-                model=self.model,
-                instructions=instructions,
-                input_items=tool_outputs,
-                tools=tools,
-                text_format=_spoken_reply_schema(),
-                previous_response_id=response_id,
-                max_output_tokens=self.max_output_tokens,
-                parallel_tool_calls=True,
+            current_payload = _coerce_response_envelope(
+                await self.client.create_response(
+                    model=self.model,
+                    instructions=instructions,
+                    input_items=tool_outputs,
+                    tools=tools,
+                    text_format=_spoken_reply_schema(),
+                    previous_response_id=response_id,
+                    max_output_tokens=self.max_output_tokens,
+                    parallel_tool_calls=True,
+                )
             )
-            _log_ai_text_block("reply output", json.dumps(current_payload, indent=2, ensure_ascii=True))
+            _log_ai_text_block("reply output", json.dumps(current_payload.payload, indent=2, ensure_ascii=True))
 
         raise RuntimeError("cloud reply exceeded the maximum number of tool rounds")
 
@@ -505,6 +570,16 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
                     return text
 
     raise RuntimeError("OpenAI response did not contain any assistant text output")
+
+
+def _coerce_response_envelope(payload: OpenAiResponseEnvelope | dict[str, Any]) -> OpenAiResponseEnvelope:
+    if isinstance(payload, OpenAiResponseEnvelope):
+        return payload
+    return OpenAiResponseEnvelope(
+        payload=payload,
+        first_byte_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+    )
 
 
 def _extract_function_calls(payload: dict[str, Any]) -> tuple[CloudToolRequest, ...]:

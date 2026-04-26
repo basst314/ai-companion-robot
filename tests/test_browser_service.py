@@ -228,13 +228,23 @@ def test_browser_service_publish_launch_sync_and_shutdown_helpers(monkeypatch) -
                 return None
 
         launch_calls: list[list[str]] = []
+        popen_kwargs: dict[str, object] = {}
         monkeypatch.setattr(browser_mod, "_build_browser_command", lambda **kwargs: launch_calls.append(["launch"]) or ["/opt/chrome"])
-        monkeypatch.setattr(browser_mod.subprocess, "Popen", lambda command: _FakeProcess())
+
+        def fake_popen(command, **kwargs):  # type: ignore[no-untyped-def]
+            del command
+            popen_kwargs.update(kwargs)
+            return _FakeProcess()
+
+        monkeypatch.setattr(browser_mod.subprocess, "Popen", fake_popen)
         launch_service = BrowserFaceUiService(
             config=UiConfig(backend="browser", browser_launch_mode="windowed", browser_executable="/opt/chrome")
         )
         launch_service._launch_browser_if_needed()
         assert launch_calls == [["launch"]]
+        assert popen_kwargs["stdout"] is browser_mod.subprocess.DEVNULL
+        assert popen_kwargs["stderr"] is browser_mod.subprocess.DEVNULL
+        assert popen_kwargs["start_new_session"] is True
 
         async def fake_start_server(*args, **kwargs):  # type: ignore[no-untyped-def]
             del args, kwargs

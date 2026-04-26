@@ -80,6 +80,7 @@ class OrchestratorService:
     terminal_debug: TerminalDebugSink | None = None
     event_history: list[Event] = field(default_factory=list)
     _active_speech_trigger: str | None = field(default=None, init=False, repr=False)
+    _turn_latency_marks: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
 
     async def start(self) -> None:
         """Prepare startup state for the local runtime."""
@@ -89,6 +90,10 @@ class OrchestratorService:
             self.terminal_debug.activate()
         if hasattr(self.ui, "start"):
             await self.ui.start()
+        if self.stt is not None and hasattr(self.stt, "start"):
+            await self.stt.start()
+        if hasattr(self.cloud_response, "start"):
+            await self.cloud_response.start()
         if self.config.tts.backend != "mock" and hasattr(self.tts, "start"):
             await self.tts.start()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
@@ -101,6 +106,8 @@ class OrchestratorService:
             await self.stt.shutdown()
         elif self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
+        if hasattr(self.cloud_response, "shutdown"):
+            await self.cloud_response.shutdown()
         if hasattr(self.tts, "shutdown"):
             await self.tts.shutdown()
         if hasattr(self.ui, "shutdown"):
@@ -259,10 +266,12 @@ class OrchestratorService:
         """Wait for the configured wake word before starting a speech turn."""
 
         if self.wake_word is None:
+            self._start_turn_latency_window()
             return True
         detection = await self.wake_word.wait_for_wake_word()
         if not detection.detected:
             return False
+        self._start_turn_latency_window()
         logger.info(
             "turn_trace wake_word_handled trigger=wake phrase=%s",
             self.config.runtime.wake_word_phrase,
@@ -303,6 +312,16 @@ class OrchestratorService:
                     transcript = self._strip_wake_phrase_from_transcript(transcript)
                 if transcript.is_final:
                     final_transcript = transcript
+                    vad_end_at = transcript.metadata.get("vad_end_at")
+                    if isinstance(vad_end_at, datetime):
+                        self._mark_turn_latency("vad_end", vad_end_at)
+                    stt_final_ready_at = transcript.metadata.get("stt_final_ready_at")
+                    if isinstance(stt_final_ready_at, datetime):
+                        self._mark_turn_latency("stt_final_ready", stt_final_ready_at)
+                    else:
+                        self._mark_turn_latency("stt_final_ready")
+                    self._log_turn_latency_span("wake_detected->vad_end", "wake_detected", "vad_end")
+                    self._log_turn_latency_span("vad_end->stt_final_ready", "vad_end", "stt_final_ready")
                     logger.info(
                         "turn_trace final_transcript_ready text_len=%s trigger=%s",
                         len(transcript.text),
@@ -590,6 +609,8 @@ class OrchestratorService:
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
         if event.name is EventName.TTS_SYNTHESIS_STARTED:
+            self._mark_turn_latency("tts_synth_start")
+            self._log_turn_latency_span("cloud_done->tts_synth_start", "cloud_done", "tts_synth_start")
             logger.info(
                 "turn_trace tts_synthesis_started job_id=%s text_len=%s",
                 event.payload.get("job_id", "--"),
@@ -602,6 +623,13 @@ class OrchestratorService:
                 len(str(event.payload.get("text", ""))),
             )
         elif event.name is EventName.TTS_PLAYBACK_STARTED:
+            self._mark_turn_latency("tts_playback_started")
+            self._log_turn_latency_span(
+                "tts_synth_start->tts_playback_started",
+                "tts_synth_start",
+                "tts_playback_started",
+            )
+            self._log_turn_latency_span("total_to_first_audio", "wake_detected", "tts_playback_started")
             logger.info(
                 "turn_trace tts_playback_started job_id=%s text_len=%s",
                 event.payload.get("job_id", "--"),
@@ -910,6 +938,14 @@ class OrchestratorService:
                 previous_response_id=previous_response_id,
                 tool_handler=self._handle_cloud_tool_request,
             )
+            if reply_result.first_byte_at is not None:
+                self._mark_turn_latency("cloud_first_byte", reply_result.first_byte_at)
+            if reply_result.finished_at is not None:
+                self._mark_turn_latency("cloud_done", reply_result.finished_at)
+            else:
+                self._mark_turn_latency("cloud_done")
+            self._log_turn_latency_span("stt_final_ready->cloud_first_byte", "stt_final_ready", "cloud_first_byte")
+            self._log_turn_latency_span("cloud_first_byte->cloud_done", "cloud_first_byte", "cloud_done")
             self._record_openai_reply(reply_result.response_id)
             logger.info(
                 "turn_trace cloud_response_received response_id=%s text_len=%s",
@@ -1410,6 +1446,7 @@ class OrchestratorService:
             is_final=transcript.is_final,
             started_at=transcript.started_at,
             ended_at=transcript.ended_at,
+            metadata=dict(transcript.metadata),
         )
 
     def _show_interactive_speech_hint(self) -> None:
@@ -1443,14 +1480,37 @@ class OrchestratorService:
         )
 
     def _begin_manual_utterance(self) -> None:
+        self._start_turn_latency_window()
         self._active_speech_trigger = "manual"
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="manual")
 
     def _begin_follow_up_utterance(self) -> None:
+        self._start_turn_latency_window()
         self._active_speech_trigger = "follow_up"
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="follow_up")
+
+    def _start_turn_latency_window(self) -> None:
+        self._turn_latency_marks.clear()
+        self._mark_turn_latency("wake_detected")
+
+    def _mark_turn_latency(self, name: str, when: datetime | None = None) -> None:
+        self._turn_latency_marks[name] = when or datetime.now(UTC)
+
+    def _log_turn_latency_span(self, label: str, start_key: str, end_key: str) -> None:
+        started_at = self._turn_latency_marks.get(start_key)
+        ended_at = self._turn_latency_marks.get(end_key)
+        if started_at is None or ended_at is None:
+            return
+        duration_ms = max(0.0, (ended_at - started_at).total_seconds() * 1000.0)
+        logger.info(
+            "turn_latency span=%s duration_ms=%.1f start=%s end=%s",
+            label,
+            duration_ms,
+            start_key,
+            end_key,
+        )
 
     def _should_continue_follow_up_session(self, outcome: SpeechTurnOutcome) -> bool:
         if outcome.transcript_empty:

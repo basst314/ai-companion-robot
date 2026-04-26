@@ -148,6 +148,8 @@ def _build_speech_services(
         audio_capture = ShellAudioCaptureService(
             command_template=runtime.audio_record_command,
             output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
+            input_channels=runtime.audio_input_channels,
+            channel_index=runtime.audio_channel_index,
         )
         shared_live_state = SharedLiveSpeechState(
             audio_capture=audio_capture,
@@ -160,6 +162,9 @@ def _build_speech_services(
             audio_capture=audio_capture,
             model_path=runtime.whisper_model_path,
             binary_path=runtime.whisper_binary_path,
+            whisper_transport=runtime.whisper_transport,
+            whisper_server_base_url=runtime.whisper_server_base_url,
+            whisper_server_mode=runtime.whisper_server_mode,
             command_extra_args=runtime.whisper_command_extra_args,
             language_mode=runtime.language_mode,
             partial_transcripts_enabled=runtime.partial_transcripts_enabled,
@@ -232,6 +237,8 @@ def _build_wake_word_service(
     capture_service = audio_capture or ShellAudioCaptureService(
         command_template=runtime.audio_record_command,
         output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
+        input_channels=runtime.audio_input_channels,
+        channel_index=runtime.audio_channel_index,
     )
     if shared_live_state is None:
         raise RuntimeError("wake word support requires a shared live speech state")
@@ -292,5 +299,4 @@ def main(config: AppConfig | None = None) -> int:
 if __name__ == "__main__":
     runtime_config = load_app_config()
     runtime_config.runtime.auto_run = True
-    runtime_config.runtime.interactive_console = True
     raise SystemExit(main(runtime_config))

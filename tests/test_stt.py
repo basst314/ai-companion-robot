@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 import struct
 
@@ -15,6 +16,7 @@ from shared.config import AppConfig
 from shared.console import TerminalDebugSink
 from shared.events import EventName
 from shared.models import Language, Transcript
+from stt.respeaker_capture import InterleavedChannelExtractor, extract_interleaved_channel
 from stt.service import (
     AudioWindow,
     CommandResult,
@@ -352,6 +354,42 @@ class RecordingTerminalDebugSink(TerminalDebugSink):
         )
 
 
+@dataclass(slots=True)
+class FakeWhisperServerClient:
+    payload: dict[str, object]
+    start_calls: int = 0
+    shutdown_calls: int = 0
+    transcribe_calls: list[dict[str, object]] = field(default_factory=list)
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+    async def transcribe_wav(self, wav_bytes: bytes, *, language_mode: str, file_name: str = "input.wav"):  # type: ignore[no-untyped-def]
+        self.transcribe_calls.append(
+            {
+                "wav_bytes": wav_bytes,
+                "language_mode": language_mode,
+                "file_name": file_name,
+            }
+        )
+        return stt_mod.WhisperServerResponse(payload=self.payload)
+
+
+@dataclass(slots=True)
+class FakeWhisperManagedProcess:
+    ensure_running_calls: int = 0
+    shutdown_calls: int = 0
+
+    async def ensure_running(self) -> None:
+        self.ensure_running_calls += 1
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
 def _audio_window(
     wav_path: Path,
     *,
@@ -564,6 +602,25 @@ def test_stt_pure_helpers_cover_buffer_math_and_encoding() -> None:
     assert _window_energy(b"\x00\x80\x00\x00\xff\x7f", sample_width=2) > 0
 
 
+def test_interleaved_channel_extractor_matches_helper_with_chunk_boundaries() -> None:
+    pcm = (
+        struct.pack("<6h", 10, 11, 12, 13, 14, 15)
+        + struct.pack("<6h", 20, 21, 22, 23, 24, 25)
+        + struct.pack("<6h", 30, 31, 32, 33, 34, 35)
+    )
+    expected = extract_interleaved_channel(pcm, channels=6, channel_index=0, sample_width=2)
+    extractor = InterleavedChannelExtractor(channels=6, channel_index=0, sample_width=2)
+
+    actual = (
+        extractor.feed(pcm[:7])
+        + extractor.feed(pcm[7:19])
+        + extractor.feed(pcm[19:])
+        + extractor.flush()
+    )
+
+    assert actual == expected
+
+
 def test_stt_audio_window_and_wav_helpers_cover_read_write_and_silence(tmp_path: Path) -> None:
     pcm = struct.pack("<8h", 0, 0, 2000, 2000, 0, 0, 0, 0)
     wav_path = tmp_path / "input.wav"
@@ -596,6 +653,85 @@ def test_stt_audio_window_and_wav_helpers_cover_read_write_and_silence(tmp_path:
     invalid_wav.write_bytes(b"not a wav")
     with pytest.raises(ValueError, match="unsupported WAV header"):
         _read_wav_header(invalid_wav)
+
+
+def test_whisper_cpp_stt_service_server_transport_parses_verbose_json(tmp_path: Path) -> None:
+    wav_path = tmp_path / "input.wav"
+    _write_wav_file(
+        wav_path,
+        channels=1,
+        sample_width=2,
+        sample_rate=16000,
+        pcm_data=b"\x00\x00" * 160,
+    )
+    fake_client = FakeWhisperServerClient(
+        payload={
+            "text": "Hallo Welt",
+            "language": "de",
+            "segments": [{"text": "Hallo Welt", "start": 0.0, "end": 0.8}],
+        }
+    )
+    service = WhisperCppSttService(
+        audio_capture=FakeAudioCaptureService(wav_path),
+        model_path=Path("/models/ggml-base.en.bin"),
+        whisper_transport="server",
+        whisper_server_base_url="http://127.0.0.1:8080",
+        whisper_server_client_factory=lambda base_url, timeout_seconds: fake_client,
+        language_mode="de",
+    )
+
+    transcript, segments = asyncio.run(
+        service._transcribe_file_with_segments(wav_path, datetime.now(UTC), is_final=True)
+    )
+
+    assert transcript.text == "Hallo Welt"
+    assert transcript.language is Language.GERMAN
+    assert len(segments) == 1
+    assert segments[0].text == "Hallo Welt"
+    assert fake_client.start_calls == 1
+    assert fake_client.transcribe_calls[0]["language_mode"] == "de"
+    assert bytes(fake_client.transcribe_calls[0]["wav_bytes"][:4]) == b"RIFF"
+
+
+def test_whisper_cpp_stt_service_managed_server_reuses_single_client_and_process() -> None:
+    fake_client = FakeWhisperServerClient(payload={"text": "", "language": "en"})
+    fake_process = FakeWhisperManagedProcess()
+    service = WhisperCppSttService(
+        audio_capture=FakeAudioCaptureService(Path("/tmp/input.wav")),
+        model_path=Path("/models/ggml-base.en.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        whisper_transport="server",
+        whisper_server_mode="managed",
+        whisper_server_client_factory=lambda base_url, timeout_seconds: fake_client,
+        whisper_server_process_factory=lambda **kwargs: fake_process,  # type: ignore[arg-type]
+    )
+
+    asyncio.run(service.start())
+    asyncio.run(service.start())
+    asyncio.run(service.shutdown())
+
+    assert service._server_client is fake_client
+    assert service._server_process is fake_process
+    assert fake_process.ensure_running_calls == 2
+    assert fake_client.start_calls == 2
+    assert fake_client.shutdown_calls == 1
+    assert fake_process.shutdown_calls == 1
+
+
+def test_whisper_managed_process_filters_cli_only_server_flags() -> None:
+    process = stt_mod.WhisperManagedProcess(
+        base_url="http://127.0.0.1:8080",
+        model_path=Path("/models/ggml-base.en.bin"),
+        binary_path=Path("/usr/local/bin/whisper-cli"),
+        language_mode="en",
+        command_extra_args=("--threads", "4", "--no-fallback", "--no-prints", "--no-timestamps"),
+    )
+
+    command = process._default_command()
+
+    assert "--no-prints" not in command
+    assert "--no-fallback" in command
+    assert "--no-timestamps" in command
 
 
 def test_stt_extractors_cover_json_segments_and_wake_phrase_matching() -> None:

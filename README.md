@@ -111,6 +111,7 @@ After setup finishes:
 The runtime will read `.env.local` automatically if it exists.
 
 On Raspberry Pi, the generated `.env.local` now defaults to the browser-backed face renderer in kiosk mode. The Python robot app is still the only process you launch; it starts the local face bridge and launches Chromium itself.
+The current Pi production path also uses a hot `whisper-server` STT transport, app-side ReSpeaker channel extraction, a persistent cloud HTTP client, and `gpt-5.4-mini` for lower-latency spoken replies.
 
 If you want a single command that auto-picks the active Pi Wayland session when you start over SSH, use:
 

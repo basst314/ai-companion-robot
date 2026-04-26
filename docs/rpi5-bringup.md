@@ -139,13 +139,15 @@ After setup finishes, open `.env.local` on the Pi and verify:
 - `AI_COMPANION_WHISPER_BINARY_PATH`
 - `AI_COMPANION_WHISPER_MODEL_PATH`
 - `AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED`
+- `AI_COMPANION_OPENAI_RESPONSE_MODEL`
 
 Important:
 - do not copy your Mac `.env.local` directly to the Pi because it contains machine-specific absolute paths
 - if your mic needs a different ALSA device, update `AI_COMPANION_AUDIO_RECORD_COMMAND`
 - if your speaker path differs, update `AI_COMPANION_TTS_ALSA_DEVICE`
 - the Pi setup now defaults to `AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent` because the ALSA-native playback path is much more robust on HDMI displays/speakers than command-driven `aplay` alone
-- for the ReSpeaker 4 Mic Array v3.0, the current Pi baseline uses `scripts/respeaker_capture.py` to capture the board's processed channel 0 from the six-channel USB stream before handing audio to the robot runtime
+- the Pi speech path now uses app-side channel extraction for the ReSpeaker 4 Mic Array v3.0, so the recorder can stay a direct six-channel `arecord` stream and the runtime selects processed channel 0 itself
+- for lower latency cloud replies on the Pi, `AI_COMPANION_OPENAI_RESPONSE_MODEL` now defaults to `gpt-5.4-mini`
 
 ## 7. Validate The Pi Runtime
 

@@ -251,6 +251,33 @@ def test_load_app_config_rejects_non_positive_reply_token_cap(tmp_path: Path) ->
         load_app_config(base_dir=tmp_path)
 
 
+def test_load_app_config_reads_pi_whisper_transport_and_channel_settings(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_INPUT_MODE=speech",
+                "AI_COMPANION_STT_BACKEND=whisper_cpp",
+                "AI_COMPANION_WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.en.bin",
+                "AI_COMPANION_WHISPER_TRANSPORT=server",
+                "AI_COMPANION_WHISPER_SERVER_BASE_URL=http://127.0.0.1:8080",
+                "AI_COMPANION_WHISPER_SERVER_MODE=managed",
+                "AI_COMPANION_AUDIO_RECORD_COMMAND=arecord -t raw -f S16_LE -r 16000 -c 6 -q {output_path}",
+                "AI_COMPANION_AUDIO_INPUT_CHANNELS=6",
+                "AI_COMPANION_AUDIO_CHANNEL_INDEX=9",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.runtime.whisper_transport == "server"
+    assert config.runtime.whisper_server_base_url == "http://127.0.0.1:8080"
+    assert config.runtime.whisper_server_mode == "managed"
+    assert config.runtime.audio_input_channels == 6
+    assert config.runtime.audio_channel_index == 5
+
+
 def test_load_app_config_applies_fast_speech_profile_defaults(tmp_path: Path) -> None:
     env_file = tmp_path / ".env.local"
     env_file.write_text(

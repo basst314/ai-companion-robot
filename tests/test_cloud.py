@@ -16,6 +16,7 @@ from ai.cloud import (
     CloudToolResult,
     OpenAiResponsesClient,
     OpenAiCloudResponseService,
+    OpenAiResponseEnvelope,
 )
 from shared.models import (
     EmotionState,
@@ -642,12 +643,12 @@ def test_openai_responses_client_and_service_error_paths(monkeypatch) -> None:
     captured: dict[str, object] = {}
     real_post_json = OpenAiResponsesClient._post_json
 
-    def fake_post_json(self, payload: dict[str, object]) -> dict[str, object]:
+    async def fake_post_json_async(self, payload: dict[str, object]) -> OpenAiResponseEnvelope:
         del self
         captured["payload"] = payload
-        return {"output_text": "hello"}
+        return OpenAiResponseEnvelope(payload={"output_text": "hello"})
 
-    monkeypatch.setattr(OpenAiResponsesClient, "_post_json", fake_post_json)
+    monkeypatch.setattr(OpenAiResponsesClient, "_post_json_async", fake_post_json_async)
 
     response = asyncio.run(
         client.create_response(
@@ -662,7 +663,7 @@ def test_openai_responses_client_and_service_error_paths(monkeypatch) -> None:
             stream=True,
         )
     )
-    assert response == {"output_text": "hello"}
+    assert response.payload == {"output_text": "hello"}
     assert captured["payload"] == {
         "model": "gpt-5.2",
         "instructions": "be nice",
@@ -675,10 +676,15 @@ def test_openai_responses_client_and_service_error_paths(monkeypatch) -> None:
         "stream": True,
     }
     assert asyncio.run(client.create_text_response(model="gpt-5.2", instructions="be nice", input_text="hello")) == "hello"
+
+    async def fake_structured_post_json_async(self, payload: dict[str, object]) -> OpenAiResponseEnvelope:
+        del self, payload
+        return OpenAiResponseEnvelope(payload={"output_text": json.dumps({"hello": "world"})})
+
     monkeypatch.setattr(
         OpenAiResponsesClient,
-        "_post_json",
-        lambda self, payload: {"output_text": json.dumps({"hello": "world"})},
+        "_post_json_async",
+        fake_structured_post_json_async,
     )
     assert (
         asyncio.run(
@@ -790,3 +796,25 @@ def test_openai_responses_client_and_service_error_paths(monkeypatch) -> None:
                 tool_handler=handler,
             )
         )
+
+
+def test_openai_cloud_response_service_start_and_shutdown_delegate_to_client() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.shutdown_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+
+        async def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    client = _Client()
+    service = OpenAiCloudResponseService(client=client, model="gpt-5.2")
+
+    asyncio.run(service.start())
+    asyncio.run(service.shutdown())
+
+    assert client.start_calls == 1
+    assert client.shutdown_calls == 1

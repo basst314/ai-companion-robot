@@ -9,6 +9,17 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-25 — Pi Turn-Latency Optimization
+
+### Highlights
+- Added a hot `whisper-server` transcription path on the Pi so the model stays loaded across turns instead of spawning `whisper-cli` for every utterance.
+- Moved ReSpeaker channel selection into the app-side capture pipeline and kept the Pi recorder command as a direct six-channel stream.
+- Replaced the cloud request path with a persistent HTTP client and switched the Pi default response model to `gpt-5.4-mini` for lower latency.
+- Added per-turn latency spans for wake, STT, cloud, and TTS stages, and quieted Chromium browser process logs so production output stays focused on the robot.
+
+### Why this matters
+The current Pi runtime now spends less time on avoidable process startup and transport overhead, while keeping the quality-sensitive VAD and speech behavior intact. The result should be a noticeably faster turn loop without sacrificing the existing speech-detection thresholds or the local-first architecture.
+
 ## 2026-04-19 — Pi Voice Pipeline Cleanup
 
 ### Highlights

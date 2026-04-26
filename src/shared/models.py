@@ -122,6 +122,7 @@ class Transcript:
     is_final: bool
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
