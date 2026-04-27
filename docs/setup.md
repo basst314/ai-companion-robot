@@ -34,6 +34,14 @@ Current supported variables:
 - `AI_COMPANION_OPENAI_API_KEY`
 - `AI_COMPANION_OPENAI_BASE_URL`
 - `AI_COMPANION_OPENAI_RESPONSE_MODEL`
+- `AI_COMPANION_INTERACTION_BACKEND`
+- `AI_COMPANION_OPENAI_REALTIME_MODEL`
+- `AI_COMPANION_OPENAI_REALTIME_VOICE`
+- `AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION`
+- `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS`
+- `AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED`
+- `AI_COMPANION_OPENAI_REALTIME_BASE_URL`
+- `AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE`
 - `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
 - `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
 - `AI_COMPANION_TTS_BACKEND`
@@ -94,7 +102,11 @@ The supported UI path is the browser-backed face renderer launched in Chromium k
 `AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
 When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
 The generated speech config also enables wake-free follow-up mode by default. After a spoken reply finishes, the robot opens a short follow-up listen window and only continues if VAD confirms real speech inside `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` puts a hard cap on how many wake-free follow-up turns can chain before the robot falls back to ordinary wake-word listening again.
-If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output still stays local. For lower turn latency on the Pi, the generated config now prefers `gpt-5.4-mini`.
+If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the turn-based runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output stays local in turn-based mode. For lower turn latency on the Pi, the generated config now prefers `gpt-5.4-mini`.
+
+For the speech-to-speech path, set `AI_COMPANION_INTERACTION_BACKEND=openai_realtime`, keep `AI_COMPANION_INPUT_MODE=speech`, enable OpenAI cloud credentials, and use `AI_COMPANION_OPENAI_REALTIME_MODEL=gpt-realtime-1.5`. This path keeps wake-word detection and tool validation on the Pi, streams active microphone PCM to OpenAI Realtime, and plays streamed model audio locally, so Piper TTS is not used for realtime replies.
+The realtime defaults use `AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION=semantic_vad` and `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=auto`. If end-of-turn detection feels too slow in a quiet room, try `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=high`; if it cuts you off, move back toward `medium`, `low`, or `auto`.
+Realtime barge-in is handled by the Realtime API's turn detection plus local playback interruption. The app-side energy detector remains disabled by default with `AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED=false`, because the ReSpeaker processed channel and AEC path are more stable when the server owns interrupt timing.
 That same OpenAI path keeps short-term turn continuity by reusing the previous response thread for immediate follow-ups and for a short wake-word resume window after the conversation pauses.
 The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
 If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.

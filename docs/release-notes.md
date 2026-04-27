@@ -9,6 +9,20 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-26 — OpenAI Realtime Speech Backend
+
+### Highlights
+- Added an OpenAI Realtime speech-to-speech interaction backend alongside the original turn-based orchestrator path.
+- Kept wake-word detection, tool validation, hardware execution, UI events, and audio playback local on the Pi while streaming active speech and assistant audio through a Realtime WebSocket session.
+- Added Realtime session configuration for semantic VAD, turn eagerness, voice selection, streamed PCM sample rate, and optional local energy barge-in.
+- Implemented multi-turn Realtime conversation continuity so wake-free follow-up turns stay awake on the same session instead of falling back to wake-word listening between normal turns.
+- Implemented barge-in handling that stops local playback, cancels only active server responses, and truncates unheard assistant audio with `conversation.item.truncate` so server-side context matches what the user actually heard.
+- Added the `[RT]` interactive console row and structured Realtime logs for phase, streamed byte/chunk counters, response counts, interrupt counts, voice, and last event.
+- Hardened ALSA Realtime playback so interrupt/drop write races recover without killing the playback worker.
+
+### Why this matters
+This gives the robot a much more natural voice loop: faster first audio, solid wake-free multi-turn conversation, and speech-over-speech interruption without discarding the Realtime session's short-term context. The Pi remains the authority for local capabilities and safety-sensitive hardware actions.
+
 ## 2026-04-25 — Pi Turn-Latency Optimization
 
 ### Highlights

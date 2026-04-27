@@ -10,8 +10,10 @@ import pytest
 
 import main as main_mod
 from ai.cloud import MockCloudResponseService, OpenAiCloudResponseService
+from ai.realtime import RealtimeConversationService
 from hardware.service import MockHardwareService
 from memory.service import InMemoryMemoryService
+from orchestrator.capabilities import build_default_capability_registry
 from shared.config import AppConfig
 from shared.models import Language, UserIdentity, VisionDetection
 from stt.service import MockSttService
@@ -121,6 +123,33 @@ def test_build_cloud_services_handles_mock_and_openai_modes() -> None:
         main_mod._build_cloud_services(invalid_config)
 
 
+def test_build_realtime_conversation_service_uses_realtime_config() -> None:
+    config = _base_config()
+    config.runtime.interaction_backend = "openai_realtime"
+    config.runtime.input_mode = "speech"
+    config.runtime.use_mock_ai = False
+    config.cloud.enabled = True
+    config.cloud.provider_name = "openai"
+    config.cloud.openai_api_key = "test-key"
+    config.cloud.openai_response_model = ""
+    config.cloud.openai_realtime_model = "gpt-realtime-test"
+    config.cloud.openai_realtime_voice = "echo"
+    config.cloud.openai_realtime_audio_sample_rate = 24000
+    config.tts.alsa_device = "default"
+
+    service = main_mod._build_realtime_conversation_service(config, build_default_capability_registry())
+
+    assert isinstance(service, RealtimeConversationService)
+    assert service.model == "gpt-realtime-test"
+    assert service.voice == "echo"
+    assert service.turn_detection == "semantic_vad"
+    assert service.turn_eagerness == "auto"
+    assert service.local_barge_in_enabled is False
+    assert service.realtime_sample_rate_hz == 24000
+    tool_names = {tool["name"] for tool in service.tools}
+    assert {"turn_head", "camera_snapshot"}.issubset(tool_names)
+
+
 def test_build_tts_service_and_ui_service_cover_backend_branches(monkeypatch, tmp_path: Path) -> None:
     config = _base_config()
     config.paths.data_dir = tmp_path / "data"
@@ -181,6 +210,7 @@ def test_build_speech_and_wake_word_services_cover_error_and_success_paths(monke
 
     config.runtime.whisper_model_path = tmp_path / "model.bin"
     config.runtime.input_mode = "speech"
+    config.runtime.audio_init_command = ("/home/basti/respeaker_init.sh",)
     config.runtime.audio_record_command = ("rec", "{output_path}")
     config.runtime.wake_word_enabled = True
     config.runtime.wake_word_phrase = "Oreo"
@@ -188,7 +218,13 @@ def test_build_speech_and_wake_word_services_cover_error_and_success_paths(monke
     config.runtime.use_mock_ai = True
 
     real_build_wake_word_service = main_mod._build_wake_word_service
-    monkeypatch.setattr(main_mod, "ShellAudioCaptureService", lambda **kwargs: type("Audio", (), {"sample_rate": 16000, "channels": 1, "sample_width": 2})())
+    capture_kwargs = {}
+    monkeypatch.setattr(
+        main_mod,
+        "ShellAudioCaptureService",
+        lambda **kwargs: capture_kwargs.update(kwargs)
+        or type("Audio", (), {"sample_rate": 16000, "channels": 1, "sample_width": 2})(),
+    )
     monkeypatch.setattr(main_mod, "SharedLiveSpeechState", lambda **kwargs: object())
     monkeypatch.setattr(main_mod, "WhisperCppSttService", _FakeWhisperStt)
     monkeypatch.setattr(main_mod, "_build_wake_word_service", lambda *args, **kwargs: _FakeWakeWordService())
@@ -197,6 +233,7 @@ def test_build_speech_and_wake_word_services_cover_error_and_success_paths(monke
     assert isinstance(stt, _FakeWhisperStt)
     assert isinstance(wake_word, _FakeWakeWordService)
     assert stt.ensure_endpoint_vad_ready_calls == 1
+    assert capture_kwargs["init_command"] == ("/home/basti/respeaker_init.sh",)
 
     config.runtime.input_mode = "manual"
     with pytest.raises(RuntimeError, match="wake word support requires speech input mode"):

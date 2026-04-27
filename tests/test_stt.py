@@ -240,6 +240,9 @@ class _FakeSubprocess:
         self.kill_calls += 1
         self.returncode = -9
 
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", b""
+
     async def wait(self) -> int:
         return self.returncode or 0
 
@@ -1647,6 +1650,43 @@ def test_shell_audio_capture_service_stops_process_when_startup_fails(monkeypatc
 
     assert process.terminate_calls == 1
     assert process.kill_calls == 0
+
+
+def test_shell_audio_capture_service_runs_init_command_once(monkeypatch, tmp_path) -> None:
+    service = ShellAudioCaptureService(
+        command_template=("fake-recorder", "{output_path}"),
+        init_command=("fake-init",),
+        output_dir=tmp_path,
+    )
+    started_commands = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        started_commands.append(args)
+        process = _FakeSubprocess()
+        process.returncode = 0
+        return process
+
+    async def fake_wait_for_capture_data(self, session):  # type: ignore[no-untyped-def]
+        del self, session
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(ShellAudioCaptureService, "_wait_for_capture_data", fake_wait_for_capture_data)
+
+    async def run() -> None:
+        first = await service.start_capture()
+        second = await service.start_capture()
+        await first.stop()
+        await second.stop()
+
+    asyncio.run(run())
+
+    assert started_commands == [
+        ("fake-init",),
+        ("fake-recorder", "-"),
+        ("fake-recorder", "-"),
+    ]
 
 
 async def _collect_transcripts(stream: AsyncIterator[Transcript]) -> list[Transcript]:

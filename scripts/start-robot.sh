@@ -42,6 +42,9 @@ cleanup_previous_run() {
 cleanup_previous_run
 
 has_capture_device() {
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v rec >/dev/null 2>&1; then
+    return 0
+  fi
   if command -v arecord >/dev/null 2>&1 && arecord -l 2>/dev/null | grep -q '^card '; then
     return 0
   fi
@@ -55,6 +58,10 @@ has_capture_device() {
 launch_robot() {
   local -a runtime_env
   local browser_profile_dir="/tmp/ai-companion-robot/chromium-profile"
+  local browser_extra_args_default=""
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    browser_extra_args_default="--ozone-platform=wayland --password-store=basic --use-mock-keychain"
+  fi
   if command -v wtype >/dev/null 2>&1; then
     (
       sleep 2
@@ -63,7 +70,7 @@ launch_robot() {
   fi
   runtime_env=(
     "AI_COMPANION_UI_BROWSER_PROFILE_DIR=${AI_COMPANION_UI_BROWSER_PROFILE_DIR:-${browser_profile_dir}}"
-    "AI_COMPANION_UI_BROWSER_EXTRA_ARGS=${AI_COMPANION_UI_BROWSER_EXTRA_ARGS:---ozone-platform=wayland --password-store=basic --use-mock-keychain}"
+    "AI_COMPANION_UI_BROWSER_EXTRA_ARGS=${AI_COMPANION_UI_BROWSER_EXTRA_ARGS:-${browser_extra_args_default}}"
   )
   if ! has_capture_device; then
     printf '[start-robot] WARNING: no audio capture source found; falling back to manual mode and disabling wake-word.\n' >&2

@@ -152,6 +152,21 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update TTS playback state shown in the sticky header."""
 
+    def update_realtime_status(
+        self,
+        *,
+        phase: str | None = None,
+        voice: str | None = None,
+        input_audio_bytes: int | None = None,
+        input_audio_chunks: int | None = None,
+        output_audio_bytes: int | None = None,
+        output_audio_chunks: int | None = None,
+        response_count: int | None = None,
+        interrupt_count: int | None = None,
+        last_event: str | None = None,
+    ) -> None:
+        """Update OpenAI Realtime stream state shown in the sticky header."""
+
 
 @dataclass(slots=True)
 class TerminalDebugState:
@@ -203,6 +218,15 @@ class TerminalDebugState:
     tts_play_started_at: datetime | None = None
     tts_last_synth_duration: str | None = None
     tts_last_play_duration: str | None = None
+    realtime_phase: str | None = None
+    realtime_voice: str | None = None
+    realtime_input_audio_bytes: int = 0
+    realtime_input_audio_chunks: int = 0
+    realtime_output_audio_bytes: int = 0
+    realtime_output_audio_chunks: int = 0
+    realtime_response_count: int = 0
+    realtime_interrupt_count: int = 0
+    realtime_last_event: str | None = None
 
 
 @dataclass(slots=True)
@@ -283,6 +307,8 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.ai_response_active = False
             self.state.ai_planning_started_at = None
             self.state.ai_response_started_at = None
+            if self.state.realtime_phase is not None:
+                self.state.realtime_phase = "idle"
         self.render()
 
     def update_ai_status(
@@ -461,6 +487,39 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.tts_phase = phase
         self.render()
 
+    def update_realtime_status(
+        self,
+        *,
+        phase: str | None = None,
+        voice: str | None = None,
+        input_audio_bytes: int | None = None,
+        input_audio_chunks: int | None = None,
+        output_audio_bytes: int | None = None,
+        output_audio_chunks: int | None = None,
+        response_count: int | None = None,
+        interrupt_count: int | None = None,
+        last_event: str | None = None,
+    ) -> None:
+        if phase is not None:
+            self.state.realtime_phase = phase
+        if voice is not None:
+            self.state.realtime_voice = voice
+        if input_audio_bytes is not None:
+            self.state.realtime_input_audio_bytes = max(0, input_audio_bytes)
+        if input_audio_chunks is not None:
+            self.state.realtime_input_audio_chunks = max(0, input_audio_chunks)
+        if output_audio_bytes is not None:
+            self.state.realtime_output_audio_bytes = max(0, output_audio_bytes)
+        if output_audio_chunks is not None:
+            self.state.realtime_output_audio_chunks = max(0, output_audio_chunks)
+        if response_count is not None:
+            self.state.realtime_response_count = max(0, response_count)
+        if interrupt_count is not None:
+            self.state.realtime_interrupt_count = max(0, interrupt_count)
+        if last_event is not None:
+            self.state.realtime_last_event = last_event
+        self.render()
+
     def emit_log(self, styled_text: str, *, plain_text: str, end: str, flush: bool) -> None:
         """Write a scrolling log message while preserving the sticky header."""
 
@@ -634,6 +693,8 @@ class TerminalDebugScreen(TerminalDebugSink):
         return self._pad_row("  ".join(parts), width)
 
     def _tts_row(self, width: int) -> str:
+        if self.state.realtime_phase is not None:
+            return self._realtime_row(width)
         backend = self.state.tts_backend or "--"
         phase = self.state.tts_phase
         voice = self.state.tts_voice or "--"
@@ -673,6 +734,37 @@ class TerminalDebugScreen(TerminalDebugSink):
         ]
         return self._pad_row("  ".join(parts), width)
 
+    def _realtime_row(self, width: int) -> str:
+        phase = self.state.realtime_phase or "idle"
+        voice = self.state.realtime_voice or "--"
+        phase_style = {
+            "idle": self.subtle_value,
+            "listening": self.whisper,
+            "speaking": self.success_value,
+            "interrupted": self.warning_value,
+            "error": self.error,
+        }.get(phase, self.value)
+        parts = [
+            self.label("[RT]"),
+            f"{self.label('[phase')} {phase_style(phase)}{self.label(']')}",
+            self.badge(
+                "in",
+                f"{self._format_bytes(self.state.realtime_input_audio_bytes)}/{self.state.realtime_input_audio_chunks}ch",
+                value_style=self.value,
+            ),
+            self.badge(
+                "out",
+                f"{self._format_bytes(self.state.realtime_output_audio_bytes)}/{self.state.realtime_output_audio_chunks}ch",
+                value_style=self.value,
+            ),
+            self.badge("resp", str(self.state.realtime_response_count), value_style=self.value),
+            self.badge("int", str(self.state.realtime_interrupt_count), value_style=self.warning_value),
+            f"{self.label('voice')} {self.route_value(self._clip_plain(voice, 20))}",
+        ]
+        if self.state.realtime_last_event:
+            parts.append(f"{self.label('event')} {self.transcript(self._clip_plain(self.state.realtime_last_event, 24))}")
+        return self._pad_row("  ".join(parts), width)
+
     def _ai_duration(
         self,
         active: bool,
@@ -694,6 +786,13 @@ class TerminalDebugScreen(TerminalDebugSink):
             elapsed = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
             return f"{elapsed:0.2f}s"
         return last_duration or "--"
+
+    def _format_bytes(self, value: int) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:0.1f}MB"
+        if value >= 1_000:
+            return f"{value / 1_000:0.1f}KB"
+        return f"{value}B"
 
     def _build_meter(self, *, current_noise: float, peak_energy: float, width: int) -> str:
         current_index = self._meter_index(current_noise, width)

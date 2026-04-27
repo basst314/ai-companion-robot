@@ -30,6 +30,13 @@ class CloudConfig:
     openai_response_model: str = ""
     openai_timeout_seconds: float = 20.0
     openai_reply_max_output_tokens: int = 120
+    openai_realtime_model: str = "gpt-realtime-1.5"
+    openai_realtime_voice: str = "echo"
+    openai_realtime_turn_detection: str = "semantic_vad"
+    openai_realtime_turn_eagerness: str = "auto"
+    openai_realtime_local_barge_in_enabled: bool = False
+    openai_realtime_base_url: str = "wss://api.openai.com/v1/realtime"
+    openai_realtime_audio_sample_rate: int = 24000
 
 
 @dataclass(slots=True)
@@ -37,6 +44,7 @@ class RuntimeConfig:
     """Runtime feature flags and manual input configuration."""
 
     auto_run: bool = False
+    interaction_backend: Literal["turn_based", "openai_realtime"] = "turn_based"
     input_mode: Literal["manual", "speech"] = "manual"
     interactive_console: bool = False
     manual_inputs: tuple[str, ...] = ()
@@ -48,6 +56,7 @@ class RuntimeConfig:
     whisper_server_base_url: str = "http://127.0.0.1:8080"
     whisper_server_mode: Literal["managed", "external"] = "external"
     whisper_command_extra_args: tuple[str, ...] = ()
+    audio_init_command: tuple[str, ...] = ()
     audio_record_command: tuple[str, ...] = ()
     audio_input_channels: int = 1
     audio_channel_index: int = 0
@@ -205,9 +214,41 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}OPENAI_REPLY_MAX_OUTPUT_TOKENS"),
         default=config.cloud.openai_reply_max_output_tokens,
     )
+    config.cloud.openai_realtime_model = env.get(
+        f"{ENV_PREFIX}OPENAI_REALTIME_MODEL",
+        config.cloud.openai_realtime_model,
+    ).strip() or config.cloud.openai_realtime_model
+    config.cloud.openai_realtime_voice = env.get(
+        f"{ENV_PREFIX}OPENAI_REALTIME_VOICE",
+        config.cloud.openai_realtime_voice,
+    ).strip() or config.cloud.openai_realtime_voice
+    config.cloud.openai_realtime_turn_detection = env.get(
+        f"{ENV_PREFIX}OPENAI_REALTIME_TURN_DETECTION",
+        config.cloud.openai_realtime_turn_detection,
+    ).strip() or config.cloud.openai_realtime_turn_detection
+    config.cloud.openai_realtime_turn_eagerness = env.get(
+        f"{ENV_PREFIX}OPENAI_REALTIME_TURN_EAGERNESS",
+        config.cloud.openai_realtime_turn_eagerness,
+    ).strip() or config.cloud.openai_realtime_turn_eagerness
+    config.cloud.openai_realtime_local_barge_in_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED"),
+        default=config.cloud.openai_realtime_local_barge_in_enabled,
+    )
+    config.cloud.openai_realtime_base_url = env.get(
+        f"{ENV_PREFIX}OPENAI_REALTIME_BASE_URL",
+        config.cloud.openai_realtime_base_url,
+    ).strip() or config.cloud.openai_realtime_base_url
+    config.cloud.openai_realtime_audio_sample_rate = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_AUDIO_SAMPLE_RATE"),
+        default=config.cloud.openai_realtime_audio_sample_rate,
+    )
 
     runtime = config.runtime
     runtime.auto_run = _parse_bool(env.get(f"{ENV_PREFIX}AUTO_RUN"), default=runtime.auto_run)
+    runtime.interaction_backend = _parse_interaction_backend(
+        env.get(f"{ENV_PREFIX}INTERACTION_BACKEND"),
+        default=runtime.interaction_backend,
+    )
     runtime.input_mode = _parse_input_mode(
         env.get(f"{ENV_PREFIX}INPUT_MODE"),
         default=runtime.input_mode,
@@ -245,6 +286,10 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.whisper_command_extra_args = _parse_command(
         env.get(f"{ENV_PREFIX}WHISPER_COMMAND_EXTRA_ARGS"),
         default=runtime.whisper_command_extra_args,
+    )
+    runtime.audio_init_command = _parse_command(
+        env.get(f"{ENV_PREFIX}AUDIO_INIT_COMMAND"),
+        default=runtime.audio_init_command,
     )
     runtime.audio_record_command = _parse_command(
         env.get(f"{ENV_PREFIX}AUDIO_RECORD_COMMAND"),
@@ -544,12 +589,24 @@ def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> Non
         raise ValueError("only the 'openai' cloud provider is currently supported for real cloud execution")
     if not cloud.openai_api_key.strip():
         raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_API_KEY is not configured")
-    if not cloud.openai_response_model.strip():
+    if runtime.interaction_backend != "openai_realtime" and not cloud.openai_response_model.strip():
         raise ValueError("cloud AI is enabled but AI_COMPANION_OPENAI_RESPONSE_MODEL is not configured")
     if cloud.openai_timeout_seconds <= 0:
         raise ValueError("AI_COMPANION_OPENAI_TIMEOUT_SECONDS must be greater than zero")
     if cloud.openai_reply_max_output_tokens <= 0:
         raise ValueError("AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS must be greater than zero")
+    if cloud.openai_realtime_audio_sample_rate <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE must be greater than zero")
+    if not cloud.openai_realtime_model.strip():
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_MODEL must not be empty")
+    if not cloud.openai_realtime_voice.strip():
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_VOICE must not be empty")
+    if not cloud.openai_realtime_base_url.strip():
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_BASE_URL must not be empty")
+    if cloud.openai_realtime_turn_detection not in {"server_vad", "semantic_vad", "none"}:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION must be server_vad, semantic_vad, or none")
+    if cloud.openai_realtime_turn_eagerness not in {"auto", "low", "medium", "high"}:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS must be auto, low, medium, or high")
 
 
 def _validate_tts_config(tts: TtsConfig) -> None:
@@ -718,6 +775,15 @@ def _parse_language(value: str | None, default: Language) -> Language:
 
 def _parse_input_mode(value: str | None, default: Literal["manual", "speech"]) -> Literal["manual", "speech"]:
     if value in {"manual", "speech"}:
+        return value
+    return default
+
+
+def _parse_interaction_backend(
+    value: str | None,
+    default: Literal["turn_based", "openai_realtime"],
+) -> Literal["turn_based", "openai_realtime"]:
+    if value in {"turn_based", "openai_realtime"}:
         return value
     return default
 

@@ -8,7 +8,7 @@ A desktop AI companion robot built on a Raspberry Pi, designed to be conversatio
 
 The system combines voice interaction, computer vision, a browser-backed face, and a lightweight local control layer with cloud-based AI to create a responsive and engaging companion.
 
-The current runtime uses a local-first turn director: fast local reactive behaviors during listening and thinking, a typed local capability registry for actions and queries, a single cloud reply path with optional tool calls, and local speech output on the robot.
+The current runtime supports two interaction backends: the original local-first turn director, and an OpenAI Realtime speech-to-speech backend. The realtime path keeps wake-word detection and local tool authority on the Pi, then streams active microphone audio to OpenAI and plays streamed model audio back through the robot. Realtime conversations stay on the same WebSocket session across wake-free follow-up turns, and barge-in stops local playback while truncating unheard assistant audio from the server-side conversation.
 
 ---
 
@@ -16,7 +16,8 @@ The current runtime uses a local-first turn director: fast local reactive behavi
 
 The robot listens, routes, acts, and responds using a pipeline:
 ```
-Microphone → Speech-to-Text → Orchestrator/Turn Director → Local Actions + Cloud Reply Text → Text-to-Speech → Speaker
+Turn-based: Microphone → Speech-to-Text → Orchestrator/Turn Director → Local Actions + Cloud Reply Text → Text-to-Speech → Speaker
+Realtime:  Wake Word → OpenAI Realtime audio stream → Pi-validated local tools → streamed audio playback
 ```
 It also uses a camera for basic awareness and a display to show animated facial expressions.
 
@@ -30,7 +31,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - Audio input (microphone)
 - Speech-to-text (Whisper / whisper.cpp)
-- Text-to-speech (mock or local Piper)
+- Text-to-speech (mock or local Piper for turn-based mode; streamed OpenAI audio for realtime mode)
 - Camera processing (face detection)
 - Browser-backed display rendering in Chromium kiosk mode
 - Hybrid orchestrator and capability executor
@@ -40,8 +41,9 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 ### Runs in the Cloud
 
 - OpenAI-backed response text generation with optional tool calls
+- OpenAI Realtime speech-to-speech sessions with local tool validation
 - Optional fallback speech-to-text
-- No cloud speech output in the current architecture
+- Cloud speech output only in the OpenAI Realtime backend
 
 ---
 
@@ -71,7 +73,7 @@ The system is split between local execution on the Raspberry Pi and cloud servic
 
 - STT: whisper.cpp (local)
 - TTS: local output pipeline with mock and Piper-backed implementations
-- AI reply/tool-calling: OpenAI Responses API for the first real cloud backend
+- AI reply/tool-calling: OpenAI Responses API for turn-based mode, OpenAI Realtime for speech-to-speech mode
 - Vision: OpenCV (initial)
 - Orchestrator: Python service running on the Pi
 
@@ -150,6 +152,7 @@ Supported flags:
 
 The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_INPUT_MODE`
+- `AI_COMPANION_INTERACTION_BACKEND`
 - `AI_COMPANION_INTERACTIVE_CONSOLE`
 - `AI_COMPANION_STT_BACKEND`
 - `AI_COMPANION_USE_MOCK_AI`
@@ -160,6 +163,13 @@ The generated `.env.local` file is user-editable and contains:
 - `AI_COMPANION_OPENAI_RESPONSE_MODEL`
 - `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
 - `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
+- `AI_COMPANION_OPENAI_REALTIME_MODEL`
+- `AI_COMPANION_OPENAI_REALTIME_VOICE`
+- `AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION`
+- `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS`
+- `AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED`
+- `AI_COMPANION_OPENAI_REALTIME_BASE_URL`
+- `AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE`
 - `AI_COMPANION_TTS_BACKEND`
 - `AI_COMPANION_TTS_PIPER_BASE_URL`
 - `AI_COMPANION_TTS_PIPER_SERVICE_MODE`

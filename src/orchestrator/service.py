@@ -10,10 +10,12 @@ import os
 import select
 import sys
 import termios
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ai.cloud import CloudResponseService, CloudToolRequest, CloudToolResult
+from ai.realtime import RealtimeConversationService, RealtimeToolCall, RealtimeToolResult
 from hardware.service import HardwareService
 from memory.service import MemoryService
 from orchestrator.capabilities import CapabilityRegistry
@@ -43,12 +45,21 @@ from shared.models import (
     TurnPlan,
 )
 from stt.service import SttService, WakeWordService, strip_wake_phrase
+from stt.service import SharedLiveSpeechState, WakeDetectionResult
 from tts.service import TtsService
 from ui.service import UiService
 from vision.service import VisionService
 
 logger = logging.getLogger(__name__)
 _OPENAI_RESPONSE_RESUME_WINDOW_SECONDS = 5 * 60
+
+
+def _payload_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,9 +88,12 @@ class OrchestratorService:
     stt: SttService | None
     tts: TtsService
     wake_word: WakeWordService | None = None
+    realtime_conversation: RealtimeConversationService | None = None
+    shared_live_speech_state: SharedLiveSpeechState | None = None
     terminal_debug: TerminalDebugSink | None = None
     event_history: list[Event] = field(default_factory=list)
     _active_speech_trigger: str | None = field(default=None, init=False, repr=False)
+    _last_wake_detection: WakeDetectionResult | None = field(default=None, init=False, repr=False)
     _turn_latency_marks: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
 
     async def start(self) -> None:
@@ -94,6 +108,8 @@ class OrchestratorService:
             await self.stt.start()
         if hasattr(self.cloud_response, "start"):
             await self.cloud_response.start()
+        if self.realtime_conversation is not None:
+            await self.realtime_conversation.start()
         if self.config.tts.backend != "mock" and hasattr(self.tts, "start"):
             await self.tts.start()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
@@ -106,8 +122,12 @@ class OrchestratorService:
             await self.stt.shutdown()
         elif self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
+        elif self.shared_live_speech_state is not None:
+            await self.shared_live_speech_state.close()
         if hasattr(self.cloud_response, "shutdown"):
             await self.cloud_response.shutdown()
+        if self.realtime_conversation is not None:
+            await self.realtime_conversation.shutdown()
         if hasattr(self.tts, "shutdown"):
             await self.tts.shutdown()
         if hasattr(self.ui, "shutdown"):
@@ -121,7 +141,9 @@ class OrchestratorService:
 
         await self.start()
         try:
-            if self.config.runtime.input_mode == "speech":
+            if self.config.runtime.interaction_backend == "openai_realtime":
+                await self._run_realtime_speech_loop()
+            elif self.config.runtime.input_mode == "speech":
                 await self._run_speech_loop()
             elif self.config.runtime.interactive_console:
                 while True:
@@ -277,9 +299,112 @@ class OrchestratorService:
             self.config.runtime.wake_word_phrase,
         )
         self._active_speech_trigger = "wake"
+        self._last_wake_detection = detection
         if self.stt is not None and hasattr(self.stt, "begin_utterance"):
             self.stt.begin_utterance(trigger="wake", detection=detection)
         return True
+
+    async def _run_realtime_speech_loop(self) -> None:
+        """Run wake-triggered OpenAI Realtime speech sessions."""
+
+        if self.realtime_conversation is None:
+            raise RuntimeError("openai_realtime interaction backend requires a realtime conversation service")
+        if self.shared_live_speech_state is None:
+            raise RuntimeError("openai_realtime interaction backend requires shared live speech state")
+        while True:
+            wake_detected = await self._await_wake_word()
+            if not wake_detected:
+                continue
+            await self._run_realtime_awake_session()
+
+    async def _run_realtime_awake_session(self) -> None:
+        """Stream the active microphone session to the realtime backend after wake."""
+
+        if self.realtime_conversation is None or self.shared_live_speech_state is None:
+            raise RuntimeError("realtime session requested without realtime dependencies")
+
+        shared_state = self.shared_live_speech_state
+        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
+        self._update_realtime_debug_session_started()
+        await self.handle_event(
+            Event(
+                name=EventName.LISTENING_STARTED,
+                source=ComponentName.ORCHESTRATOR,
+                payload={"trigger": self._active_speech_trigger or "wake"},
+            )
+        )
+        await self._apply_reactive_steps(
+            self.reactive_policy.listening_started(
+                self.state,
+                has_attention_target=bool(self.state.last_detections or self.config.mocks.visible_people),
+            )
+        )
+
+        audio_chunks: asyncio.Queue[bytes | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def enqueue_chunk(chunk: bytes, _chunk_start_offset: int) -> None:
+            if chunk:
+                loop.call_soon_threadsafe(audio_chunks.put_nowait, chunk)
+
+        await shared_state.ensure_session()
+        await shared_state.sync()
+        detection = self._last_wake_detection
+        self._last_wake_detection = None
+        if detection is not None and detection.utterance_stream_start_offset is not None:
+            shared_state.start_utterance(stream_start_offset=detection.utterance_stream_start_offset)
+        elif detection is not None and detection.audio_window is not None:
+            shared_state.start_utterance(initial_window=detection.audio_window)
+        else:
+            shared_state.start_utterance()
+
+        initial_window = shared_state.current_utterance_window(
+            threshold=0,
+            source_path=Path("shared-live-realtime-session.wav"),
+        )
+        if initial_window is not None and initial_window.pcm_data:
+            audio_chunks.put_nowait(initial_window.pcm_data)
+
+        shared_state.add_chunk_listener(enqueue_chunk)
+        try:
+            await self.realtime_conversation.run_awake_session(audio_chunks=audio_chunks)
+        except Exception as exc:
+            logger.exception("realtime session failed")
+            self.state.last_error = str(exc)
+            await self.handle_event(
+                Event(
+                    name=EventName.ERROR_OCCURRED,
+                    source=ComponentName.CLOUD,
+                    payload={"error": str(exc)},
+                )
+            )
+            await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
+        finally:
+            shared_state.remove_chunk_listener(enqueue_chunk)
+            shared_state.reset_utterance()
+            audio_chunks.put_nowait(None)
+            self._active_speech_trigger = None
+            self.state.response_emotion = None
+            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+
+    def _update_realtime_debug_session_started(self) -> None:
+        if self.terminal_debug is None:
+            return
+        update_realtime_status = getattr(self.terminal_debug, "update_realtime_status", None)
+        if not callable(update_realtime_status):
+            return
+        voice = self.realtime_conversation.voice if self.realtime_conversation is not None else None
+        update_realtime_status(
+            phase="listening",
+            voice=voice,
+            input_audio_bytes=0,
+            input_audio_chunks=0,
+            output_audio_bytes=0,
+            output_audio_chunks=0,
+            response_count=0,
+            interrupt_count=0,
+            last_event="session_started",
+        )
 
     async def _run_stt_turn(self) -> SpeechTurnOutcome:
         """Capture, transcribe, and execute one speech turn."""
@@ -631,21 +756,36 @@ class OrchestratorService:
             )
             self._log_turn_latency_span("total_to_first_audio", "wake_detected", "tts_playback_started")
             logger.info(
-                "turn_trace tts_playback_started job_id=%s text_len=%s",
+                "%s playback_started job_id=%s text_len=%s",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
                 event.payload.get("job_id", "--"),
                 len(str(event.payload.get("text", ""))),
             )
         elif event.name is EventName.TTS_PLAYBACK_FINISHED:
             logger.info(
-                "turn_trace tts_playback_finished job_id=%s duration_ms=%s",
+                "%s playback_finished job_id=%s duration_ms=%s",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
                 event.payload.get("job_id", "--"),
                 event.payload.get("duration_ms", "--"),
+            )
+        elif event.name is EventName.TTS_INTERRUPTED:
+            logger.info(
+                "%s interrupted job_id=%s source=%s in=%sB/%sch out=%sB/%sch interrupts=%s",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
+                event.payload.get("job_id", "--"),
+                event.payload.get("source", "--"),
+                event.payload.get("input_audio_bytes", "--"),
+                event.payload.get("input_audio_chunks", "--"),
+                event.payload.get("output_audio_bytes", "--"),
+                event.payload.get("output_audio_chunks", "--"),
+                event.payload.get("interrupt_count", "--"),
             )
         elif event.name is EventName.RESPONSE_READY:
             logger.info(
                 "turn_trace response_ready text_len=%s",
                 len(str(getattr(event.payload.get("response"), "text", ""))),
             )
+        self._update_realtime_debug_from_event(event)
         await self._apply_tts_lifecycle_event(event)
         await self.event_bus.publish(event)
 
@@ -1037,6 +1177,73 @@ class OrchestratorService:
             output_text=f"The tool '{request.tool_name}' is not available on this robot.",
         )
 
+    async def handle_realtime_tool_request(self, request: RealtimeToolCall) -> RealtimeToolResult:
+        """Validate and execute a realtime model tool request on the Pi."""
+
+        plan = TurnPlan(
+            route_kind=RouteKind.HYBRID,
+            confidence=1.0,
+            rationale="validated realtime tool request",
+            source="openai_realtime",
+            steps=(
+                PlanStep(
+                    capability_id=request.tool_name,
+                    arguments=request.arguments,
+                    phase=StepPhase.QUERY,
+                    reason="model requested local robot tool",
+                ),
+            ),
+        )
+        validated_plan, skipped = self.capability_registry.validate_plan(
+            plan,
+            available_components=self._available_components(),
+        )
+        if skipped or not validated_plan.steps:
+            message = skipped[0].message if skipped else f"Tool '{request.tool_name}' is not available."
+            return RealtimeToolResult(
+                call_id=request.call_id,
+                tool_name=request.tool_name,
+                output_text=message,
+            )
+
+        if request.tool_name == "camera_snapshot":
+            try:
+                snapshot = await self.vision.capture_snapshot()
+                return RealtimeToolResult(
+                    call_id=request.call_id,
+                    tool_name=request.tool_name,
+                    output_text=snapshot.summary or "I captured the current camera view.",
+                    image_url=snapshot.image_url,
+                )
+            except Exception as exc:
+                logger.exception("realtime camera tool failed")
+                return RealtimeToolResult(
+                    call_id=request.call_id,
+                    tool_name=request.tool_name,
+                    output_text=f"Camera snapshot failed: {exc}",
+                )
+
+        context = await self._build_context()
+        transcript = self.state.current_transcript or Transcript(
+            text="",
+            language=self.state.active_language,
+            confidence=0.0,
+            is_final=False,
+        )
+        step = validated_plan.steps[0]
+        result, _response = await self._execute_plan_step(
+            step,
+            plan=validated_plan,
+            context=context,
+            transcript=transcript,
+            prior_results=(),
+        )
+        return RealtimeToolResult(
+            call_id=request.call_id,
+            tool_name=request.tool_name,
+            output_text=result.message,
+        )
+
     async def _apply_turn_attention(self, context: InteractionContext) -> None:
         has_attention_target = bool(context.current_detections or context.active_user)
         if not has_attention_target or self.state.head_direction == "user":
@@ -1173,6 +1380,17 @@ class OrchestratorService:
             )
             return
 
+        if (
+            self.config.runtime.interaction_backend == "openai_realtime"
+            and event.name is EventName.TTS_INTERRUPTED
+        ):
+            await self._set_lifecycle(
+                LifecycleStage.LISTENING,
+                EmotionState.LISTENING,
+                preview_text,
+            )
+            return
+
         if event.name in {EventName.TTS_PLAYBACK_FINISHED, EventName.TTS_INTERRUPTED, EventName.TTS_FAILED}:
             if self.state.lifecycle is not LifecycleStage.SPEAKING:
                 return
@@ -1181,6 +1399,37 @@ class OrchestratorService:
                 response_emotion,
                 preview_text,
             )
+
+    def _update_realtime_debug_from_event(self, event: Event) -> None:
+        if self.config.runtime.interaction_backend != "openai_realtime":
+            return
+        if event.source is not ComponentName.TTS:
+            return
+        if self.terminal_debug is None:
+            return
+        update_realtime_status = getattr(self.terminal_debug, "update_realtime_status", None)
+        if not callable(update_realtime_status):
+            return
+        phase = None
+        if event.name is EventName.TTS_PLAYBACK_STARTED:
+            phase = "speaking"
+        elif event.name is EventName.TTS_PLAYBACK_FINISHED:
+            phase = "listening"
+        elif event.name is EventName.TTS_INTERRUPTED:
+            phase = "listening"
+        elif event.name is EventName.TTS_FAILED:
+            phase = "error"
+        update_realtime_status(
+            phase=phase,
+            voice=str(event.payload.get("voice_id", "")) or None,
+            input_audio_bytes=_payload_int(event.payload.get("input_audio_bytes")),
+            input_audio_chunks=_payload_int(event.payload.get("input_audio_chunks")),
+            output_audio_bytes=_payload_int(event.payload.get("output_audio_bytes")),
+            output_audio_chunks=_payload_int(event.payload.get("output_audio_chunks")),
+            response_count=_payload_int(event.payload.get("response_count")),
+            interrupt_count=_payload_int(event.payload.get("interrupt_count")),
+            last_event=event.name.value,
+        )
 
     async def _run_manual_input(self, raw_text: str) -> None:
         text = raw_text.strip()

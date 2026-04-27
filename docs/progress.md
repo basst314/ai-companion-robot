@@ -151,7 +151,7 @@ Available now:
 Current limitations:
 - real OpenAI path requires credentials and is not exercised by CI
 - the default camera tool still uses a mock snapshot payload until real vision is wired in
-- no streaming responses
+- the turn-based Responses API path does not stream replies yet; the OpenAI Realtime backend provides the streaming speech-to-speech path
 
 ### TTS
 
@@ -171,7 +171,7 @@ Available now:
 
 Current limitations:
 - cloud TTS provider is not implemented yet
-- direct user barge-in during TTS is still intentionally out of scope
+- direct user barge-in is only supported in the OpenAI Realtime backend; the turn-based Piper TTS path still does not accept speech-over-speech interruption
 
 ### UI
 

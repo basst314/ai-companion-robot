@@ -13,6 +13,7 @@ Options:
   --user <username>              SSH username
   --target-dir <path>            Target directory on the Pi (default: ~/ai-companion-robot)
   --port <port>                  SSH port (default: 22)
+  --env-file <path>              Copy this local env file to <target-dir>/.env.local
   --copy-wake-model <path>       Copy a custom wake-word model into artifacts/openwakeword/models/
   --help                         Show this help
 EOF
@@ -31,6 +32,7 @@ HOST=""
 USER_NAME=""
 TARGET_DIR="~/ai-companion-robot"
 PORT="22"
+ENV_FILE_PATH=""
 WAKE_MODEL_PATH=""
 
 while [[ $# -gt 0 ]]; do
@@ -49,6 +51,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       PORT="${2:-}"
+      shift 2
+      ;;
+    --env-file)
+      ENV_FILE_PATH="${2:-}"
       shift 2
       ;;
     --copy-wake-model)
@@ -74,6 +80,9 @@ command -v ssh >/dev/null 2>&1 || fail "ssh is required"
 if [[ -n "${WAKE_MODEL_PATH}" ]] && [[ ! -f "${WAKE_MODEL_PATH}" ]]; then
   fail "wake-word model file not found: ${WAKE_MODEL_PATH}"
 fi
+if [[ -n "${ENV_FILE_PATH}" ]] && [[ ! -f "${ENV_FILE_PATH}" ]]; then
+  fail "env file not found: ${ENV_FILE_PATH}"
+fi
 
 REMOTE="${USER_NAME}@${HOST}"
 SSH_CMD=(ssh -p "${PORT}")
@@ -90,10 +99,16 @@ rsync -az --delete \
   --exclude '__pycache__/' \
   --exclude '.mypy_cache/' \
   --exclude '.DS_Store' \
-  --exclude '.env.local' \
+  --exclude '.env' \
+  --exclude '.env.*' \
   --exclude 'artifacts/' \
   --exclude 'logs/' \
   ./ "${REMOTE}:${TARGET_DIR}/"
+
+if [[ -n "${ENV_FILE_PATH}" ]]; then
+  log "copying env file to ${REMOTE}:${TARGET_DIR}/.env.local"
+  rsync -az -e "ssh -p ${PORT}" "${ENV_FILE_PATH}" "${REMOTE}:${TARGET_DIR}/.env.local"
+fi
 
 if [[ -n "${WAKE_MODEL_PATH}" ]]; then
   REMOTE_MODEL_DIR="${TARGET_DIR}/artifacts/openwakeword/models"

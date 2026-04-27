@@ -561,6 +561,7 @@ class ShellAudioCaptureService:
 
     command_template: tuple[str, ...]
     output_dir: Path | None = None
+    init_command: tuple[str, ...] = ()
     startup_poll_seconds: float = 0.05
     startup_timeout_seconds: float = 2.0
     sample_rate: int = 16000
@@ -569,8 +570,11 @@ class ShellAudioCaptureService:
     channel_index: int = 0
     sample_width: int = 2
     stream_format: str = "s16le"
+    _init_ran: bool = field(default=False, init=False, repr=False)
+    _init_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     async def start_capture(self, on_chunk: Callable[[bytes], None] | None = None) -> RecordingSession:
+        await self._ensure_initialized()
         output_dir = self.output_dir or Path(tempfile.gettempdir())
         output_dir.mkdir(parents=True, exist_ok=True)
         pcm_path = output_dir / f"ai-companion-recording-{datetime.now(UTC).timestamp():.0f}.pcm"
@@ -634,6 +638,23 @@ class ShellAudioCaptureService:
             "{output_path}": "-",
         }
         return tuple(_replace_many(token, replacements) for token in self.command_template)
+
+    async def _ensure_initialized(self) -> None:
+        if self._init_ran or not self.init_command:
+            return
+        async with self._init_lock:
+            if self._init_ran:
+                return
+            process = await asyncio.create_subprocess_exec(
+                *self.init_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                message = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
+                raise RuntimeError(f"audio init command failed with status {process.returncode}: {message}")
+            self._init_ran = True
 
     def materialize_wav(self, recording_path: Path) -> Path:
         wav_path = self.wav_artifact_path(recording_path)

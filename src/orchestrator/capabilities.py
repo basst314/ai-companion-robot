@@ -145,6 +145,14 @@ def build_default_capability_registry() -> CapabilityRegistry:
             phase=StepPhase.QUERY,
             requires_components=(ComponentName.VISION,),
         ),
+        "camera_snapshot": CapabilityDefinition(
+            capability_id="camera_snapshot",
+            description="Capture the robot's current camera view for visual context.",
+            kind=CapabilityKind.QUERY,
+            target=ComponentName.VISION,
+            phase=StepPhase.QUERY,
+            requires_components=(ComponentName.VISION,),
+        ),
         "user_summary": CapabilityDefinition(
             capability_id="user_summary",
             description="Answer what the robot currently knows about the active user.",

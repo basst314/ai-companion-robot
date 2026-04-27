@@ -27,6 +27,13 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_OPENAI_RESPONSE_MODEL=gpt-test-response",
                 "AI_COMPANION_OPENAI_TIMEOUT_SECONDS=18.5",
                 "AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS=96",
+                "AI_COMPANION_OPENAI_REALTIME_MODEL=gpt-realtime-test",
+                "AI_COMPANION_OPENAI_REALTIME_VOICE=echo",
+                "AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION=semantic_vad",
+                "AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=auto",
+                "AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED=true",
+                "AI_COMPANION_OPENAI_REALTIME_BASE_URL=wss://example.test/realtime",
+                "AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE=24000",
                 "AI_COMPANION_TTS_BACKEND=piper",
                 "AI_COMPANION_TTS_PIPER_BASE_URL=http://127.0.0.1:5001",
                 "AI_COMPANION_TTS_PIPER_SERVICE_MODE=external",
@@ -53,6 +60,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_UI_SHOW_TEXT_OVERLAY=false",
                 "AI_COMPANION_UI_SLEEP_COMMAND=vcgencmd display_power 0",
                 "AI_COMPANION_UI_WAKE_COMMAND=vcgencmd display_power 1",
+                "AI_COMPANION_INTERACTION_BACKEND=openai_realtime",
                 "AI_COMPANION_INPUT_MODE=speech",
                 "AI_COMPANION_SPEECH_LATENCY_PROFILE=balanced",
                 "AI_COMPANION_INTERACTIVE_CONSOLE=true",
@@ -60,6 +68,7 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
                 "AI_COMPANION_WHISPER_BINARY_PATH=/opt/whisper/whisper-cli",
                 "AI_COMPANION_WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.en.bin",
                 "AI_COMPANION_WHISPER_COMMAND_EXTRA_ARGS=--threads 4 --processors 1 --best-of 1 --beam-size 1 --no-fallback",
+                "AI_COMPANION_AUDIO_INIT_COMMAND=/home/basti/respeaker_init.sh",
                 "AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}",
                 "AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED=false",
                 "AI_COMPANION_SPEECH_SILENCE_SECONDS=1.8",
@@ -93,6 +102,13 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.cloud.openai_response_model == "gpt-test-response"
     assert config.cloud.openai_timeout_seconds == 18.5
     assert config.cloud.openai_reply_max_output_tokens == 96
+    assert config.cloud.openai_realtime_model == "gpt-realtime-test"
+    assert config.cloud.openai_realtime_voice == "echo"
+    assert config.cloud.openai_realtime_turn_detection == "semantic_vad"
+    assert config.cloud.openai_realtime_turn_eagerness == "auto"
+    assert config.cloud.openai_realtime_local_barge_in_enabled is True
+    assert config.cloud.openai_realtime_base_url == "wss://example.test/realtime"
+    assert config.cloud.openai_realtime_audio_sample_rate == 24000
     assert config.tts.backend == "piper"
     assert config.tts.piper_base_url == "http://127.0.0.1:5001"
     assert config.tts.piper_service_mode == "external"
@@ -119,12 +135,14 @@ def test_load_app_config_reads_env_local_file(tmp_path: Path) -> None:
     assert config.ui.show_text_overlay is False
     assert config.ui.sleep_command == ("vcgencmd", "display_power", "0")
     assert config.ui.wake_command == ("vcgencmd", "display_power", "1")
+    assert config.runtime.interaction_backend == "openai_realtime"
     assert config.runtime.input_mode == "speech"
     assert config.runtime.speech_latency_profile == "balanced"
     assert config.runtime.interactive_console is True
     assert config.runtime.stt_backend == "whisper_cpp"
     assert config.runtime.whisper_binary_path == Path("/opt/whisper/whisper-cli")
     assert config.runtime.whisper_model_path == Path("/opt/whisper/models/ggml-base.en.bin")
+    assert config.runtime.audio_init_command == ("/home/basti/respeaker_init.sh",)
     assert config.runtime.whisper_command_extra_args[:4] == ("--threads", "4", "--processors", "1")
     assert config.runtime.audio_record_command[:4] == ("rec", "-q", "-c", "1")
     assert config.runtime.partial_transcripts_enabled is False
@@ -188,6 +206,30 @@ def test_load_app_config_rejects_real_cloud_without_required_openai_fields(tmp_p
 
     with pytest.raises(ValueError, match="OPENAI_RESPONSE_MODEL"):
         load_app_config(base_dir=tmp_path)
+
+
+def test_load_app_config_allows_realtime_cloud_without_response_model(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AI_COMPANION_INTERACTION_BACKEND=openai_realtime",
+                "AI_COMPANION_CLOUD_ENABLED=true",
+                "AI_COMPANION_USE_MOCK_AI=false",
+                "AI_COMPANION_OPENAI_API_KEY=test-key",
+                "AI_COMPANION_OPENAI_RESPONSE_MODEL=",
+            ]
+        )
+    )
+
+    config = load_app_config(base_dir=tmp_path)
+
+    assert config.runtime.interaction_backend == "openai_realtime"
+    assert config.cloud.openai_response_model == ""
+    assert config.cloud.openai_realtime_model == "gpt-realtime-1.5"
+    assert config.cloud.openai_realtime_turn_detection == "semantic_vad"
+    assert config.cloud.openai_realtime_turn_eagerness == "auto"
+    assert config.cloud.openai_realtime_local_barge_in_enabled is False
 
 
 def test_load_app_config_reads_browser_face_renderer_settings(tmp_path: Path) -> None:
@@ -462,6 +504,7 @@ def test_config_helper_parsers_cover_common_cases(monkeypatch, tmp_path: Path) -
     assert config_mod._parse_ui_backend("browser", "mock") == "browser"
     assert config_mod._parse_browser_launch_mode("connect_only", "windowed") == "connect_only"
     assert config_mod._parse_language("de", Language.ENGLISH) is Language.GERMAN
+    assert config_mod._parse_interaction_backend("openai_realtime", "turn_based") == "openai_realtime"
     assert config_mod._parse_input_mode("speech", "manual") == "speech"
     assert config_mod._parse_stt_backend("whisper_cpp", "mock") == "whisper_cpp"
     assert config_mod._parse_speech_latency_profile("balanced", "fast") == "balanced"

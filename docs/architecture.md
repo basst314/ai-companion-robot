@@ -169,6 +169,17 @@ User speech
 → Speaker
 ```
 
+### Realtime Voice Interaction
+```
+User speech
+→ Microphone
+→ Wake-word detection (OpenWakeWord, local)
+→ OpenAI Realtime WebSocket audio input
+→ Pi-validated local tools / on-demand camera snapshot tools
+→ streamed OpenAI audio output
+→ local ALSA speaker playback
+```
+
 ---
 
 ### Vision Interaction
@@ -203,13 +214,33 @@ Camera
 - LLM-based response text generation
 - optional tool selection for extra data such as camera snapshots
 - optional enhanced STT
-- no cloud speech output in the current design
+- optional Realtime speech-to-speech sessions with streamed cloud audio output
 
 In the current implementation, normal chat takes a single cloud response-model call:
 - the orchestrator handles deterministic embodiment and narrow local-only shortcuts first
 - the cloud reply call sees transcript, current context, and any local step results
 - when the model requests a local tool such as `camera_snapshot`, the orchestrator runs it and resumes the same response turn with the tool output
 - successful cloud turns keep a short in-memory resume window so a fresh wake-word turn shortly afterwards can continue the same thread
+
+The OpenAI Realtime backend is an alternate interaction backend, selected with
+`AI_COMPANION_INTERACTION_BACKEND=openai_realtime`. In that mode, the Pi still owns
+wake-word detection, tool validation, hardware execution, UI events, and audio
+playback, while the active utterance and response audio stream through the
+Realtime WebSocket API.
+
+The realtime backend keeps the WebSocket session open while the user is actively
+chaining follow-up turns, so the robot does not drop back to wake-word listening
+between normal conversational turns. When the user speaks over assistant audio,
+Realtime VAD marks the interruption, local ALSA playback stops immediately, and
+the client sends `conversation.item.truncate` for the portion of assistant audio
+that was generated but not actually heard. If the server response has already
+finished streaming but local playback is still draining, the client skips
+`response.cancel` and only stops/truncates local playback state.
+
+The interactive console exposes this path through the `[RT]` row: phase, input
+and output byte/chunk counts, response count, interrupt count, voice, and last
+realtime event. The older `[AI]` row remains for plan/reply state in the
+turn-based backend.
 
 ---
 
