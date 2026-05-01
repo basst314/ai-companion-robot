@@ -21,7 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from shared.config import load_app_config
-from stt.service import OpenWakeWordModelAdapter
+from audio.wake import OpenWakeWordModelAdapter
 
 
 def parse_args() -> argparse.Namespace:

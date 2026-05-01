@@ -353,11 +353,11 @@ class FaceController:
 
     def handle_event(self, event: Event) -> None:
         now = time.monotonic()
-        if event.name is EventName.TTS_PLAYBACK_STARTED:
+        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
             self.state.speech_active = True
             self._mark_activity(now)
             return
-        if event.name in {EventName.TTS_PLAYBACK_FINISHED, EventName.TTS_INTERRUPTED, EventName.TTS_FAILED}:
+        if event.name in {EventName.AUDIO_PLAYBACK_FINISHED, EventName.AUDIO_INTERRUPTED, EventName.AUDIO_FAILED}:
             self.state.speech_active = False
             self._mark_activity(now)
             return

@@ -9,6 +9,18 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-04-30 — Realtime-First Cleanup
+
+### Highlights
+- Preserved the pre-cleanup local STT/TTS snapshot on `archive/local-stt-tts`.
+- Removed the local Whisper/whisper.cpp STT path, Piper/mock TTS package, and turn-based speech maintenance surface from `main`.
+- Moved the realtime-required microphone, shared audio buffer, ReSpeaker channel extraction, and OpenWakeWord pieces into the neutral `audio` package.
+- Renamed realtime playback configuration from TTS-specific names to `AI_COMPANION_AUDIO_*`.
+- Simplified setup and docs around the OpenAI Realtime speech-to-speech path.
+
+### Why this matters
+The repo now matches the runtime direction: realtime audio in/out is the maintained speech stack, while the older local STT/TTS implementation remains recoverable from the archive branch if needed.
+
 ## 2026-04-26 — OpenAI Realtime Speech Backend
 
 ### Highlights

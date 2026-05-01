@@ -38,15 +38,12 @@ from shared.models import (
     QueryResult,
     RobotStateSnapshot,
     RouteKind,
-    SpeechJobStatus,
-    SpeechRequest,
     StepPhase,
     Transcript,
     TurnPlan,
 )
-from stt.service import SttService, WakeWordService, strip_wake_phrase
-from stt.service import SharedLiveSpeechState, WakeDetectionResult
-from tts.service import TtsService
+from audio.capture import SharedLiveSpeechState
+from audio.wake import WakeDetectionResult, WakeWordService
 from ui.service import UiService
 from vision.service import VisionService
 
@@ -85,8 +82,6 @@ class OrchestratorService:
     ui: UiService
     hardware: HardwareService
     cloud_response: CloudResponseService
-    stt: SttService | None
-    tts: TtsService
     wake_word: WakeWordService | None = None
     realtime_conversation: RealtimeConversationService | None = None
     shared_live_speech_state: SharedLiveSpeechState | None = None
@@ -104,23 +99,17 @@ class OrchestratorService:
             self.terminal_debug.activate()
         if hasattr(self.ui, "start"):
             await self.ui.start()
-        if self.stt is not None and hasattr(self.stt, "start"):
-            await self.stt.start()
         if hasattr(self.cloud_response, "start"):
             await self.cloud_response.start()
         if self.realtime_conversation is not None:
             await self.realtime_conversation.start()
-        if self.config.tts.backend != "mock" and hasattr(self.tts, "start"):
-            await self.tts.start()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
 
     async def stop(self) -> None:
         """Prepare shutdown wiring for the local runtime."""
 
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-        if self.stt is not None and hasattr(self.stt, "shutdown"):
-            await self.stt.shutdown()
-        elif self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
+        if self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
         elif self.shared_live_speech_state is not None:
             await self.shared_live_speech_state.close()
@@ -128,8 +117,6 @@ class OrchestratorService:
             await self.cloud_response.shutdown()
         if self.realtime_conversation is not None:
             await self.realtime_conversation.shutdown()
-        if hasattr(self.tts, "shutdown"):
-            await self.tts.shutdown()
         if hasattr(self.ui, "shutdown"):
             await self.ui.shutdown()
         if self.terminal_debug is not None:
@@ -143,8 +130,6 @@ class OrchestratorService:
         try:
             if self.config.runtime.interaction_backend == "openai_realtime":
                 await self._run_realtime_speech_loop()
-            elif self.config.runtime.input_mode == "speech":
-                await self._run_speech_loop()
             elif self.config.runtime.interactive_console:
                 while True:
                     try:
@@ -162,128 +147,6 @@ class OrchestratorService:
         finally:
             await self.stop()
 
-    async def _run_speech_loop(self) -> None:
-        """Capture one utterance at a time through the configured STT service."""
-
-        if self.stt is None:
-            raise RuntimeError("speech input mode requires an STT service")
-
-        if self.config.runtime.interactive_console:
-            await self._run_interactive_speech_loop()
-            return
-
-        remaining_turn_budget = max(1, len(self.config.runtime.manual_inputs)) if self.config.runtime.stt_backend == "mock" else None
-        while remaining_turn_budget is None or remaining_turn_budget > 0:
-            wake_detected = await self._await_wake_word()
-            if not wake_detected:
-                continue
-            remaining_turn_budget = await self._run_follow_up_session(remaining_turn_budget=remaining_turn_budget)
-            if remaining_turn_budget == 0:
-                return
-
-    async def _run_interactive_speech_loop(self) -> None:
-        """Allow keyboard input and wake-word activation to coexist in interactive mode."""
-
-        self._show_interactive_speech_hint()
-
-        isatty = getattr(sys.stdin, "isatty", None)
-        if not isatty or not isatty():
-            await self._run_interactive_speech_loop_non_tty()
-            return
-
-        wake_task: asyncio.Task[bool] | None = None
-        input_buffer = ""
-        with _stdin_cbreak_mode():
-            while True:
-                if not input_buffer and wake_task is None and self.wake_word is not None:
-                    wake_task = asyncio.create_task(self._await_wake_word())
-
-                char = await asyncio.to_thread(_read_console_char_ready, 0.1)
-                if char is not None:
-                    if wake_task is not None and not wake_task.done():
-                        wake_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await wake_task
-                        wake_task = None
-
-                    if char in {"\r", "\n"}:
-                        text = input_buffer.strip()
-                        input_buffer = ""
-                        self._clear_typed_input_preview()
-                        if text.lower() in {"quit", "exit"}:
-                            break
-                        if text:
-                            await self._run_manual_input(text)
-                        else:
-                            self._clear_wake_handoff()
-                            self._begin_manual_utterance()
-                            self._mark_manual_listening_awake()
-                            await self._run_follow_up_session()
-                        self._show_interactive_speech_hint()
-                        continue
-
-                    if char in {"\x7f", "\b"}:
-                        input_buffer = input_buffer[:-1]
-                    elif char == "\x03":
-                        raise KeyboardInterrupt()
-                    elif char.isprintable():
-                        input_buffer += char
-                    self._show_typed_input_preview(input_buffer)
-                    continue
-
-                if wake_task is not None and wake_task.done():
-                    wake_detected = await wake_task
-                    wake_task = None
-                    if wake_detected:
-                        await self._run_follow_up_session()
-                        self._show_interactive_speech_hint()
-
-    async def _run_interactive_speech_loop_non_tty(self) -> None:
-        """Preserve test and redirected-stdin behavior without TTY polling."""
-
-        while True:
-            input_task = asyncio.create_task(asyncio.to_thread(_read_console_line_ready, 0.1))
-            tasks: set[asyncio.Task[object]] = {input_task}
-            wake_task: asyncio.Task[bool] | None = None
-            if self.wake_word is not None:
-                wake_task = asyncio.create_task(self._await_wake_word())
-                tasks.add(wake_task)
-
-            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-            if wake_task is not None and wake_task in done:
-                wake_detected = await wake_task
-                if wake_detected:
-                    if not input_task.done():
-                        input_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await input_task
-                    await self._run_follow_up_session()
-                    self._show_interactive_speech_hint()
-                    continue
-                if not input_task.done():
-                    input_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await input_task
-
-            if input_task in done:
-                if wake_task is not None and not wake_task.done():
-                    wake_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await wake_task
-                command = input_task.result()
-                text = command.strip() if command is not None else ""
-                if text.lower() in {"quit", "exit"}:
-                    break
-                if text:
-                    await self._run_manual_input(text)
-                else:
-                    self._clear_wake_handoff()
-                    self._begin_manual_utterance()
-                    self._mark_manual_listening_awake()
-                    await self._run_follow_up_session()
-                self._show_interactive_speech_hint()
-
     async def _await_wake_word(self) -> bool:
         """Wait for the configured wake word before starting a speech turn."""
 
@@ -300,8 +163,6 @@ class OrchestratorService:
         )
         self._active_speech_trigger = "wake"
         self._last_wake_detection = detection
-        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
-            self.stt.begin_utterance(trigger="wake", detection=detection)
         return True
 
     async def _run_realtime_speech_loop(self) -> None:
@@ -406,103 +267,6 @@ class OrchestratorService:
             last_event="session_started",
         )
 
-    async def _run_stt_turn(self) -> SpeechTurnOutcome:
-        """Capture, transcribe, and execute one speech turn."""
-
-        if self.stt is None:
-            raise RuntimeError("speech input mode requires an STT service")
-
-        self.state.last_error = None
-        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING)
-        await self.handle_event(
-            Event(
-                name=EventName.LISTENING_STARTED,
-                source=ComponentName.ORCHESTRATOR,
-                payload={
-                    "trigger": self._active_speech_trigger or "manual",
-                },
-            )
-        )
-        await self._apply_reactive_steps(
-            self.reactive_policy.listening_started(
-                self.state,
-                has_attention_target=bool(self.state.last_detections or self.config.mocks.visible_people),
-            )
-        )
-        strip_wake_phrase_from_turn = self._active_speech_trigger == "wake"
-        try:
-            final_transcript: Transcript | None = None
-            async for transcript in self.stt.stream_transcripts():
-                if strip_wake_phrase_from_turn:
-                    transcript = self._strip_wake_phrase_from_transcript(transcript)
-                if transcript.is_final:
-                    final_transcript = transcript
-                    vad_end_at = transcript.metadata.get("vad_end_at")
-                    if isinstance(vad_end_at, datetime):
-                        self._mark_turn_latency("vad_end", vad_end_at)
-                    stt_final_ready_at = transcript.metadata.get("stt_final_ready_at")
-                    if isinstance(stt_final_ready_at, datetime):
-                        self._mark_turn_latency("stt_final_ready", stt_final_ready_at)
-                    else:
-                        self._mark_turn_latency("stt_final_ready")
-                    self._log_turn_latency_span("wake_detected->vad_end", "wake_detected", "vad_end")
-                    self._log_turn_latency_span("vad_end->stt_final_ready", "vad_end", "stt_final_ready")
-                    logger.info(
-                        "turn_trace final_transcript_ready text_len=%s trigger=%s",
-                        len(transcript.text),
-                        self._active_speech_trigger or "manual",
-                    )
-                    if transcript.text.strip():
-                        self._show_transcript_update(transcript, is_final=True)
-                    break
-                await self.handle_partial_transcript(transcript)
-                self._show_transcript_update(transcript, is_final=False)
-            if final_transcript is None:
-                raise RuntimeError("STT stream completed without a final transcript")
-        except Exception as exc:
-            logger.exception("stt failed")
-            self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.STT,
-                    payload={"error": str(exc)},
-                )
-            )
-            await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
-            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-            return SpeechTurnOutcome()
-        finally:
-            self._active_speech_trigger = None
-
-        transcript = final_transcript
-        if not transcript.text.strip():
-            self.state.current_transcript = transcript
-            self.state.active_language = transcript.language
-            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-            return SpeechTurnOutcome(transcript_empty=True)
-
-        follow_up_eligible = await self.run_turn(transcript)
-        return SpeechTurnOutcome(follow_up_eligible=follow_up_eligible)
-
-    async def _run_follow_up_session(self, *, remaining_turn_budget: int | None = None) -> int | None:
-        """Run one active speech session, chaining wake-free follow-up turns when eligible."""
-
-        remaining_follow_up_turns = self.config.runtime.follow_up_max_turns
-        while True:
-            outcome = await self._run_stt_turn()
-            if remaining_turn_budget is not None:
-                remaining_turn_budget -= 1
-            if remaining_turn_budget == 0:
-                return 0
-            if not self._should_continue_follow_up_session(outcome):
-                return remaining_turn_budget
-            if remaining_follow_up_turns <= 0:
-                return remaining_turn_budget
-            remaining_follow_up_turns -= 1
-            self._begin_follow_up_utterance()
-            self._mark_manual_listening_awake()
-
     async def handle_partial_transcript(self, transcript: Transcript) -> None:
         """Accept a partial transcript and update listening state only."""
 
@@ -521,7 +285,7 @@ class OrchestratorService:
         await self.handle_event(
             Event(
                 name=EventName.TRANSCRIPT_PARTIAL,
-                source=ComponentName.STT,
+                source=ComponentName.ORCHESTRATOR,
                 payload={"transcript": transcript},
             )
         )
@@ -547,7 +311,7 @@ class OrchestratorService:
         await self.handle_event(
             Event(
                 name=EventName.TRANSCRIPT_FINAL,
-                source=ComponentName.STT,
+                source=ComponentName.ORCHESTRATOR,
                 payload={"transcript": transcript},
             )
         )
@@ -733,45 +497,45 @@ class OrchestratorService:
         self.event_history.append(event)
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
-        if event.name is EventName.TTS_SYNTHESIS_STARTED:
-            self._mark_turn_latency("tts_synth_start")
-            self._log_turn_latency_span("cloud_done->tts_synth_start", "cloud_done", "tts_synth_start")
+        if event.name is EventName.AUDIO_SYNTHESIS_STARTED:
+            self._mark_turn_latency("audio_synth_start")
+            self._log_turn_latency_span("cloud_done->audio_synth_start", "cloud_done", "audio_synth_start")
             logger.info(
-                "turn_trace tts_synthesis_started job_id=%s text_len=%s",
+                "turn_trace audio_synthesis_started job_id=%s text_len=%s",
                 event.payload.get("job_id", "--"),
                 len(str(event.payload.get("text", ""))),
             )
-        elif event.name is EventName.TTS_SYNTHESIS_FINISHED:
+        elif event.name is EventName.AUDIO_SYNTHESIS_FINISHED:
             logger.info(
-                "turn_trace tts_synthesis_finished job_id=%s text_len=%s",
+                "turn_trace audio_synthesis_finished job_id=%s text_len=%s",
                 event.payload.get("job_id", "--"),
                 len(str(event.payload.get("text", ""))),
             )
-        elif event.name is EventName.TTS_PLAYBACK_STARTED:
-            self._mark_turn_latency("tts_playback_started")
+        elif event.name is EventName.AUDIO_PLAYBACK_STARTED:
+            self._mark_turn_latency("audio_playback_started")
             self._log_turn_latency_span(
-                "tts_synth_start->tts_playback_started",
-                "tts_synth_start",
-                "tts_playback_started",
+                "audio_synth_start->audio_playback_started",
+                "audio_synth_start",
+                "audio_playback_started",
             )
-            self._log_turn_latency_span("total_to_first_audio", "wake_detected", "tts_playback_started")
+            self._log_turn_latency_span("total_to_first_audio", "wake_detected", "audio_playback_started")
             logger.info(
                 "%s playback_started job_id=%s text_len=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
                 event.payload.get("job_id", "--"),
                 len(str(event.payload.get("text", ""))),
             )
-        elif event.name is EventName.TTS_PLAYBACK_FINISHED:
+        elif event.name is EventName.AUDIO_PLAYBACK_FINISHED:
             logger.info(
                 "%s playback_finished job_id=%s duration_ms=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
                 event.payload.get("job_id", "--"),
                 event.payload.get("duration_ms", "--"),
             )
-        elif event.name is EventName.TTS_INTERRUPTED:
+        elif event.name is EventName.AUDIO_INTERRUPTED:
             logger.info(
                 "%s interrupted job_id=%s source=%s in=%sB/%sch out=%sB/%sch interrupts=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace tts",
+                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
                 event.payload.get("job_id", "--"),
                 event.payload.get("source", "--"),
                 event.payload.get("input_audio_bytes", "--"),
@@ -786,7 +550,7 @@ class OrchestratorService:
                 len(str(getattr(event.payload.get("response"), "text", ""))),
             )
         self._update_realtime_debug_from_event(event)
-        await self._apply_tts_lifecycle_event(event)
+        await self._apply_audio_lifecycle_event(event)
         await self.event_bus.publish(event)
 
     async def _build_context(self, *, include_history: bool = False) -> InteractionContext:
@@ -1084,7 +848,7 @@ class OrchestratorService:
                 self._mark_turn_latency("cloud_done", reply_result.finished_at)
             else:
                 self._mark_turn_latency("cloud_done")
-            self._log_turn_latency_span("stt_final_ready->cloud_first_byte", "stt_final_ready", "cloud_first_byte")
+            self._log_turn_latency_span("transcript_ready->cloud_first_byte", "transcript_ready", "cloud_first_byte")
             self._log_turn_latency_span("cloud_first_byte->cloud_done", "cloud_first_byte", "cloud_done")
             self._record_openai_reply(reply_result.response_id)
             logger.info(
@@ -1132,11 +896,6 @@ class OrchestratorService:
         if request.tool_name == "camera_snapshot":
             try:
                 await self.ui.show_text("Let me take a look.")
-                await self._speak_text(
-                    "Let me take a look.",
-                    preview_text="Let me take a look.",
-                    record_events=False,
-                )
                 snapshot = await self.vision.capture_snapshot()
                 summary = snapshot.summary or "I captured the current camera view."
                 await self._set_lifecycle(
@@ -1258,23 +1017,6 @@ class OrchestratorService:
             )
         )
 
-    async def _speak_text(
-        self,
-        text: str,
-        *,
-        preview_text: str | None = None,
-        record_events: bool = True,
-        language: Language | None = None,
-    ):
-        del record_events
-        del preview_text
-        return await self.tts.speak(
-            SpeechRequest(
-                text=text,
-                language=language or self.state.active_language,
-            )
-        )
-
     def _derive_response_from_results(self, results: list[PlanStepResult]) -> AiResponse:
         for result in reversed(results):
             if not result.success or result.skipped:
@@ -1322,28 +1064,8 @@ class OrchestratorService:
         response_language = response.language or transcript.language
         self.state.active_language = response_language
         self.state.response_emotion = response.emotion
-        spoke_reply_successfully = False
         await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
         await self.ui.show_text(display_text)
-
-        if response.should_speak:
-            try:
-                speech_output = await self._speak_text(
-                    response.text,
-                    preview_text=display_text,
-                    language=response_language,
-                )
-                spoke_reply_successfully = speech_output.status is SpeechJobStatus.PLAYBACK_FINISHED
-            except Exception as exc:
-                logger.exception("tts failed")
-                self.state.last_error = str(exc)
-                await self.handle_event(
-                    Event(
-                        name=EventName.ERROR_OCCURRED,
-                        source=ComponentName.TTS,
-                        payload={"error": str(exc)},
-                    )
-                )
 
         await self.memory.save_interaction(
             InteractionRecord(
@@ -1363,16 +1085,16 @@ class OrchestratorService:
         )
         self.state.response_emotion = None
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
-        return response.should_speak and spoke_reply_successfully
+        return False
 
-    async def _apply_tts_lifecycle_event(self, event: Event) -> None:
-        if event.source is not ComponentName.TTS:
+    async def _apply_audio_lifecycle_event(self, event: Event) -> None:
+        if event.source is not ComponentName.AUDIO:
             return
 
         preview_text = self.state.current_response
         response_emotion = self.state.response_emotion or EmotionState.NEUTRAL
 
-        if event.name is EventName.TTS_PLAYBACK_STARTED:
+        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
             await self._set_lifecycle(
                 LifecycleStage.SPEAKING,
                 EmotionState.SPEAKING,
@@ -1382,7 +1104,7 @@ class OrchestratorService:
 
         if (
             self.config.runtime.interaction_backend == "openai_realtime"
-            and event.name is EventName.TTS_INTERRUPTED
+            and event.name is EventName.AUDIO_INTERRUPTED
         ):
             await self._set_lifecycle(
                 LifecycleStage.LISTENING,
@@ -1391,7 +1113,7 @@ class OrchestratorService:
             )
             return
 
-        if event.name in {EventName.TTS_PLAYBACK_FINISHED, EventName.TTS_INTERRUPTED, EventName.TTS_FAILED}:
+        if event.name in {EventName.AUDIO_PLAYBACK_FINISHED, EventName.AUDIO_INTERRUPTED, EventName.AUDIO_FAILED}:
             if self.state.lifecycle is not LifecycleStage.SPEAKING:
                 return
             await self._set_lifecycle(
@@ -1403,7 +1125,7 @@ class OrchestratorService:
     def _update_realtime_debug_from_event(self, event: Event) -> None:
         if self.config.runtime.interaction_backend != "openai_realtime":
             return
-        if event.source is not ComponentName.TTS:
+        if event.source is not ComponentName.AUDIO:
             return
         if self.terminal_debug is None:
             return
@@ -1411,13 +1133,13 @@ class OrchestratorService:
         if not callable(update_realtime_status):
             return
         phase = None
-        if event.name is EventName.TTS_PLAYBACK_STARTED:
+        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
             phase = "speaking"
-        elif event.name is EventName.TTS_PLAYBACK_FINISHED:
+        elif event.name is EventName.AUDIO_PLAYBACK_FINISHED:
             phase = "listening"
-        elif event.name is EventName.TTS_INTERRUPTED:
+        elif event.name is EventName.AUDIO_INTERRUPTED:
             phase = "listening"
-        elif event.name is EventName.TTS_FAILED:
+        elif event.name is EventName.AUDIO_FAILED:
             phase = "error"
         update_realtime_status(
             phase=phase,
@@ -1477,7 +1199,6 @@ class OrchestratorService:
             ComponentName.MEMORY,
             ComponentName.HARDWARE,
             ComponentName.VISION,
-            ComponentName.TTS,
         }
         if self.cloud_response is not None:
             available.add(ComponentName.CLOUD)
@@ -1590,14 +1311,14 @@ class OrchestratorService:
 
         formatter = ConsoleFormatter()
         line = (
-            "[STT] "
+            "[TXT] "
             f"{kind} "
             f"language={transcript.language.value} "
             f"confidence={transcript.confidence:.2f} "
             f"text={transcript.text!r}"
         )
         formatter.emit(
-            formatter.stamp(f"{formatter.stt_label('[STT]')} {formatter.transcript(line.removeprefix('[STT] '))}"),
+            formatter.stamp(f"{formatter.mic_label('[TXT]')} {formatter.transcript(line.removeprefix('[TXT] '))}"),
             plain_text=formatter.stamp(line),
         )
 
@@ -1698,28 +1419,6 @@ class OrchestratorService:
             metadata=dict(transcript.metadata),
         )
 
-    def _show_interactive_speech_hint(self) -> None:
-        formatter = ConsoleFormatter()
-        if self.terminal_debug is not None and self.wake_word is not None:
-            self.terminal_debug.update_wake_status(
-                "listening",
-                self.config.runtime.wake_word_phrase.strip() or "--",
-            )
-        plain = (
-            "[CTRL] Type a phrase and press Enter, press Enter on an empty line to listen now, "
-            "say the wake word, or type exit to quit."
-        )
-        formatter.emit(
-            formatter.stamp(f"{formatter.label('[CTRL]')} {plain.removeprefix('[CTRL] ')}"),
-            plain_text=formatter.stamp(plain),
-        )
-
-    def _clear_wake_handoff(self) -> None:
-        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
-            return
-        if self.stt is not None and hasattr(self.stt, "prime_wake_audio"):
-            self.stt.prime_wake_audio(None)
-
     def _mark_manual_listening_awake(self) -> None:
         if self.terminal_debug is None or self.wake_word is None:
             return
@@ -1731,14 +1430,10 @@ class OrchestratorService:
     def _begin_manual_utterance(self) -> None:
         self._start_turn_latency_window()
         self._active_speech_trigger = "manual"
-        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
-            self.stt.begin_utterance(trigger="manual")
 
     def _begin_follow_up_utterance(self) -> None:
         self._start_turn_latency_window()
         self._active_speech_trigger = "follow_up"
-        if self.stt is not None and hasattr(self.stt, "begin_utterance"):
-            self.stt.begin_utterance(trigger="follow_up")
 
     def _start_turn_latency_window(self) -> None:
         self._turn_latency_marks.clear()

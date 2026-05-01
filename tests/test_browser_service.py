@@ -313,7 +313,7 @@ def test_browser_face_ui_service_lifecycle_and_event_routing(tmp_path, monkeypat
         await service.show_content("status", {"title": "Listening"})
         await service.clear_content()
         await service.handle_event(
-            Event(name=EventName.TTS_PLAYBACK_STARTED, source=ComponentName.TTS, payload={})
+            Event(name=EventName.AUDIO_PLAYBACK_STARTED, source=ComponentName.AUDIO, payload={})
         )
         await service.shutdown()
 

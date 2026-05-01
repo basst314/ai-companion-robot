@@ -14,6 +14,8 @@ Options:
   --target-dir <path>            Target directory on the Pi (default: ~/ai-companion-robot)
   --port <port>                  SSH port (default: 22)
   --env-file <path>              Copy this local env file to <target-dir>/.env.local
+                                 (default: .env.local.rpi when present)
+  --no-env-file                  Do not copy any env file
   --copy-wake-model <path>       Copy a custom wake-word model into artifacts/openwakeword/models/
   --help                         Show this help
 EOF
@@ -33,6 +35,8 @@ USER_NAME=""
 TARGET_DIR="~/ai-companion-robot"
 PORT="22"
 ENV_FILE_PATH=""
+ENV_FILE_EXPLICIT=0
+SKIP_ENV_FILE=0
 WAKE_MODEL_PATH=""
 
 while [[ $# -gt 0 ]]; do
@@ -55,7 +59,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --env-file)
       ENV_FILE_PATH="${2:-}"
+      ENV_FILE_EXPLICIT=1
       shift 2
+      ;;
+    --no-env-file)
+      SKIP_ENV_FILE=1
+      shift
       ;;
     --copy-wake-model)
       WAKE_MODEL_PATH="${2:-}"
@@ -80,6 +89,9 @@ command -v ssh >/dev/null 2>&1 || fail "ssh is required"
 if [[ -n "${WAKE_MODEL_PATH}" ]] && [[ ! -f "${WAKE_MODEL_PATH}" ]]; then
   fail "wake-word model file not found: ${WAKE_MODEL_PATH}"
 fi
+if [[ "${SKIP_ENV_FILE}" -eq 0 && "${ENV_FILE_EXPLICIT}" -eq 0 && -f ".env.local.rpi" ]]; then
+  ENV_FILE_PATH=".env.local.rpi"
+fi
 if [[ -n "${ENV_FILE_PATH}" ]] && [[ ! -f "${ENV_FILE_PATH}" ]]; then
   fail "env file not found: ${ENV_FILE_PATH}"
 fi
@@ -100,7 +112,7 @@ rsync -az --delete \
   --exclude '.mypy_cache/' \
   --exclude '.DS_Store' \
   --exclude '.env' \
-  --exclude '.env.*' \
+  --exclude '.env.local' \
   --exclude 'artifacts/' \
   --exclude 'logs/' \
   ./ "${REMOTE}:${TARGET_DIR}/"

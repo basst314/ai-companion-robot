@@ -71,15 +71,15 @@ def test_face_controller_wakes_from_sleep_on_activity() -> None:
     assert frame.expression == "listening"
 
 
-def test_face_controller_speaking_animation_follows_tts_events() -> None:
+def test_face_controller_speaking_animation_follows_audio_events() -> None:
     controller = _make_controller()
     controller.render_state("responding", "curious")
     responding_frame = controller.update(100.0)
 
     controller.handle_event(
         Event(
-            name=EventName.TTS_PLAYBACK_STARTED,
-            source=ComponentName.TTS,
+            name=EventName.AUDIO_PLAYBACK_STARTED,
+            source=ComponentName.AUDIO,
             payload={},
         )
     )
@@ -87,8 +87,8 @@ def test_face_controller_speaking_animation_follows_tts_events() -> None:
 
     controller.handle_event(
         Event(
-            name=EventName.TTS_PLAYBACK_FINISHED,
-            source=ComponentName.TTS,
+            name=EventName.AUDIO_PLAYBACK_FINISHED,
+            source=ComponentName.AUDIO,
             payload={},
         )
     )

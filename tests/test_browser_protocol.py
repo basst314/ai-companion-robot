@@ -151,22 +151,22 @@ def test_map_event_to_trigger_command_marks_wake_attention_and_speech_scoot() ->
         source=ComponentName.ORCHESTRATOR,
         payload={"trigger": "follow_up"},
     )
-    tts_event = Event(
-        name=EventName.TTS_PLAYBACK_STARTED,
-        source=ComponentName.TTS,
+    audio_event = Event(
+        name=EventName.AUDIO_PLAYBACK_STARTED,
+        source=ComponentName.AUDIO,
         payload={},
     )
 
     wake_command = map_event_to_trigger_command(wake_event)
     follow_up_command = map_event_to_trigger_command(follow_up_event)
-    tts_command = map_event_to_trigger_command(tts_event)
+    audio_command = map_event_to_trigger_command(audio_event)
 
     assert wake_command is not None
     assert wake_command.payload == {"name": "attention_mode", "reason": "wake_word"}
     assert follow_up_command is not None
     assert follow_up_command.payload == {"name": "quick_glance", "reason": "listening_started"}
-    assert tts_command is not None
-    assert tts_command.payload == {"name": "scoot", "reason": "speech_started"}
+    assert audio_command is not None
+    assert audio_command.payload == {"name": "scoot", "reason": "speech_started"}
 
 
 def test_build_overlay_update_command_supports_text_and_rich_content() -> None:

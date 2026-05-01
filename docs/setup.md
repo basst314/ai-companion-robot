@@ -1,157 +1,145 @@
-# Setup Guide
+# Setup
 
-This document explains the automated bootstrap flow introduced for the current STT-enabled prototype.
+This guide covers the current OpenAI Realtime runtime: local wake detection, local microphone capture, local tool validation, local audio playback, and streamed model audio.
 
-## Preferred Path
+## Install
 
 From a fresh checkout:
 
 ```bash
-./scripts/setup.sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev]"
+cp .env.example .env.local
 ```
 
-The script is designed to be idempotent:
-- it reuses `.venv` when possible
-- it reuses an existing `whisper.cpp` checkout and build unless `--force` is used
-- it reuses downloaded Whisper models unless `--force` is used
-- it can optionally install Piper and download voice packs into `artifacts/piper-voices`
-- it resolves and verifies the selected OpenWakeWord model before writing `.env.local`
-- it asks before overwriting `.env.local`
+The runtime loads `.env.local` automatically. You can also use `.env` for shared local settings, but `.env.local` is the normal per-machine file.
 
-If you are bringing up a brand-new Raspberry Pi 5 from an erased SD card, use the focused guide in `docs/rpi5-bringup.md`. That flow covers Raspberry Pi Imager, headless SSH, Pi-side setup, optional custom wake-word model transfer, and staged runtime validation.
+## Required Realtime Settings
 
-## Generated Local Config
+For a real speech session:
 
-The setup script writes `.env.local`, which is loaded automatically by the runtime.
-
-Current supported variables:
-- `AI_COMPANION_INPUT_MODE`
-- `AI_COMPANION_INTERACTIVE_CONSOLE`
-- `AI_COMPANION_STT_BACKEND`
-- `AI_COMPANION_USE_MOCK_AI`
-- `AI_COMPANION_CLOUD_ENABLED`
-- `AI_COMPANION_CLOUD_PROVIDER_NAME`
+- `AI_COMPANION_INTERACTION_BACKEND=openai_realtime`
+- `AI_COMPANION_INPUT_MODE=speech`
+- `AI_COMPANION_CLOUD_ENABLED=true`
+- `AI_COMPANION_USE_MOCK_AI=false`
 - `AI_COMPANION_OPENAI_API_KEY`
-- `AI_COMPANION_OPENAI_BASE_URL`
-- `AI_COMPANION_OPENAI_RESPONSE_MODEL`
-- `AI_COMPANION_INTERACTION_BACKEND`
 - `AI_COMPANION_OPENAI_REALTIME_MODEL`
 - `AI_COMPANION_OPENAI_REALTIME_VOICE`
 - `AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION`
-- `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS`
-- `AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED`
-- `AI_COMPANION_OPENAI_REALTIME_BASE_URL`
-- `AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE`
-- `AI_COMPANION_OPENAI_TIMEOUT_SECONDS`
-- `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS`
-- `AI_COMPANION_TTS_BACKEND`
-- `AI_COMPANION_TTS_PIPER_BASE_URL`
-- `AI_COMPANION_TTS_PIPER_SERVICE_MODE`
-- `AI_COMPANION_TTS_PIPER_DATA_DIR`
-- `AI_COMPANION_TTS_PIPER_COMMAND`
-- `AI_COMPANION_TTS_DEFAULT_VOICE_EN`
-- `AI_COMPANION_TTS_DEFAULT_VOICE_DE`
-- `AI_COMPANION_TTS_DEFAULT_VOICE_ID`
-- `AI_COMPANION_TTS_EXPRESSIVE_DE_VOICE`
-- `AI_COMPANION_TTS_EXPRESSIVE_DE_ENABLED`
-- `AI_COMPANION_TTS_AUDIO_BACKEND`
-- `AI_COMPANION_TTS_AUDIO_PLAY_COMMAND`
-- `AI_COMPANION_TTS_ALSA_DEVICE`
-- `AI_COMPANION_TTS_ALSA_SAMPLE_RATE`
-- `AI_COMPANION_TTS_ALSA_PERIOD_FRAMES`
-- `AI_COMPANION_TTS_ALSA_BUFFER_FRAMES`
-- `AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS`
-- `AI_COMPANION_TTS_QUEUE_MAX`
-- `AI_COMPANION_TTS_SAVE_ARTIFACTS`
-- `AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS`
-- `AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS`
-- `AI_COMPANION_UI_BACKEND`
-- `AI_COMPANION_UI_IDLE_SLEEP_SECONDS`
-- `AI_COMPANION_UI_SLEEPING_EYES_GRACE_SECONDS`
-- `AI_COMPANION_UI_SHOW_TEXT_OVERLAY`
-- `AI_COMPANION_UI_SLEEP_COMMAND`
-- `AI_COMPANION_UI_WAKE_COMMAND`
-- `AI_COMPANION_WHISPER_BINARY_PATH`
-- `AI_COMPANION_WHISPER_MODEL_PATH`
-- `AI_COMPANION_WHISPER_COMMAND_EXTRA_ARGS`
 - `AI_COMPANION_AUDIO_RECORD_COMMAND`
-- `AI_COMPANION_PARTIAL_TRANSCRIPTS_ENABLED`
-- `AI_COMPANION_SPEECH_LATENCY_PROFILE`
-- `AI_COMPANION_SPEECH_SILENCE_SECONDS`
-- `AI_COMPANION_VAD_THRESHOLD`
-- `AI_COMPANION_VAD_FRAME_MS`
-- `AI_COMPANION_VAD_START_TRIGGER_FRAMES`
-- `AI_COMPANION_VAD_END_TRIGGER_FRAMES`
-- `AI_COMPANION_MAX_RECORDING_SECONDS`
+- `AI_COMPANION_WAKE_WORD_ENABLED=true`
+- `AI_COMPANION_WAKE_WORD_PHRASE`
+- `AI_COMPANION_WAKE_WORD_MODEL`
+
+Realtime defaults use `semantic_vad` and `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=auto`. If turn endings feel slow in a quiet room, try `high`; if the model cuts you off, move toward `medium`, `low`, or `auto`.
+
+## Microphone Input
+
+The recorder command must emit raw PCM to stdout. The runtime replaces `{output_path}` with `-`.
+
+macOS example:
+
+```bash
+AI_COMPANION_AUDIO_RECORD_COMMAND=rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}
+AI_COMPANION_AUDIO_INPUT_CHANNELS=1
+AI_COMPANION_AUDIO_CHANNEL_INDEX=0
+```
+
+Raspberry Pi / ReSpeaker example:
+
+```bash
+AI_COMPANION_AUDIO_RECORD_COMMAND=arecord -D plughw:2,0 -f S16_LE -r 16000 -c 6 -t raw {output_path}
+AI_COMPANION_AUDIO_INPUT_CHANNELS=6
+AI_COMPANION_AUDIO_CHANNEL_INDEX=0
+```
+
+For ReSpeaker-style devices, `audio.capture` extracts the configured channel from the interleaved stream before wake detection and realtime streaming.
+
+## Audio Output
+
+Configure realtime playback with:
+
+- `AI_COMPANION_AUDIO_OUTPUT_BACKEND`
+- `AI_COMPANION_AUDIO_PLAY_COMMAND`
+- `AI_COMPANION_AUDIO_ALSA_DEVICE`
+- `AI_COMPANION_AUDIO_ALSA_SAMPLE_RATE`
+- `AI_COMPANION_AUDIO_ALSA_PERIOD_FRAMES`
+- `AI_COMPANION_AUDIO_ALSA_BUFFER_FRAMES`
+- `AI_COMPANION_AUDIO_ALSA_KEEPALIVE_INTERVAL_MS`
+
+On macOS, leave `AI_COMPANION_AUDIO_PLAY_COMMAND` empty to use `afplay`.
+
+On Raspberry Pi, prefer:
+
+```bash
+AI_COMPANION_AUDIO_OUTPUT_BACKEND=alsa_persistent
+AI_COMPANION_AUDIO_ALSA_DEVICE=default:CARD=vc4hdmi1
+AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE=24000
+```
+
+## Wake Word
+
+Wake-word mode uses OpenWakeWord on the same live PCM stream used for realtime audio.
+
+Important settings:
+
 - `AI_COMPANION_WAKE_WORD_ENABLED`
-- `AI_COMPANION_FOLLOW_UP_MODE_ENABLED`
-- `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`
-- `AI_COMPANION_FOLLOW_UP_MAX_TURNS`
 - `AI_COMPANION_WAKE_WORD_PHRASE`
 - `AI_COMPANION_WAKE_WORD_MODEL`
 - `AI_COMPANION_WAKE_WORD_THRESHOLD`
 - `AI_COMPANION_WAKE_LOOKBACK_SECONDS`
-- `AI_COMPANION_UTTERANCE_FINALIZE_TIMEOUT_SECONDS`
-- `AI_COMPANION_UTTERANCE_TAIL_STABLE_POLLS`
-- `AI_COMPANION_LANGUAGE_MODE`
 
-You can also use `.env` if you want a shared local config, but `.env.local` is the expected generated file.
-The `AI_COMPANION_AUDIO_RECORD_COMMAND` value intentionally contains the `{output_path}` placeholder. In the current streaming STT path, the runtime replaces that placeholder with `-` and captures raw PCM from the recorder's `stdout`. That lets the app inspect the live stream, create WAV snapshots for transcription, and stop after the bundled Silero VAD confirms trailing non-speech. Custom recorder commands therefore need to support raw PCM output to standard output.
-If you are using the ReSpeaker 4 Mic Array v3.0, the Pi setup in this repo now routes through `scripts/respeaker_capture.py`, which selects the board's processed channel 0 from the six-channel USB stream before handing audio to the robot.
-The supported UI path is the browser-backed face renderer launched in Chromium kiosk mode on Raspberry Pi. `AI_COMPANION_UI_BACKEND=browser` is the generated default.
-`AI_COMPANION_SPEECH_LATENCY_PROFILE` sets the baseline STT endpoint tuning as a group. Use `fast` for a more reactive robot, or `balanced` if your mic/environment needs more conservative endpointing. Any explicit `AI_COMPANION_SPEECH_*`, `AI_COMPANION_VAD_*`, `AI_COMPANION_WAKE_LOOKBACK_SECONDS`, or utterance-finalization values still override the profile individually.
-When wake-word mode is enabled, the runtime uses OpenWakeWord on that same live PCM stream. The generated setup can either configure the built-in `Hey Jarvis` pairing or prompt you for a custom phrase and matching model path/name. Setup now downloads the shared OpenWakeWord runtime models into the package resources directory used by the installed library and verifies that the selected model can initialize on the current machine before finishing.
-The generated speech config also enables wake-free follow-up mode by default. After a spoken reply finishes, the robot opens a short follow-up listen window and only continues if VAD confirms real speech inside `AI_COMPANION_FOLLOW_UP_LISTEN_TIMEOUT_SECONDS`. `AI_COMPANION_FOLLOW_UP_MAX_TURNS` puts a hard cap on how many wake-free follow-up turns can chain before the robot falls back to ordinary wake-word listening again.
-If `AI_COMPANION_USE_MOCK_AI=false` and `AI_COMPANION_CLOUD_ENABLED=true`, the turn-based runtime expects explicit OpenAI credentials plus a response model name. `AI_COMPANION_OPENAI_REPLY_MAX_OUTPUT_TOKENS` sets the hard ceiling for each spoken cloud reply so the robot does not ramble. The cloud backend now uses a single response-model call for normal chat turns and can request a local camera snapshot when needed; speech output stays local in turn-based mode. For lower turn latency on the Pi, the generated config now prefers `gpt-5.4-mini`.
+`AI_COMPANION_WAKE_LOOKBACK_SECONDS` controls how much recent audio is included when the realtime session starts after a wake hit.
 
-For the speech-to-speech path, set `AI_COMPANION_INTERACTION_BACKEND=openai_realtime`, keep `AI_COMPANION_INPUT_MODE=speech`, enable OpenAI cloud credentials, and use `AI_COMPANION_OPENAI_REALTIME_MODEL=gpt-realtime-1.5`. This path keeps wake-word detection and tool validation on the Pi, streams active microphone PCM to OpenAI Realtime, and plays streamed model audio locally, so Piper TTS is not used for realtime replies.
-The realtime defaults use `AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION=semantic_vad` and `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=auto`. If end-of-turn detection feels too slow in a quiet room, try `AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS=high`; if it cuts you off, move back toward `medium`, `low`, or `auto`.
-Realtime barge-in is handled by the Realtime API's turn detection plus local playback interruption. The app-side energy detector remains disabled by default with `AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED=false`, because the ReSpeaker processed channel and AEC path are more stable when the server owns interrupt timing.
-That same OpenAI path keeps short-term turn continuity by reusing the previous response thread for immediate follow-ups and for a short wake-word resume window after the conversation pauses.
-The interactive setup flow now asks whether you want the real OpenAI backend. If you enable it, setup prompts for the API key but accepts a blank value so you can fill it in later in `.env.local`.
-If you enable Piper TTS, setup can also provision the English/German/Indonesian starter voices and optionally the expressive German pack. In `managed` mode, the generated config expects the app to start the Piper HTTP server itself; in `external` mode, the app connects to an already running Piper service.
-On Raspberry Pi, the generated TTS config now defaults to `AI_COMPANION_TTS_AUDIO_BACKEND=alsa_persistent` with a dedicated HDMI ALSA device path. That backend is intended to eliminate the startup clipping, pops, and mid-speech dropouts that were hard to avoid with command-driven `aplay` playback alone.
+## UI
 
-## Platform-Specific Defaults
+The supported display path is the browser-backed face renderer:
 
-Raspberry Pi:
-- package manager: `apt`
-- recorder command: `arecord -t raw -f S16_LE -r 16000 -c 6 {output_path}` (`{output_path}` becomes `-` at runtime)
-- playback backend: `alsa_persistent`
-- ALSA device: `default:CARD=vc4hdmi1`
-- intended target: Raspberry Pi OS or another Debian-family Raspberry Pi image
-- fast English-only Whisper default: `tiny.en`; `base.en` is a good middle ground when you want a little more accuracy on the Pi
+```bash
+AI_COMPANION_UI_BACKEND=browser
+AI_COMPANION_UI_BROWSER_LAUNCH_MODE=windowed
+```
 
-macOS:
-- package manager: `brew`
-- recorder command: `rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}` (`{output_path}` becomes `-` at runtime)
-- playback backend: `command`
-- this uses `sox`/`rec`, which has been more reliable than `ffmpeg`/`avfoundation` for clean mic capture on some Macs
-- remember to grant microphone permissions to Terminal/iTerm
+On Raspberry Pi, use kiosk mode:
 
-## Non-Interactive Examples
+```bash
+AI_COMPANION_UI_BROWSER_LAUNCH_MODE=kiosk
+```
 
-Use these when you want repeatable automation:
+The runtime starts the local face bridge and launches Chromium when configured. Use `AI_COMPANION_UI_BROWSER_EXECUTABLE`, `AI_COMPANION_UI_BROWSER_PROFILE_DIR`, and `AI_COMPANION_UI_BROWSER_EXTRA_ARGS` for machine-specific browser tuning.
+
+## Pi Config Sync
+
+Keep Pi-specific secrets and runtime settings in `.env.local.rpi` on the development machine. That file is ignored by git. `scripts/sync-to-pi.sh` automatically copies it to the Pi as `.env.local` when present.
+
+Examples:
+
+```bash
+./scripts/sync-to-pi.sh --host <hostname> --user <user>
+./scripts/sync-to-pi.sh --host <hostname> --user <user> --env-file .env.local.rpi
+./scripts/sync-to-pi.sh --host <hostname> --user <user> --no-env-file
+```
+
+## Setup Script
+
+`scripts/setup.sh` creates a virtualenv, installs the package with dev dependencies, and writes a realtime-oriented `.env.local`. It is useful for a fresh machine:
 
 ```bash
 ./scripts/setup.sh --yes
-./scripts/setup.sh --yes --platform rpi --model base.en --language-mode en
-./scripts/setup.sh --yes --platform rpi --model tiny.en --language-mode en
-./scripts/setup.sh --yes --tts-backend piper --tts-languages en,de,id
-./scripts/setup.sh --yes --skip-system-packages
 ```
 
-`--force` is the clean rebuild option. It recreates `.venv`, rewrites `.env.local`, rebuilds `whisper.cpp`, re-downloads the selected Whisper model, and reruns the OpenWakeWord model verification step instead of reusing prior generated artifacts.
+Use `--force` to overwrite an existing `.env.local`.
 
-## Manual Fallback
+## Manual Validation
 
-If the script cannot support your environment yet, install manually:
+```bash
+python -m py_compile src/main.py src/ai/realtime.py src/audio/capture.py src/audio/wake.py
+pytest
+```
 
-1. Install Python 3.11+, Git, CMake, and a recorder tool.
-2. Create `.venv` and run `python -m pip install -e ".[dev]"`, or `python -m pip install -e ".[dev,tts]"` if you want local Piper TTS. On Raspberry Pi/Linux, the `tts` extra also installs `pyalsaaudio` for the ALSA-native playback backend. The browser-backed face renderer is part of the base app.
-3. Clone and build `whisper.cpp`.
-4. Download a model such as `base.en` for English-only Pi use, or `base` if you need multilingual transcription.
-5. Copy `.env.example` to `.env.local` and fill in the Whisper and recorder paths.
-6. If you want real cloud replies, also fill in the OpenAI settings, set `AI_COMPANION_USE_MOCK_AI=false`, and prefer `gpt-5.4-mini` for `AI_COMPANION_OPENAI_RESPONSE_MODEL` unless you are intentionally testing a different model.
-7. Run `.venv/bin/pytest -q`.
-8. Launch `.venv/bin/python src/main.py` and then either type a phrase, press Enter on an empty line to start listening immediately, or say the configured wake word.
+For live wake-word scoring:
+
+```bash
+.venv/bin/python scripts/test-wakeword-live.py --max-seconds 15
+```

@@ -15,10 +15,11 @@ from ai.cloud import (
 from ai.realtime import (
     AlsaRealtimePcmOutput,
     CommandRealtimePcmOutput,
-    NullRealtimePcmOutput,
     RealtimeConversationService,
     build_realtime_tool_definitions,
 )
+from audio.capture import SharedLiveSpeechState, ShellAudioCaptureService
+from audio.wake import OpenWakeWordWakeWordService, WakeWordService
 from hardware.service import MockHardwareService
 from memory.service import InMemoryMemoryService
 from orchestrator.capabilities import build_default_capability_registry
@@ -30,16 +31,6 @@ from shared.console import TerminalDebugScreen, configure_console_log, configure
 from shared.config import AppConfig, load_app_config
 from shared.events import EventBus
 from shared.models import ComponentName, UserIdentity, VisionDetection
-from stt.service import (
-    MockSttService,
-    OpenWakeWordWakeWordService,
-    SharedLiveSpeechState,
-    ShellAudioCaptureService,
-    SttService,
-    WakeWordService,
-    WhisperCppSttService,
-)
-from tts.service import MockTtsService, TtsService, build_piper_tts_service
 from ui.browser_service import BrowserFaceUiService
 from ui.service import MockUiService, UiService
 from vision.service import MockVisionService
@@ -69,15 +60,14 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     shared_live_state = None
     realtime_conversation = None
     if app_config.runtime.interaction_backend == "openai_realtime":
-        stt, wake_word, shared_live_state = _build_realtime_speech_services(
+        wake_word, shared_live_state = _build_realtime_speech_services(
             app_config,
             terminal_debug=terminal_debug,
         )
         realtime_conversation = _build_realtime_conversation_service(app_config, capability_registry)
     else:
-        stt, wake_word = _build_speech_services(app_config, terminal_debug=terminal_debug)
+        wake_word = None
     cloud_response = _build_cloud_services(app_config)
-    tts = _build_tts_service(app_config, terminal_debug=terminal_debug)
     ui = _build_ui_service(app_config, terminal_debug=terminal_debug)
     service = OrchestratorService(
         config=app_config,
@@ -91,8 +81,6 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
         ui=ui,
         hardware=MockHardwareService(),
         cloud_response=cloud_response,
-        stt=stt,
-        tts=tts,
         wake_word=wake_word,
         realtime_conversation=realtime_conversation,
         shared_live_speech_state=shared_live_state,
@@ -101,8 +89,6 @@ def build_application(config: AppConfig | None = None) -> OrchestratorService:
     if realtime_conversation is not None:
         realtime_conversation.event_handler = service.handle_event
         realtime_conversation.tool_handler = service.handle_realtime_tool_request
-    if hasattr(tts, "bind_event_handler"):
-        tts.bind_event_handler(service.handle_event)
     if hasattr(ui, "handle_event"):
         event_bus.subscribe(ui.handle_event)
     return service
@@ -143,14 +129,14 @@ def _build_realtime_conversation_service(
 
     if sys.platform == "darwin":
         audio_output = CommandRealtimePcmOutput(
-            command_template=app_config.tts.audio_play_command or ("afplay", "{input_path}"),
+            command_template=app_config.runtime.audio_play_command or ("afplay", "{input_path}"),
             sample_rate_hz=app_config.cloud.openai_realtime_audio_sample_rate,
         )
     else:
         audio_output = AlsaRealtimePcmOutput(
-            device=app_config.tts.alsa_device,
+            device=app_config.runtime.audio_alsa_device,
             sample_rate_hz=app_config.cloud.openai_realtime_audio_sample_rate,
-            period_frames=app_config.tts.alsa_period_frames,
+            period_frames=app_config.runtime.audio_alsa_period_frames,
         )
     tools = build_realtime_tool_definitions(
         capability_registry.list_available(
@@ -179,24 +165,6 @@ def _build_realtime_conversation_service(
     )
 
 
-def _build_tts_service(
-    app_config: AppConfig,
-    *,
-    terminal_debug: TerminalDebugScreen | None = None,
-) -> TtsService:
-    if app_config.runtime.interaction_backend == "openai_realtime":
-        return MockTtsService(terminal_debug=terminal_debug)
-    if app_config.tts.backend == "mock":
-        return MockTtsService(terminal_debug=terminal_debug)
-    if app_config.tts.backend == "piper":
-        return build_piper_tts_service(
-            app_config.tts,
-            audio_output_dir=_resolve_runtime_path(app_config.paths.data_dir / "audio" / "tts"),
-            terminal_debug=terminal_debug,
-        )
-    raise RuntimeError("cloud TTS is not implemented yet")
-
-
 def _build_ui_service(
     app_config: AppConfig,
     *,
@@ -210,74 +178,11 @@ def _build_ui_service(
     )
 
 
-def _build_speech_services(
-    config: AppConfig,
-    *,
-    terminal_debug: TerminalDebugScreen | None = None,
-) -> tuple[SttService, WakeWordService | None]:
-    runtime = config.runtime
-    if runtime.stt_backend == "whisper_cpp":
-        if runtime.whisper_model_path is None:
-            raise RuntimeError("runtime.whisper_model_path must be configured for whisper.cpp STT")
-
-        audio_capture = ShellAudioCaptureService(
-            command_template=runtime.audio_record_command,
-            init_command=runtime.audio_init_command,
-            output_dir=_resolve_runtime_path(config.paths.data_dir / "audio"),
-            input_channels=runtime.audio_input_channels,
-            channel_index=runtime.audio_channel_index,
-        )
-        shared_live_state = SharedLiveSpeechState(
-            audio_capture=audio_capture,
-            wake_buffer_seconds=max(2.0, runtime.wake_lookback_seconds * 2.0),
-            sample_rate=audio_capture.sample_rate,
-            channels=audio_capture.channels,
-            sample_width=audio_capture.sample_width,
-        )
-        stt = WhisperCppSttService(
-            audio_capture=audio_capture,
-            model_path=runtime.whisper_model_path,
-            binary_path=runtime.whisper_binary_path,
-            whisper_transport=runtime.whisper_transport,
-            whisper_server_base_url=runtime.whisper_server_base_url,
-            whisper_server_mode=runtime.whisper_server_mode,
-            command_extra_args=runtime.whisper_command_extra_args,
-            language_mode=runtime.language_mode,
-            partial_transcripts_enabled=runtime.partial_transcripts_enabled,
-            speech_silence_seconds=runtime.speech_silence_seconds,
-            vad_threshold=runtime.vad_threshold,
-            vad_frame_ms=runtime.vad_frame_ms,
-            vad_start_trigger_frames=runtime.vad_start_trigger_frames,
-            vad_end_trigger_frames=runtime.vad_end_trigger_frames,
-            max_recording_seconds=runtime.max_recording_seconds,
-            utterance_finalize_timeout_seconds=runtime.utterance_finalize_timeout_seconds,
-            utterance_tail_stable_polls=runtime.utterance_tail_stable_polls,
-            follow_up_listen_timeout_seconds=runtime.follow_up_listen_timeout_seconds,
-            ring_debug_wake_window_seconds=runtime.wake_lookback_seconds,
-            terminal_debug=terminal_debug,
-            shared_live_state=shared_live_state,
-            **_speech_latency_kwargs(runtime),
-        )
-        stt.ensure_endpoint_vad_ready()
-        wake_word = _build_wake_word_service(
-            config,
-            terminal_debug=terminal_debug,
-            audio_capture=audio_capture,
-            shared_live_state=shared_live_state,
-        )
-        return stt, wake_word
-
-    return MockSttService(utterances=runtime.manual_inputs), _build_wake_word_service(
-        config,
-        terminal_debug=terminal_debug,
-    )
-
-
 def _build_realtime_speech_services(
     config: AppConfig,
     *,
     terminal_debug: TerminalDebugScreen | None = None,
-) -> tuple[None, WakeWordService | None, SharedLiveSpeechState]:
+) -> tuple[WakeWordService | None, SharedLiveSpeechState]:
     runtime = config.runtime
     if runtime.input_mode != "speech":
         raise RuntimeError("openai_realtime interaction backend requires speech input mode")
@@ -301,27 +206,7 @@ def _build_realtime_speech_services(
         audio_capture=audio_capture,
         shared_live_state=shared_live_state,
     )
-    return None, wake_word, shared_live_state
-
-
-def _speech_latency_kwargs(runtime) -> dict[str, float]:
-    if runtime.speech_latency_profile == "balanced":
-        return {
-            "poll_interval_seconds": 0.35,
-            "minimum_transcribe_seconds": 0.45,
-            "partial_update_interval_seconds": 1.0,
-            "minimum_utterance_seconds": 2.0,
-            "partial_snapshot_max_seconds": 4.0,
-            "utterance_end_grace_seconds": 0.25,
-        }
-    return {
-        "poll_interval_seconds": 0.10,
-        "minimum_transcribe_seconds": 0.20,
-        "partial_update_interval_seconds": 0.20,
-        "minimum_utterance_seconds": 0.80,
-        "partial_snapshot_max_seconds": 3.0,
-        "utterance_end_grace_seconds": 0.05,
-    }
+    return wake_word, shared_live_state
 
 
 def _build_wake_word_service(
@@ -336,10 +221,8 @@ def _build_wake_word_service(
         if terminal_debug is not None:
             terminal_debug.update_wake_status("off", "--")
         return None
-    if runtime.input_mode != "speech" or (
-        runtime.stt_backend != "whisper_cpp" and runtime.interaction_backend != "openai_realtime"
-    ):
-        raise RuntimeError("wake word support requires speech input mode with whisper.cpp STT or openai_realtime")
+    if runtime.input_mode != "speech" or runtime.interaction_backend != "openai_realtime":
+        raise RuntimeError("wake word support requires speech input mode with openai_realtime")
     if not runtime.wake_word_model.strip():
         raise RuntimeError("wake word support requires runtime.wake_word_model to be configured")
 

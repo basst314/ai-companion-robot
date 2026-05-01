@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from stt.respeaker_capture import extract_interleaved_channel
+from audio.respeaker_capture import extract_interleaved_channel
 
 
 def test_extract_interleaved_channel_returns_requested_channel() -> None:

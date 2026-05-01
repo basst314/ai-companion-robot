@@ -1,6 +1,6 @@
 """Shared types and helpers used across packages."""
 
-from shared.config import AppConfig, CloudConfig, MockDataConfig, PathConfig, RuntimeConfig, TtsConfig, UiConfig
+from shared.config import AppConfig, CloudConfig, MockDataConfig, PathConfig, RuntimeConfig, UiConfig
 from shared.events import Event, EventBus, EventName
 from shared.models import (
     ActionRequest,
@@ -18,14 +18,7 @@ from shared.models import (
     QueryResult,
     RobotStateSnapshot,
     RouteKind,
-    SpeechJob,
-    SpeechJobStatus,
-    SpeechOutput,
-    SpeechQueuePolicy,
-    SpeechRequest,
-    SpeechStyle,
     StepPhase,
-    SynthesizedAudio,
     Transcript,
     TurnPlan,
     UserIdentity,
@@ -56,16 +49,8 @@ __all__ = [
     "RobotStateSnapshot",
     "RouteKind",
     "RuntimeConfig",
-    "SpeechJob",
-    "SpeechJobStatus",
     "StepPhase",
-    "SpeechOutput",
-    "SpeechQueuePolicy",
-    "SpeechRequest",
-    "SpeechStyle",
-    "SynthesizedAudio",
     "Transcript",
-    "TtsConfig",
     "TurnPlan",
     "UiConfig",
     "UserIdentity",

@@ -122,8 +122,8 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update the live transcript row in the sticky header."""
 
-    def update_whisper_status(self, status: str | None) -> None:
-        """Update the whisper status indicator in the sticky header."""
+    def update_input_status(self, status: str | None) -> None:
+        """Update the input status indicator in the sticky header."""
 
     def update_wake_status(self, status: str, detail: str | None = None) -> None:
         """Update the wake-word indicator in the sticky header."""
@@ -139,7 +139,7 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update the shared wake/utterance ring buffer indicator."""
 
-    def update_tts_status(
+    def update_audio_status(
         self,
         *,
         backend: str | None = None,
@@ -150,7 +150,7 @@ class TerminalDebugSink(Protocol):
         queue_depth: int | None = None,
         preview: str | None = None,
     ) -> None:
-        """Update TTS playback state shown in the sticky header."""
+        """Update AUDIO playback state shown in the sticky header."""
 
     def update_realtime_status(
         self,
@@ -195,8 +195,8 @@ class TerminalDebugState:
     speech_started: bool = False
     vad_active: bool = False
     partial_pending: bool = False
-    stt_running: bool = False
-    last_stt_duration: str | None = None
+    input_running: bool = False
+    last_input_duration: str | None = None
     wake_status: str = "off"
     wake_detail: str | None = None
     turn_started_at: datetime | None = None
@@ -207,17 +207,17 @@ class TerminalDebugState:
     ring_wake_window_seconds: float | None = None
     ring_utterance_start_seconds: float | None = None
     ring_write_head_seconds: float | None = None
-    tts_backend: str | None = None
-    tts_phase: str = "idle"
-    tts_voice: str | None = None
-    tts_style: str | None = None
-    tts_speaker: str | None = None
-    tts_queue_depth: int = 0
-    tts_preview: str | None = None
-    tts_synth_started_at: datetime | None = None
-    tts_play_started_at: datetime | None = None
-    tts_last_synth_duration: str | None = None
-    tts_last_play_duration: str | None = None
+    audio_backend: str | None = None
+    audio_phase: str = "idle"
+    audio_voice: str | None = None
+    audio_style: str | None = None
+    audio_speaker: str | None = None
+    audio_queue_depth: int = 0
+    audio_preview: str | None = None
+    audio_synth_started_at: datetime | None = None
+    audio_play_started_at: datetime | None = None
+    audio_last_synth_duration: str | None = None
+    audio_last_play_duration: str | None = None
     realtime_phase: str | None = None
     realtime_voice: str | None = None
     realtime_input_audio_bytes: int = 0
@@ -296,7 +296,7 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.transcript_is_final = False
             self.state.partial_pending = False
             self.state.current_noise = None
-            self.state.stt_running = False
+            self.state.input_running = False
             self.state.peak_energy = None
             self.state.held_peak_energy = None
             self.state.held_peak_at = None
@@ -409,14 +409,14 @@ class TerminalDebugScreen(TerminalDebugSink):
                 self._last_fallback_transcript = transcript_key
         self.render()
 
-    def update_whisper_status(self, status: str | None) -> None:
+    def update_input_status(self, status: str | None) -> None:
         if status == "running":
-            self.state.stt_running = True
+            self.state.input_running = True
         elif status is None:
-            self.state.stt_running = False
+            self.state.input_running = False
         else:
-            self.state.stt_running = False
-            self.state.last_stt_duration = status
+            self.state.input_running = False
+            self.state.last_input_duration = status
         self.render()
 
     def update_wake_status(self, status: str, detail: str | None = None) -> None:
@@ -443,7 +443,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         self.state.ring_write_head_seconds = write_head_seconds
         self.render()
 
-    def update_tts_status(
+    def update_audio_status(
         self,
         *,
         backend: str | None = None,
@@ -456,35 +456,35 @@ class TerminalDebugScreen(TerminalDebugSink):
     ) -> None:
         now = datetime.now(UTC)
         if backend is not None:
-            self.state.tts_backend = backend
+            self.state.audio_backend = backend
         if voice is not None:
-            self.state.tts_voice = voice
+            self.state.audio_voice = voice
         if style is not None:
-            self.state.tts_style = style
+            self.state.audio_style = style
         if speaker is not None:
-            self.state.tts_speaker = speaker
+            self.state.audio_speaker = speaker
         if queue_depth is not None:
-            self.state.tts_queue_depth = max(0, queue_depth)
+            self.state.audio_queue_depth = max(0, queue_depth)
         if preview is not None:
-            self.state.tts_preview = preview
-        if phase is not None and phase != self.state.tts_phase:
-            previous_phase = self.state.tts_phase
-            if previous_phase == "synth" and self.state.tts_synth_started_at is not None:
-                elapsed = max(0.0, (now - self.state.tts_synth_started_at).total_seconds())
-                self.state.tts_last_synth_duration = f"{elapsed:0.2f}s"
-                self.state.tts_synth_started_at = None
-            if previous_phase == "play" and self.state.tts_play_started_at is not None:
-                elapsed = max(0.0, (now - self.state.tts_play_started_at).total_seconds())
-                self.state.tts_last_play_duration = f"{elapsed:0.2f}s"
-                self.state.tts_play_started_at = None
+            self.state.audio_preview = preview
+        if phase is not None and phase != self.state.audio_phase:
+            previous_phase = self.state.audio_phase
+            if previous_phase == "synth" and self.state.audio_synth_started_at is not None:
+                elapsed = max(0.0, (now - self.state.audio_synth_started_at).total_seconds())
+                self.state.audio_last_synth_duration = f"{elapsed:0.2f}s"
+                self.state.audio_synth_started_at = None
+            if previous_phase == "play" and self.state.audio_play_started_at is not None:
+                elapsed = max(0.0, (now - self.state.audio_play_started_at).total_seconds())
+                self.state.audio_last_play_duration = f"{elapsed:0.2f}s"
+                self.state.audio_play_started_at = None
 
             if phase == "synth":
-                self.state.tts_synth_started_at = now
-                self.state.tts_last_synth_duration = None
+                self.state.audio_synth_started_at = now
+                self.state.audio_last_synth_duration = None
             if phase == "play":
-                self.state.tts_play_started_at = now
-                self.state.tts_last_play_duration = None
-            self.state.tts_phase = phase
+                self.state.audio_play_started_at = now
+                self.state.audio_last_play_duration = None
+            self.state.audio_phase = phase
         self.render()
 
     def update_realtime_status(
@@ -589,9 +589,9 @@ class TerminalDebugScreen(TerminalDebugSink):
         audio_row = self._audio_row(width)
         ring_row = self._ring_row(width)
         ai_row = self._ai_row(width)
-        tts_row = self._tts_row(width)
+        playback_row = self._playback_row(width)
         transcript_row = self._transcript_row(width)
-        return (status_row, audio_row, ring_row, ai_row, tts_row, transcript_row)
+        return (status_row, audio_row, ring_row, ai_row, playback_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -619,12 +619,12 @@ class TerminalDebugScreen(TerminalDebugSink):
         meter_width = max(8, min(24, width // 6))
         meter = self._build_meter(current_noise=current_noise, peak_energy=peak_energy, width=meter_width)
         parts = [
-            self.stt_label("[MIC]"),
+            self.mic_label("[MIC]"),
             meter,
             self.metric_value(f"{current_noise:4.0f}"),
             self.peak_value(f"[{peak_energy:4.0f}]"),
             self._wake_badge(),
-            self._stt_badge(),
+            self._input_badge(),
             self._vad_badge(),
         ]
         return self._pad_row("  ".join(parts), width)
@@ -674,7 +674,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         backend = self.state.ai_backend or "--"
         planning_status = "active" if self.state.ai_planning_active else "idle"
         response_status = "active" if self.state.ai_response_active else "idle"
-        planning_style = self.whisper if self.state.ai_planning_active else self.subtle_value
+        planning_style = self.accent if self.state.ai_planning_active else self.subtle_value
         response_style = self.success_value if self.state.ai_response_active else self.subtle_value
         planning_duration = self._ai_duration(self.state.ai_planning_active, self.state.ai_planning_started_at, self.state.ai_planning_last_duration)
         response_duration = self._ai_duration(self.state.ai_response_active, self.state.ai_response_started_at, self.state.ai_response_last_duration)
@@ -692,36 +692,36 @@ class TerminalDebugScreen(TerminalDebugSink):
         ]
         return self._pad_row("  ".join(parts), width)
 
-    def _tts_row(self, width: int) -> str:
+    def _playback_row(self, width: int) -> str:
         if self.state.realtime_phase is not None:
             return self._realtime_row(width)
-        backend = self.state.tts_backend or "--"
-        phase = self.state.tts_phase
-        voice = self.state.tts_voice or "--"
-        style = self.state.tts_style or "neutral"
-        speaker = self.state.tts_speaker or "--"
-        queue_depth = str(self.state.tts_queue_depth)
-        preview = self.state.tts_preview or "no speech queued"
+        backend = self.state.audio_backend or "--"
+        phase = self.state.audio_phase
+        voice = self.state.audio_voice or "--"
+        style = self.state.audio_style or "neutral"
+        speaker = self.state.audio_speaker or "--"
+        queue_depth = str(self.state.audio_queue_depth)
+        preview = self.state.audio_preview or "no speech queued"
         phase_style = {
             "idle": self.subtle_value,
             "queued": self.warning_value,
-            "synth": self.whisper,
+            "synth": self.accent,
             "play": self.success_value,
             "interrupted": self.warning_value,
             "failed": self.error,
         }.get(phase, self.value)
-        synth_duration = self._tts_duration(
+        synth_duration = self._audio_duration(
             phase == "synth",
-            self.state.tts_synth_started_at,
-            self.state.tts_last_synth_duration,
+            self.state.audio_synth_started_at,
+            self.state.audio_last_synth_duration,
         )
-        play_duration = self._tts_duration(
+        play_duration = self._audio_duration(
             phase == "play",
-            self.state.tts_play_started_at,
-            self.state.tts_last_play_duration,
+            self.state.audio_play_started_at,
+            self.state.audio_last_play_duration,
         )
         parts = [
-            self.label("[TTS]"),
+            self.label("[AUDIO]"),
             self.badge("backend", backend, value_style=self.value),
             f"{self.label('[phase')} {phase_style(phase)}{self.label(']')}",
             self.badge("queue", queue_depth, value_style=self.value),
@@ -739,7 +739,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         voice = self.state.realtime_voice or "--"
         phase_style = {
             "idle": self.subtle_value,
-            "listening": self.whisper,
+            "listening": self.accent,
             "speaking": self.success_value,
             "interrupted": self.warning_value,
             "error": self.error,
@@ -776,7 +776,7 @@ class TerminalDebugScreen(TerminalDebugSink):
             return f"{elapsed:0.2f}s"
         return last_duration or "--"
 
-    def _tts_duration(
+    def _audio_duration(
         self,
         active: bool,
         started_at: datetime | None,
@@ -859,7 +859,7 @@ class TerminalDebugScreen(TerminalDebugSink):
                 capacity_seconds=capacity_seconds,
                 filled_seconds=min(wake_window_seconds, filled_seconds),
             ):
-                chunks.append(self.whisper("="))
+                chunks.append(self.accent("="))
             else:
                 chunks.append(self.value("-"))
         chunks.append(self.label("]"))
@@ -888,16 +888,16 @@ class TerminalDebugScreen(TerminalDebugSink):
         normalized = max(0.0, min(1.0, value / 2500.0))
         return min(width - 1, max(0, int(round(normalized * (width - 1)))))
 
-    def _stt_status_badge(self) -> tuple[str, str]:
-        status = "running" if self.state.stt_running else "standby"
-        duration = self.state.last_stt_duration or "--"
+    def _input_status_badge(self) -> tuple[str, str]:
+        status = "running" if self.state.input_running else "standby"
+        duration = self.state.last_input_duration or "--"
         return status, duration
 
-    def _stt_badge(self) -> str:
-        status, duration = self._stt_status_badge()
-        status_style = self.whisper if status == "running" else self.subtle_value
+    def _input_badge(self) -> str:
+        status, duration = self._input_status_badge()
+        status_style = self.accent if status == "running" else self.subtle_value
         return (
-            f"{self.label('[stt')} "
+            f"{self.label('[input')} "
             f"{status_style(status)} "
             f"{self.value(duration)}"
             f"{self.label(']')}"
@@ -910,7 +910,7 @@ class TerminalDebugScreen(TerminalDebugSink):
         if status == "awake":
             status_style = self.success_value
         elif status == "listening":
-            status_style = self.whisper
+            status_style = self.accent
         else:
             status_style = self.subtle_value
         return (
@@ -1048,10 +1048,10 @@ class TerminalDebugScreen(TerminalDebugSink):
     def transcript(self, text: str) -> str:
         return self.style(text, "36")
 
-    def whisper(self, text: str) -> str:
+    def accent(self, text: str) -> str:
         return self.style(text, "33")
 
-    def stt_label(self, text: str) -> str:
+    def mic_label(self, text: str) -> str:
         return self.style(text, "1;36")
 
     def error(self, text: str) -> str:
@@ -1099,16 +1099,16 @@ class ConsoleFormatter:
     def ui_label(self, text: str) -> str:
         return self.style(text, "1;34")
 
-    def tts_label(self, text: str) -> str:
+    def audio_label(self, text: str) -> str:
         return self.style(text, "1;35")
 
-    def stt_label(self, text: str) -> str:
+    def mic_label(self, text: str) -> str:
         return self.style(text, "1;36")
 
     def route_label(self, text: str) -> str:
         return self.style(text, "1;34")
 
-    def whisper(self, text: str) -> str:
+    def accent(self, text: str) -> str:
         return self.style(text, "33")
 
     def timestamp(self) -> str:

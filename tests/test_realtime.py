@@ -131,8 +131,8 @@ def test_realtime_service_streams_audio_and_emits_playback_events() -> None:
     assert websocket.sent[0]["session"]["audio"]["output"]["voice"] == "echo"
     assert pcm_output.chunks == [output_audio]
     assert [event.name for event in events] == [
-        EventName.TTS_PLAYBACK_STARTED,
-        EventName.TTS_PLAYBACK_FINISHED,
+        EventName.AUDIO_PLAYBACK_STARTED,
+        EventName.AUDIO_PLAYBACK_FINISHED,
         EventName.AUDIO_FINISHED,
     ]
 
@@ -178,7 +178,7 @@ def test_build_realtime_service_uses_command_audio_output_on_macos(monkeypatch) 
     config.runtime.use_mock_ai = False
     config.cloud.enabled = True
     config.cloud.openai_api_key = "test-key"
-    config.tts.audio_play_command = ("afplay", "{input_path}")
+    config.runtime.audio_play_command = ("afplay", "{input_path}")
     monkeypatch.setattr(main_mod.sys, "platform", "darwin")
 
     service = main_mod._build_realtime_conversation_service(config, build_default_capability_registry())
@@ -345,7 +345,7 @@ def test_realtime_speech_started_cancels_and_ignores_interrupted_response_audio(
     sent_types = [message["type"] for message in websocket.sent]
     assert "response.cancel" in sent_types
     assert "conversation.item.truncate" in sent_types
-    assert EventName.TTS_INTERRUPTED in [event.name for event in events]
+    assert EventName.AUDIO_INTERRUPTED in [event.name for event in events]
 
 
 def test_realtime_speech_started_interrupts_local_playback_after_audio_done() -> None:

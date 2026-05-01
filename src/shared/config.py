@@ -48,25 +48,17 @@ class RuntimeConfig:
     input_mode: Literal["manual", "speech"] = "manual"
     interactive_console: bool = False
     manual_inputs: tuple[str, ...] = ()
-    stt_backend: Literal["mock", "whisper_cpp"] = "mock"
-    speech_latency_profile: Literal["fast", "balanced"] = "fast"
-    whisper_model_path: Path | None = None
-    whisper_binary_path: Path | None = None
-    whisper_transport: Literal["cli", "server"] = "cli"
-    whisper_server_base_url: str = "http://127.0.0.1:8080"
-    whisper_server_mode: Literal["managed", "external"] = "external"
-    whisper_command_extra_args: tuple[str, ...] = ()
     audio_init_command: tuple[str, ...] = ()
     audio_record_command: tuple[str, ...] = ()
     audio_input_channels: int = 1
     audio_channel_index: int = 0
-    partial_transcripts_enabled: bool = True
-    speech_silence_seconds: float = 1.2
-    vad_threshold: float = 0.45
-    vad_frame_ms: int = 30
-    vad_start_trigger_frames: int = 2
-    vad_end_trigger_frames: int = 5
-    max_recording_seconds: float = 15.0
+    audio_output_backend: Literal["command", "alsa_persistent"] = "command"
+    audio_play_command: tuple[str, ...] = ()
+    audio_alsa_device: str = "default"
+    audio_alsa_sample_rate: int = 24000
+    audio_alsa_period_frames: int = 512
+    audio_alsa_buffer_frames: int = 2048
+    audio_alsa_keepalive_interval_ms: int = 20
     wake_word_enabled: bool = False
     follow_up_mode_enabled: bool = True
     follow_up_listen_timeout_seconds: float = 5.0
@@ -75,40 +67,10 @@ class RuntimeConfig:
     wake_word_model: str = ""
     wake_word_threshold: float = 0.5
     wake_lookback_seconds: float = 0.8
-    utterance_finalize_timeout_seconds: float = 0.6
-    utterance_tail_stable_polls: int = 2
     language_mode: Literal["auto", "en", "de", "id"] = "auto"
-    use_mock_tts: bool = True
     use_mock_ai: bool = True
     use_mock_vision: bool = True
     use_mock_hardware: bool = True
-
-
-@dataclass(slots=True)
-class TtsConfig:
-    """Text-to-speech provider and playback configuration."""
-
-    backend: Literal["mock", "piper", "cloud"] = "mock"
-    audio_backend: Literal["command", "alsa_persistent"] = "command"
-    piper_base_url: str = "http://127.0.0.1:5001"
-    piper_service_mode: Literal["managed", "external"] = "managed"
-    piper_data_dir: Path = Path("artifacts/piper-voices")
-    piper_command: tuple[str, ...] = ()
-    audio_play_command: tuple[str, ...] = ()
-    alsa_device: str = "default"
-    alsa_sample_rate: int = 16000
-    alsa_period_frames: int = 512
-    alsa_buffer_frames: int = 2048
-    alsa_keepalive_interval_ms: int = 20
-    default_voice_en: str = "en_US-hfc_female-medium"
-    default_voice_de: str = "de_DE-thorsten-medium"
-    default_voice_id: str = "id_ID-news_tts-medium"
-    expressive_de_voice: str = "de_DE-thorsten_emotional-medium"
-    expressive_de_enabled: bool = False
-    queue_max: int = 4
-    save_artifacts: bool = False
-    synthesis_timeout_seconds: float = 20.0
-    playback_timeout_seconds: float = 60.0
 
 
 @dataclass(slots=True)
@@ -149,10 +111,10 @@ class UiConfig:
 class MockDataConfig:
     """Deterministic mock data used during development and testing."""
 
-    visible_people: tuple[str, ...] = ("Sebastian",)
-    active_user_id: str = "sebastian"
-    active_user_name: str = "Sebastian"
-    active_user_summary: str = "You are Sebastian, the robot's builder."
+    visible_people: tuple[str, ...] = ("Builder",)
+    active_user_id: str = "builder"
+    active_user_name: str = "Builder"
+    active_user_summary: str = "You are the robot's builder."
 
 
 @dataclass(slots=True)
@@ -163,7 +125,6 @@ class AppConfig:
     paths: PathConfig = field(default_factory=PathConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
-    tts: TtsConfig = field(default_factory=TtsConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     mocks: MockDataConfig = field(default_factory=MockDataConfig)
 
@@ -253,10 +214,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}INPUT_MODE"),
         default=runtime.input_mode,
     )
-    runtime.speech_latency_profile = _parse_speech_latency_profile(
-        env.get(f"{ENV_PREFIX}SPEECH_LATENCY_PROFILE"),
-        default=runtime.speech_latency_profile,
-    )
     runtime.interactive_console = _parse_bool(
         env.get(f"{ENV_PREFIX}INTERACTIVE_CONSOLE"),
         default=runtime.interactive_console,
@@ -264,28 +221,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.manual_inputs = _parse_csv_tuple(
         env.get(f"{ENV_PREFIX}MANUAL_INPUTS"),
         default=runtime.manual_inputs,
-    )
-    runtime.stt_backend = _parse_stt_backend(
-        env.get(f"{ENV_PREFIX}STT_BACKEND"),
-        default=runtime.stt_backend,
-    )
-    runtime.whisper_model_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_MODEL_PATH"))
-    runtime.whisper_binary_path = _parse_optional_path(env.get(f"{ENV_PREFIX}WHISPER_BINARY_PATH"))
-    runtime.whisper_transport = _parse_whisper_transport(
-        env.get(f"{ENV_PREFIX}WHISPER_TRANSPORT"),
-        default=runtime.whisper_transport,
-    )
-    runtime.whisper_server_base_url = env.get(
-        f"{ENV_PREFIX}WHISPER_SERVER_BASE_URL",
-        runtime.whisper_server_base_url,
-    ).strip() or runtime.whisper_server_base_url
-    runtime.whisper_server_mode = _parse_whisper_server_mode(
-        env.get(f"{ENV_PREFIX}WHISPER_SERVER_MODE"),
-        default=runtime.whisper_server_mode,
-    )
-    runtime.whisper_command_extra_args = _parse_command(
-        env.get(f"{ENV_PREFIX}WHISPER_COMMAND_EXTRA_ARGS"),
-        default=runtime.whisper_command_extra_args,
     )
     runtime.audio_init_command = _parse_command(
         env.get(f"{ENV_PREFIX}AUDIO_INIT_COMMAND"),
@@ -303,34 +238,33 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}AUDIO_CHANNEL_INDEX"),
         default=runtime.audio_channel_index,
     )
-    runtime.partial_transcripts_enabled = _parse_bool(
-        env.get(f"{ENV_PREFIX}PARTIAL_TRANSCRIPTS_ENABLED"),
-        default=runtime.partial_transcripts_enabled,
+    runtime.audio_play_command = _parse_command(
+        env.get(f"{ENV_PREFIX}AUDIO_PLAY_COMMAND"),
+        default=runtime.audio_play_command,
     )
-    _apply_speech_latency_profile(runtime)
-    runtime.speech_silence_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}SPEECH_SILENCE_SECONDS"),
-        default=runtime.speech_silence_seconds,
+    runtime.audio_output_backend = _parse_audio_output_backend(
+        env.get(f"{ENV_PREFIX}AUDIO_OUTPUT_BACKEND"),
+        default=_default_audio_output_backend(runtime.audio_play_command),
     )
-    runtime.vad_threshold = _parse_float(
-        env.get(f"{ENV_PREFIX}VAD_THRESHOLD"),
-        default=runtime.vad_threshold,
+    runtime.audio_alsa_device = env.get(
+        f"{ENV_PREFIX}AUDIO_ALSA_DEVICE",
+        runtime.audio_alsa_device,
+    ).strip() or runtime.audio_alsa_device
+    runtime.audio_alsa_sample_rate = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_ALSA_SAMPLE_RATE"),
+        default=runtime.audio_alsa_sample_rate,
     )
-    runtime.vad_frame_ms = _parse_int(
-        env.get(f"{ENV_PREFIX}VAD_FRAME_MS"),
-        default=runtime.vad_frame_ms,
+    runtime.audio_alsa_period_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_ALSA_PERIOD_FRAMES"),
+        default=runtime.audio_alsa_period_frames,
     )
-    runtime.vad_start_trigger_frames = _parse_int(
-        env.get(f"{ENV_PREFIX}VAD_START_TRIGGER_FRAMES"),
-        default=runtime.vad_start_trigger_frames,
+    runtime.audio_alsa_buffer_frames = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_ALSA_BUFFER_FRAMES"),
+        default=runtime.audio_alsa_buffer_frames,
     )
-    runtime.vad_end_trigger_frames = _parse_int(
-        env.get(f"{ENV_PREFIX}VAD_END_TRIGGER_FRAMES"),
-        default=runtime.vad_end_trigger_frames,
-    )
-    runtime.max_recording_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}MAX_RECORDING_SECONDS"),
-        default=runtime.max_recording_seconds,
+    runtime.audio_alsa_keepalive_interval_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}AUDIO_ALSA_KEEPALIVE_INTERVAL_MS"),
+        default=runtime.audio_alsa_keepalive_interval_ms,
     )
     runtime.wake_word_enabled = _parse_bool(
         env.get(f"{ENV_PREFIX}WAKE_WORD_ENABLED"),
@@ -358,24 +292,8 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}WAKE_LOOKBACK_SECONDS"),
         default=runtime.wake_lookback_seconds,
     )
-    runtime.utterance_finalize_timeout_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}UTTERANCE_FINALIZE_TIMEOUT_SECONDS"),
-        default=runtime.utterance_finalize_timeout_seconds,
-    )
-    runtime.utterance_tail_stable_polls = _parse_int(
-        env.get(f"{ENV_PREFIX}UTTERANCE_TAIL_STABLE_POLLS"),
-        default=runtime.utterance_tail_stable_polls,
-    )
     if runtime.wake_lookback_seconds <= 0:
         runtime.wake_lookback_seconds = 0.8
-    if runtime.vad_threshold <= 0:
-        runtime.vad_threshold = 0.45
-    elif runtime.vad_threshold > 1.0:
-        runtime.vad_threshold = 1.0
-    if runtime.vad_frame_ms not in {10, 20, 30}:
-        runtime.vad_frame_ms = 30
-    runtime.vad_start_trigger_frames = max(1, runtime.vad_start_trigger_frames)
-    runtime.vad_end_trigger_frames = max(1, runtime.vad_end_trigger_frames)
     runtime.audio_input_channels = max(1, runtime.audio_input_channels)
     runtime.audio_channel_index = max(0, runtime.audio_channel_index)
     if runtime.audio_channel_index >= runtime.audio_input_channels:
@@ -391,10 +309,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),
         default=runtime.language_mode,
     )
-    runtime.use_mock_tts = _parse_bool(
-        env.get(f"{ENV_PREFIX}USE_MOCK_TTS"),
-        default=runtime.use_mock_tts,
-    )
     runtime.use_mock_ai = _parse_bool(
         env.get(f"{ENV_PREFIX}USE_MOCK_AI"),
         default=runtime.use_mock_ai,
@@ -406,76 +320,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.use_mock_hardware = _parse_bool(
         env.get(f"{ENV_PREFIX}USE_MOCK_HARDWARE"),
         default=runtime.use_mock_hardware,
-    )
-    tts = config.tts
-    tts.backend = _parse_tts_backend(
-        env.get(f"{ENV_PREFIX}TTS_BACKEND"),
-        default="mock" if runtime.use_mock_tts else tts.backend,
-    )
-    tts.piper_base_url = env.get(f"{ENV_PREFIX}TTS_PIPER_BASE_URL", tts.piper_base_url).strip() or tts.piper_base_url
-    tts.piper_service_mode = _parse_piper_service_mode(
-        env.get(f"{ENV_PREFIX}TTS_PIPER_SERVICE_MODE"),
-        default=tts.piper_service_mode,
-    )
-    tts.piper_data_dir = _parse_path(
-        env.get(f"{ENV_PREFIX}TTS_PIPER_DATA_DIR"),
-        default=tts.piper_data_dir,
-    )
-    tts.piper_command = _parse_command(
-        env.get(f"{ENV_PREFIX}TTS_PIPER_COMMAND"),
-        default=tts.piper_command,
-    )
-    tts.audio_play_command = _parse_command(
-        env.get(f"{ENV_PREFIX}TTS_AUDIO_PLAY_COMMAND"),
-        default=tts.audio_play_command,
-    )
-    tts.audio_backend = _parse_tts_audio_backend(
-        env.get(f"{ENV_PREFIX}TTS_AUDIO_BACKEND"),
-        default=_default_tts_audio_backend(tts.audio_play_command),
-    )
-    tts.alsa_device = env.get(f"{ENV_PREFIX}TTS_ALSA_DEVICE", tts.alsa_device).strip() or tts.alsa_device
-    tts.alsa_sample_rate = _parse_int(
-        env.get(f"{ENV_PREFIX}TTS_ALSA_SAMPLE_RATE"),
-        default=tts.alsa_sample_rate,
-    )
-    tts.alsa_period_frames = _parse_int(
-        env.get(f"{ENV_PREFIX}TTS_ALSA_PERIOD_FRAMES"),
-        default=tts.alsa_period_frames,
-    )
-    tts.alsa_buffer_frames = _parse_int(
-        env.get(f"{ENV_PREFIX}TTS_ALSA_BUFFER_FRAMES"),
-        default=tts.alsa_buffer_frames,
-    )
-    tts.alsa_keepalive_interval_ms = _parse_int(
-        env.get(f"{ENV_PREFIX}TTS_ALSA_KEEPALIVE_INTERVAL_MS"),
-        default=tts.alsa_keepalive_interval_ms,
-    )
-    tts.default_voice_en = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_EN", tts.default_voice_en).strip()
-    tts.default_voice_de = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_DE", tts.default_voice_de).strip()
-    tts.default_voice_id = env.get(f"{ENV_PREFIX}TTS_DEFAULT_VOICE_ID", tts.default_voice_id).strip()
-    tts.expressive_de_voice = env.get(
-        f"{ENV_PREFIX}TTS_EXPRESSIVE_DE_VOICE",
-        tts.expressive_de_voice,
-    ).strip()
-    tts.expressive_de_enabled = _parse_bool(
-        env.get(f"{ENV_PREFIX}TTS_EXPRESSIVE_DE_ENABLED"),
-        default=tts.expressive_de_enabled,
-    )
-    tts.queue_max = _parse_int(
-        env.get(f"{ENV_PREFIX}TTS_QUEUE_MAX"),
-        default=tts.queue_max,
-    )
-    tts.save_artifacts = _parse_bool(
-        env.get(f"{ENV_PREFIX}TTS_SAVE_ARTIFACTS"),
-        default=tts.save_artifacts,
-    )
-    tts.synthesis_timeout_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}TTS_SYNTHESIS_TIMEOUT_SECONDS"),
-        default=tts.synthesis_timeout_seconds,
-    )
-    tts.playback_timeout_seconds = _parse_float(
-        env.get(f"{ENV_PREFIX}TTS_PLAYBACK_TIMEOUT_SECONDS"),
-        default=tts.playback_timeout_seconds,
     )
     ui = config.ui
     ui.backend = _parse_ui_backend(
@@ -555,7 +399,6 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     )
     _validate_runtime_config(runtime)
     _validate_cloud_config(config.cloud, runtime=runtime)
-    _validate_tts_config(tts)
     _validate_ui_config(ui)
 
     return config
@@ -570,8 +413,17 @@ def _validate_runtime_config(runtime: RuntimeConfig) -> None:
         raise ValueError("AI_COMPANION_AUDIO_CHANNEL_INDEX must be zero or greater")
     if runtime.audio_channel_index >= runtime.audio_input_channels:
         raise ValueError("AI_COMPANION_AUDIO_CHANNEL_INDEX must be smaller than AI_COMPANION_AUDIO_INPUT_CHANNELS")
-    if runtime.whisper_transport == "server" and not runtime.whisper_server_base_url.strip():
-        raise ValueError("AI_COMPANION_WHISPER_SERVER_BASE_URL must be configured for server transport")
+    if runtime.audio_output_backend == "alsa_persistent":
+        if not runtime.audio_alsa_device.strip():
+            raise ValueError("AI_COMPANION_AUDIO_ALSA_DEVICE must be configured")
+        if runtime.audio_alsa_sample_rate <= 0:
+            raise ValueError("AI_COMPANION_AUDIO_ALSA_SAMPLE_RATE must be greater than zero")
+        if runtime.audio_alsa_period_frames <= 0:
+            raise ValueError("AI_COMPANION_AUDIO_ALSA_PERIOD_FRAMES must be greater than zero")
+        if runtime.audio_alsa_buffer_frames < runtime.audio_alsa_period_frames:
+            raise ValueError("AI_COMPANION_AUDIO_ALSA_BUFFER_FRAMES must be greater than or equal to period frames")
+        if runtime.audio_alsa_keepalive_interval_ms <= 0:
+            raise ValueError("AI_COMPANION_AUDIO_ALSA_KEEPALIVE_INTERVAL_MS must be greater than zero")
     if not runtime.wake_word_enabled:
         return
     if not runtime.wake_word_phrase.strip():
@@ -607,39 +459,6 @@ def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> Non
         raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION must be server_vad, semantic_vad, or none")
     if cloud.openai_realtime_turn_eagerness not in {"auto", "low", "medium", "high"}:
         raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS must be auto, low, medium, or high")
-
-
-def _validate_tts_config(tts: TtsConfig) -> None:
-    """Reject obviously incomplete real TTS configuration."""
-
-    if tts.backend == "mock":
-        return
-    if tts.queue_max <= 0:
-        raise ValueError("AI_COMPANION_TTS_QUEUE_MAX must be greater than zero")
-    if tts.synthesis_timeout_seconds <= 0:
-        raise ValueError("AI_COMPANION_TTS_SYNTHESIS_TIMEOUT_SECONDS must be greater than zero")
-    if tts.playback_timeout_seconds <= 0:
-        raise ValueError("AI_COMPANION_TTS_PLAYBACK_TIMEOUT_SECONDS must be greater than zero")
-    if tts.audio_backend == "alsa_persistent":
-        if not tts.alsa_device.strip():
-            raise ValueError("AI_COMPANION_TTS_ALSA_DEVICE must be configured")
-        if tts.alsa_sample_rate <= 0:
-            raise ValueError("AI_COMPANION_TTS_ALSA_SAMPLE_RATE must be greater than zero")
-        if tts.alsa_period_frames <= 0:
-            raise ValueError("AI_COMPANION_TTS_ALSA_PERIOD_FRAMES must be greater than zero")
-        if tts.alsa_buffer_frames < tts.alsa_period_frames:
-            raise ValueError("AI_COMPANION_TTS_ALSA_BUFFER_FRAMES must be greater than or equal to period frames")
-        if tts.alsa_keepalive_interval_ms <= 0:
-            raise ValueError("AI_COMPANION_TTS_ALSA_KEEPALIVE_INTERVAL_MS must be greater than zero")
-    if tts.backend == "piper":
-        if not tts.piper_base_url.strip():
-            raise ValueError("AI_COMPANION_TTS_PIPER_BASE_URL must be configured for Piper TTS")
-        if not tts.default_voice_en.strip():
-            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_EN must be configured for Piper TTS")
-        if not tts.default_voice_de.strip():
-            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_DE must be configured for Piper TTS")
-        if not tts.default_voice_id.strip():
-            raise ValueError("AI_COMPANION_TTS_DEFAULT_VOICE_ID must be configured for Piper TTS")
 
 
 def _validate_ui_config(ui: UiConfig) -> None:
@@ -788,42 +607,6 @@ def _parse_interaction_backend(
     return default
 
 
-def _parse_stt_backend(
-    value: str | None,
-    default: Literal["mock", "whisper_cpp"],
-) -> Literal["mock", "whisper_cpp"]:
-    if value in {"mock", "whisper_cpp"}:
-        return value
-    return default
-
-
-def _parse_whisper_transport(
-    value: str | None,
-    default: Literal["cli", "server"],
-) -> Literal["cli", "server"]:
-    if value in {"cli", "server"}:
-        return value
-    return default
-
-
-def _parse_whisper_server_mode(
-    value: str | None,
-    default: Literal["managed", "external"],
-) -> Literal["managed", "external"]:
-    if value in {"managed", "external"}:
-        return value
-    return default
-
-
-def _parse_speech_latency_profile(
-    value: str | None,
-    default: Literal["fast", "balanced"],
-) -> Literal["fast", "balanced"]:
-    if value in {"fast", "balanced"}:
-        return value
-    return default
-
-
 def _parse_language_mode(
     value: str | None,
     default: Literal["auto", "en", "de", "id"],
@@ -833,16 +616,7 @@ def _parse_language_mode(
     return default
 
 
-def _parse_tts_backend(
-    value: str | None,
-    default: Literal["mock", "piper", "cloud"],
-) -> Literal["mock", "piper", "cloud"]:
-    if value in {"mock", "piper", "cloud"}:
-        return value
-    return default
-
-
-def _parse_tts_audio_backend(
+def _parse_audio_output_backend(
     value: str | None,
     default: Literal["command", "alsa_persistent"],
 ) -> Literal["command", "alsa_persistent"]:
@@ -850,39 +624,7 @@ def _parse_tts_audio_backend(
         return value
     return default
 
-
-def _parse_piper_service_mode(
-    value: str | None,
-    default: Literal["managed", "external"],
-) -> Literal["managed", "external"]:
-    if value in {"managed", "external"}:
-        return value
-    return default
-
-
-def _default_tts_audio_backend(command_template: tuple[str, ...]) -> Literal["command", "alsa_persistent"]:
+def _default_audio_output_backend(command_template: tuple[str, ...]) -> Literal["command", "alsa_persistent"]:
     if sys.platform != "darwin" and command_template and Path(command_template[0]).name == "aplay":
         return "alsa_persistent"
     return "command"
-
-
-def _apply_speech_latency_profile(runtime: RuntimeConfig) -> None:
-    if runtime.speech_latency_profile == "balanced":
-        runtime.speech_silence_seconds = 1.2
-        runtime.vad_threshold = 0.45
-        runtime.vad_frame_ms = 30
-        runtime.vad_start_trigger_frames = 2
-        runtime.vad_end_trigger_frames = 5
-        runtime.wake_lookback_seconds = 0.8
-        runtime.utterance_finalize_timeout_seconds = 0.6
-        runtime.utterance_tail_stable_polls = 2
-        return
-
-    runtime.speech_silence_seconds = 1.0
-    runtime.vad_threshold = 0.5
-    runtime.vad_frame_ms = 30
-    runtime.vad_start_trigger_frames = 2
-    runtime.vad_end_trigger_frames = 5
-    runtime.wake_lookback_seconds = 0.5
-    runtime.utterance_finalize_timeout_seconds = 0.3
-    runtime.utterance_tail_stable_polls = 1

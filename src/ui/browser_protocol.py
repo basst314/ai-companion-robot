@@ -177,7 +177,7 @@ def map_event_to_trigger_command(event: Event) -> BrowserCommand | None:
             },
         )
 
-    if event.name is EventName.TTS_PLAYBACK_STARTED:
+    if event.name is EventName.AUDIO_PLAYBACK_STARTED:
         return BrowserCommand(
             command_type="transient_trigger",
             payload={

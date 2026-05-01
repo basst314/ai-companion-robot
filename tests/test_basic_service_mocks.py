@@ -54,12 +54,12 @@ def test_mock_hardware_service_can_fail() -> None:
 
 
 def test_in_memory_memory_service_tracks_history_and_user_summary() -> None:
-    user = UserIdentity(user_id="u1", display_name="Basti", summary="You are Basti.")
+    user = UserIdentity(user_id="u1", display_name="Builder", summary="You are the robot builder.")
     service = InMemoryMemoryService(active_user=user)
 
     async def run() -> None:
         assert await service.get_active_user() == user
-        assert await service.get_user_summary("u1") == "You are Basti."
+        assert await service.get_user_summary("u1") == "You are the robot builder."
         assert await service.get_user_summary("someone-else") == "I do not know much about you yet."
         await service.save_interaction(
             InteractionRecord(
@@ -86,14 +86,14 @@ def test_in_memory_memory_service_tracks_history_and_user_summary() -> None:
 
 
 def test_mock_vision_service_returns_detections_and_snapshot() -> None:
-    detection = VisionDetection(label="Basti", confidence=0.98, user_id="u1")
+    detection = VisionDetection(label="Builder", confidence=0.98, user_id="u1")
     service = MockVisionService(detections=[detection])
 
     async def run() -> None:
         assert await service.get_current_detections() == (detection,)
         snapshot = await service.capture_snapshot()
         assert snapshot.mime_type == "image/gif"
-        assert "Basti" in snapshot.summary
+        assert "Builder" in snapshot.summary
         service.snapshot = VisionSnapshot(image_url="data:image/png;base64,AAA", mime_type="image/png", summary="custom")
         assert await service.capture_snapshot() == service.snapshot
 
@@ -117,7 +117,7 @@ def test_mock_local_ai_service_uses_active_user_context() -> None:
         with_user = await service.generate_reply(
             Transcript(text="hello", language=Language.ENGLISH, confidence=1.0, is_final=True),
             InteractionContext(
-                active_user=UserIdentity(user_id="u1", display_name="Basti"),
+                active_user=UserIdentity(user_id="u1", display_name="Builder"),
                 recent_history=(),
                 current_detections=(),
                 robot_state=RobotStateSnapshot(
@@ -144,7 +144,7 @@ def test_mock_local_ai_service_uses_active_user_context() -> None:
         )
 
         assert with_user.intent == "local_reasoning"
-        assert "Basti" in with_user.text
+        assert "Builder" in with_user.text
         assert "friend" in without_user.text
         assert with_user.emotion is EmotionState.CURIOUS
 

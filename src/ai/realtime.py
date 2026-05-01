@@ -641,8 +641,8 @@ class RealtimeConversationService:
             state.playback_started_at = asyncio.get_running_loop().time()
             state.response_count += 1
             logger.info("realtime response_audio_started response_id=%s", response_id)
-            await self._emit_tts_event(
-                EventName.TTS_PLAYBACK_STARTED,
+            await self._emit_audio_event(
+                EventName.AUDIO_PLAYBACK_STARTED,
                 {
                     "job_id": state.response_id,
                     "text": "",
@@ -691,8 +691,8 @@ class RealtimeConversationService:
             logger.info("realtime interrupt_skip_response_cancel reason=response_already_done response_id=%s", interrupted_response_id)
         await self.audio_output.interrupt()
         await self._truncate_interrupted_assistant_audio(websocket, state)
-        await self._emit_tts_event(
-            EventName.TTS_INTERRUPTED,
+        await self._emit_audio_event(
+            EventName.AUDIO_INTERRUPTED,
             {
                 "job_id": interrupted_response_id,
                 "source": source,
@@ -779,8 +779,8 @@ class RealtimeConversationService:
         state.speaker_active = False
         state.pending_playback_job_id = None
         logger.info("realtime response_audio_finished response_id=%s %s", job_id, state.stats_summary())
-        await self._emit_tts_event(
-            EventName.TTS_PLAYBACK_FINISHED,
+        await self._emit_audio_event(
+            EventName.AUDIO_PLAYBACK_FINISHED,
             {
                 "job_id": job_id,
                 "text": "",
@@ -794,7 +794,7 @@ class RealtimeConversationService:
                 "interrupt_count": state.interrupt_count,
             },
         )
-        await self._emit_tts_event(
+        await self._emit_audio_event(
             EventName.AUDIO_FINISHED,
             {"job_id": job_id, "text": "", "duration_ms": None},
         )
@@ -851,10 +851,10 @@ class RealtimeConversationService:
             )
         await websocket.send(json.dumps({"type": "response.create"}))
 
-    async def _emit_tts_event(self, name: EventName, payload: Mapping[str, object]) -> None:
+    async def _emit_audio_event(self, name: EventName, payload: Mapping[str, object]) -> None:
         if self.event_handler is None:
             return
-        await self.event_handler(Event(name=name, source=ComponentName.TTS, payload=payload))
+        await self.event_handler(Event(name=name, source=ComponentName.AUDIO, payload=payload))
 
     def _session_update_event(self) -> dict[str, Any]:
         turn_detection = None

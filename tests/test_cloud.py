@@ -126,7 +126,7 @@ class FakeToolClient:
                 "type": "function_call_output",
                 "call_id": "call_1",
                 "output": [
-                    {"type": "input_text", "text": "Snapshot shows Basti."},
+                    {"type": "input_text", "text": "Snapshot shows Builder."},
                     {
                         "type": "input_image",
                         "image_url": "data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=",
@@ -139,7 +139,7 @@ class FakeToolClient:
             "id": "resp_tool_2",
             "output_text": json.dumps(
                 {
-                    "text": "I took a look. I can see Basti in front of me.",
+                    "text": "I took a look. I can see Builder in front of me.",
                     "language": Language.ENGLISH.value,
                 }
             ),
@@ -269,9 +269,9 @@ class FakeEnglishAfterIndonesianClient:
 
 def _context() -> InteractionContext:
     return InteractionContext(
-        active_user=UserIdentity(user_id="u1", display_name="Basti"),
+        active_user=UserIdentity(user_id="u1", display_name="Builder"),
         recent_history=(),
-        current_detections=(VisionDetection(label="Basti", confidence=0.98, user_id="u1"),),
+        current_detections=(VisionDetection(label="Builder", confidence=0.98, user_id="u1"),),
         robot_state=RobotStateSnapshot(
             lifecycle="thinking",
             emotion=EmotionState.THINKING,
@@ -308,7 +308,7 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
         PlanStepResult(
             capability_id="visible_people",
             success=True,
-            message="I can currently see Basti.",
+            message="I can currently see Builder.",
         ),
     )
 
@@ -322,7 +322,7 @@ def test_openai_reply_logs_exact_request_and_output(caplog) -> None:
     assert "[AI] reply request" in log_text
     assert "max_output_tokens=72" in log_text
     assert "can you see me?" in log_text
-    assert "I can currently see Basti." in log_text
+    assert "I can currently see Builder." in log_text
     assert "Robot wake-word/name: 'Oreo'" in log_text
     assert "leftover wake-word audio" in log_text
     assert "turn_trace cloud_request_sent" in log_text
@@ -359,7 +359,7 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
         return CloudToolResult(
             call_id=request.call_id,
             tool_name=request.tool_name,
-            output_text="Snapshot shows Basti.",
+            output_text="Snapshot shows Builder.",
             image_url="data:image/gif;base64,R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=",
         )
 
@@ -373,7 +373,7 @@ def test_openai_reply_handles_tool_call_round_trip() -> None:
         )
     )
 
-    assert result.response.text == "I took a look. I can see Basti in front of me."
+    assert result.response.text == "I took a look. I can see Builder in front of me."
     assert result.response.language is Language.ENGLISH
     assert result.response_id == "resp_tool_2"
 

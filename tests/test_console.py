@@ -95,8 +95,8 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
         wake_window_seconds=1.5,
         utterance_start_seconds=0.8,
     )
-    screen.update_tts_status(
-        backend="piper",
+    screen.update_audio_status(
+        backend="realtime",
         phase="play",
         voice="en_US-hfc_female-medium",
         style="neutral",
@@ -112,8 +112,8 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
     assert "[vad tail 0.35s]" in rows[1]
-    assert "[stt standby --]" in rows[1]
-    assert rows[1].index("[wake off") < rows[1].index("[stt standby --]") < rows[1].index("[vad tail 0.35s]")
+    assert "[input standby --]" in rows[1]
+    assert rows[1].index("[wake off") < rows[1].index("[input standby --]") < rows[1].index("[vad tail 0.35s]")
     assert "[ 180]" in rows[1]
     assert "[BUF]" in rows[2]
     assert "[fill 2.5/3.5s]" in rows[2]
@@ -127,8 +127,8 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[reply-t" in rows[3]
     assert "look_at_user -> cloud_reply" in rows[3]
     assert "say" in rows[3]
-    assert "[TTS]" in rows[4]
-    assert "[backend piper]" in rows[4]
+    assert "[AUDIO]" in rows[4]
+    assert "[backend realtime]" in rows[4]
     assert "[phase play]" in rows[4]
     assert "[queue 1]" in rows[4]
     assert "en_US-hfc_female-medium" in rows[4]
@@ -272,13 +272,13 @@ def test_terminal_debug_screen_peak_decays_after_hold_interval() -> None:
     assert "[  40]" in rows[1]
 
 
-def test_terminal_debug_screen_shows_whisper_status_badge() -> None:
+def test_terminal_debug_screen_shows_input_status_badge() -> None:
     screen = TerminalDebugScreen(stream=FakeTty())
-    screen.update_whisper_status("0.85s")
+    screen.update_input_status("0.85s")
 
     rows = screen.snapshot_rows(width=120)
 
-    assert "[stt standby 0.85s]" in rows[1]
+    assert "[input standby 0.85s]" in rows[1]
 
 
 def test_terminal_debug_screen_shows_wake_status_badge() -> None:
@@ -303,12 +303,12 @@ def test_terminal_debug_screen_keeps_wake_badge_width_stable_across_states() -> 
 
 def test_terminal_debug_screen_shows_running_status_with_last_duration() -> None:
     screen = TerminalDebugScreen(stream=FakeTty())
-    screen.update_whisper_status("0.85s")
-    screen.update_whisper_status("running")
+    screen.update_input_status("0.85s")
+    screen.update_input_status("running")
 
     rows = screen.snapshot_rows(width=120)
 
-    assert "[stt running 0.85s]" in rows[1]
+    assert "[input running 0.85s]" in rows[1]
 
 
 def test_terminal_debug_screen_uses_alternate_screen_buffer() -> None:

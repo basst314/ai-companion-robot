@@ -15,7 +15,7 @@ SRC_DIR = REPO_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from stt.respeaker_capture import extract_interleaved_channel
+from audio.respeaker_capture import extract_interleaved_channel
 
 
 def _build_arecord_command(
