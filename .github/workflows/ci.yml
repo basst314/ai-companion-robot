@@ -33,7 +33,7 @@ jobs:
         run: pytest -q tests/test_config.py tests/test_console.py
 
       - name: Run integration tests
-        run: pytest -q tests/test_smoke.py tests/test_stt.py
+        run: pytest -q tests/test_smoke.py
 
       - name: Run full suite with coverage
         run: pytest -q --cov=src --cov-report=term-missing --cov-report=xml
