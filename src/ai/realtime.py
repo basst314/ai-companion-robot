@@ -437,6 +437,13 @@ class RealtimeConversationService:
     follow_up_idle_timeout_seconds: float = 5.0
     turn_eagerness: str = "auto"
     local_barge_in_enabled: bool = False
+    interrupt_response: bool = False
+    playback_barge_in_enabled: bool = True
+    playback_barge_in_threshold: float = 2500.0
+    playback_barge_in_required_ms: int = 320
+    playback_barge_in_grace_ms: int = 700
+    playback_barge_in_recent_vad_ms: int = 1200
+    playback_barge_in_recent_required_ms: int = 180
 
     async def start(self) -> None:
         await self.audio_output.start()
@@ -491,19 +498,31 @@ class RealtimeConversationService:
             target_rate_hz=self.realtime_sample_rate_hz,
         )
         barge_in_detector = _LocalBargeInDetector(sample_rate_hz=self.audio_capture_sample_rate_hz)
+        playback_barge_in_detector = _LocalBargeInDetector(
+            sample_rate_hz=self.audio_capture_sample_rate_hz,
+            threshold=self.playback_barge_in_threshold,
+            required_speech_ms=self.playback_barge_in_required_ms,
+        )
         while not stop_event.is_set():
             chunk = await audio_chunks.get()
             if chunk is None:
                 return
-            if (
-                self.local_barge_in_enabled
-                and state.speaker_active
-                and barge_in_detector.detects_barge_in(chunk)
-            ):
-                await self._interrupt_active_response(websocket, state, source="local_barge_in")
-                barge_in_detector.reset()
+            if state.speaker_active:
+                if self._detects_playback_barge_in(playback_barge_in_detector, chunk, state):
+                    state.response_create_pending = True
+                    await self._interrupt_active_response(websocket, state, source="playback_barge_in")
+                    playback_barge_in_detector.reset()
+                    barge_in_detector.reset()
+                elif (
+                    self.local_barge_in_enabled
+                    and barge_in_detector.detects_barge_in(chunk)
+                ):
+                    await self._interrupt_active_response(websocket, state, source="local_barge_in")
+                    barge_in_detector.reset()
+                    playback_barge_in_detector.reset()
             elif not state.speaker_active:
                 barge_in_detector.reset()
+                playback_barge_in_detector.reset()
             converted = converter.convert(chunk)
             if not converted:
                 continue
@@ -517,6 +536,73 @@ class RealtimeConversationService:
                     }
                 )
             )
+
+    def _detects_playback_barge_in(
+        self,
+        detector: "_LocalBargeInDetector",
+        chunk: bytes,
+        state: "_RealtimeEventState",
+    ) -> bool:
+        if not self.playback_barge_in_enabled or not state.pending_server_barge_in:
+            detector.reset()
+            return False
+        if state.playback_started_at is None:
+            detector.reset()
+            return False
+        loop_time = asyncio.get_running_loop().time()
+        elapsed_ms = max(0, int((loop_time - state.playback_started_at) * 1000))
+        server_vad_age_ms = None
+        if state.last_server_barge_in_at is not None:
+            server_vad_age_ms = max(0, int((loop_time - state.last_server_barge_in_at) * 1000))
+        detected = detector.detects_barge_in(chunk)
+        state.playback_barge_peak_energy = max(state.playback_barge_peak_energy, detector.last_energy)
+        state.playback_barge_max_active_ms = max(state.playback_barge_max_active_ms, detector.active_ms)
+        if elapsed_ms < self.playback_barge_in_grace_ms:
+            if detector.active_ms > 0:
+                logger.info(
+                    "realtime playback_barge_ignored reason=grace elapsed_ms=%s energy=%.1f threshold=%.1f active_ms=%.1f server_vad_age_ms=%s",
+                    elapsed_ms,
+                    detector.last_energy,
+                    detector.threshold,
+                    detector.active_ms,
+                    server_vad_age_ms if server_vad_age_ms is not None else "--",
+                )
+            detector.reset()
+            return False
+        fresh_server_vad = (
+            server_vad_age_ms is not None
+            and server_vad_age_ms <= self.playback_barge_in_recent_vad_ms
+        )
+        recently_detected = (
+            fresh_server_vad
+            and detector.active_ms >= self.playback_barge_in_recent_required_ms
+        )
+        if detected or recently_detected:
+            logger.info(
+                "realtime playback_barge_confirmed elapsed_ms=%s energy=%.1f threshold=%.1f active_ms=%.1f required_ms=%s server_vad_age_ms=%s",
+                elapsed_ms,
+                detector.last_energy,
+                detector.threshold,
+                detector.active_ms,
+                (
+                    self.playback_barge_in_recent_required_ms
+                    if recently_detected
+                    else self.playback_barge_in_required_ms
+                ),
+                server_vad_age_ms if server_vad_age_ms is not None else "--",
+            )
+            state.pending_server_barge_in = False
+            return True
+        if detector.last_energy >= detector.threshold:
+            logger.info(
+                "realtime playback_barge_ignored reason=duration elapsed_ms=%s energy=%.1f threshold=%.1f active_ms=%.1f server_vad_age_ms=%s",
+                elapsed_ms,
+                detector.last_energy,
+                detector.threshold,
+                detector.active_ms,
+                server_vad_age_ms if server_vad_age_ms is not None else "--",
+            )
+        return False
 
     async def _receive_events_loop(
         self,
@@ -570,21 +656,63 @@ class RealtimeConversationService:
             state.follow_up_deadline = None
             state.user_speech_active = True
             state.user_speech_started_count += 1
+            if state.speaker_active or state.audio_started:
+                state.pending_server_barge_in = True
+                state.last_server_barge_in_at = asyncio.get_running_loop().time()
+                state.playback_barge_peak_energy = 0.0
+                state.playback_barge_max_active_ms = 0.0
+                elapsed_ms = None
+                if state.playback_started_at is not None:
+                    elapsed_ms = max(0, int((state.last_server_barge_in_at - state.playback_started_at) * 1000))
+                logger.info(
+                    "realtime playback_barge_candidate speaker_active=%s streaming=%s elapsed_ms=%s interrupts=%s",
+                    state.speaker_active,
+                    state.audio_started,
+                    elapsed_ms if elapsed_ms is not None else "--",
+                    state.interrupt_count,
+                )
+                return
+            state.response_create_pending = True
             logger.info(
                 "realtime user_speech_started speaker_active=%s streaming=%s interrupts=%s",
                 state.speaker_active,
                 state.audio_started,
                 state.interrupt_count,
             )
-            if state.speaker_active or state.audio_started:
-                await self._interrupt_active_response(websocket, state, source="realtime_vad")
             return
 
         if event_type == "input_audio_buffer.speech_stopped":
             state.user_speech_stopped = True
             state.user_speech_active = False
             state.follow_up_deadline = None
+            if state.pending_server_barge_in:
+                server_vad_age_ms = None
+                if state.last_server_barge_in_at is not None:
+                    server_vad_age_ms = max(
+                        0,
+                        int((asyncio.get_running_loop().time() - state.last_server_barge_in_at) * 1000),
+                    )
+                logger.info(
+                    "realtime playback_barge_ignored reason=speech_stopped energy=%.1f threshold=%.1f active_ms=%.1f required_ms=%s recent_required_ms=%s server_vad_age_ms=%s",
+                    state.playback_barge_peak_energy,
+                    self.playback_barge_in_threshold,
+                    state.playback_barge_max_active_ms,
+                    self.playback_barge_in_required_ms,
+                    self.playback_barge_in_recent_required_ms,
+                    server_vad_age_ms if server_vad_age_ms is not None else "--",
+                )
+            state.pending_server_barge_in = False
+            state.last_server_barge_in_at = None
             logger.info("realtime user_speech_stopped input=%sB/%sch", state.input_audio_bytes, state.input_audio_chunks)
+            response_created = await self._create_response_if_pending(websocket, state, source="speech_stopped")
+            if (
+                not response_created
+                and not state.speaker_active
+                and not state.audio_started
+                and not state.response_done_waiting_for_playback
+            ):
+                state.follow_up_deadline = asyncio.get_running_loop().time() + self.follow_up_idle_timeout_seconds
+                logger.info("realtime follow_up_idle_armed source=speech_stopped %s", state.stats_summary())
             return
 
         if event_type in {"response.output_audio.delta", "response.audio.delta"}:
@@ -637,6 +765,8 @@ class RealtimeConversationService:
         if not state.audio_started:
             state.audio_started = True
             state.speaker_active = True
+            state.pending_server_barge_in = False
+            state.last_server_barge_in_at = None
             state.response_id = response_id
             state.playback_started_at = asyncio.get_running_loop().time()
             state.response_count += 1
@@ -706,6 +836,8 @@ class RealtimeConversationService:
         )
         state.audio_started = False
         state.speaker_active = False
+        state.pending_server_barge_in = False
+        state.last_server_barge_in_at = None
         state.response_id = None
         state.response_item_id = None
         state.pending_playback_job_id = None
@@ -777,6 +909,8 @@ class RealtimeConversationService:
             return
         job_id = state.pending_playback_job_id or state.response_id or "realtime"
         state.speaker_active = False
+        state.pending_server_barge_in = False
+        state.last_server_barge_in_at = None
         state.pending_playback_job_id = None
         logger.info("realtime response_audio_finished response_id=%s %s", job_id, state.stats_summary())
         await self._emit_audio_event(
@@ -851,6 +985,29 @@ class RealtimeConversationService:
             )
         await websocket.send(json.dumps({"type": "response.create"}))
 
+    async def _create_response_if_pending(
+        self,
+        websocket: RealtimeWebSocket,
+        state: "_RealtimeEventState",
+        *,
+        source: str,
+    ) -> bool:
+        if not state.response_create_pending:
+            return False
+        if state.speaker_active or state.audio_started or state.response_done_waiting_for_playback:
+            state.response_create_pending = False
+            logger.info(
+                "realtime response_create_skipped reason=assistant_active source=%s speaker_active=%s streaming=%s",
+                source,
+                state.speaker_active,
+                state.audio_started,
+            )
+            return False
+        state.response_create_pending = False
+        logger.info("realtime response_create_sent source=%s %s", source, state.stats_summary())
+        await websocket.send(json.dumps({"type": "response.create"}))
+        return True
+
     async def _emit_audio_event(self, name: EventName, payload: Mapping[str, object]) -> None:
         if self.event_handler is None:
             return
@@ -864,15 +1021,15 @@ class RealtimeConversationService:
                 "threshold": 0.5,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 250,
-                "create_response": True,
-                "interrupt_response": True,
+                "create_response": False,
+                "interrupt_response": self.interrupt_response,
             }
         elif self.turn_detection == "semantic_vad":
             turn_detection = {
                 "type": "semantic_vad",
                 "eagerness": self.turn_eagerness,
-                "create_response": True,
-                "interrupt_response": True,
+                "create_response": False,
+                "interrupt_response": self.interrupt_response,
             }
         return {
             "type": "session.update",
@@ -913,6 +1070,11 @@ class _RealtimeEventState:
     follow_up_deadline: float | None = None
     response_done_waiting_for_playback: bool = False
     ignore_next_response_done_deadline: bool = False
+    pending_server_barge_in: bool = False
+    last_server_barge_in_at: float | None = None
+    playback_barge_peak_energy: float = 0.0
+    playback_barge_max_active_ms: float = 0.0
+    response_create_pending: bool = False
     input_audio_chunks: int = 0
     input_audio_bytes: int = 0
     output_audio_chunks: int = 0
@@ -939,12 +1101,15 @@ class _LocalBargeInDetector:
     threshold: float = 900.0
     required_speech_ms: int = 180
     _active_ms: float = 0.0
+    _last_energy: float = 0.0
 
     def detects_barge_in(self, pcm_frames: bytes) -> bool:
         if not pcm_frames:
+            self._last_energy = 0.0
             return False
         duration_ms = (len(pcm_frames) / max(1, self.sample_width_bytes) / max(1, self.sample_rate_hz)) * 1000.0
-        if _pcm_abs_energy(pcm_frames, sample_width_bytes=self.sample_width_bytes) >= self.threshold:
+        self._last_energy = _pcm_abs_energy(pcm_frames, sample_width_bytes=self.sample_width_bytes)
+        if self._last_energy >= self.threshold:
             self._active_ms += duration_ms
         else:
             self._active_ms = max(0.0, self._active_ms - duration_ms)
@@ -952,6 +1117,15 @@ class _LocalBargeInDetector:
 
     def reset(self) -> None:
         self._active_ms = 0.0
+        self._last_energy = 0.0
+
+    @property
+    def active_ms(self) -> float:
+        return self._active_ms
+
+    @property
+    def last_energy(self) -> float:
+        return self._last_energy
 
 
 def _pcm_abs_energy(pcm_frames: bytes, *, sample_width_bytes: int) -> float:

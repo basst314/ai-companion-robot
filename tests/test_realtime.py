@@ -17,6 +17,7 @@ from ai.realtime import (
     RealtimeToolCall,
     RealtimeToolResult,
     _LocalBargeInDetector,
+    _RealtimeEventState,
     build_realtime_tool_definitions,
 )
 from orchestrator.capabilities import build_default_capability_registry
@@ -155,9 +156,116 @@ def test_realtime_session_update_supports_semantic_vad_auto_eagerness() -> None:
     assert event["session"]["audio"]["input"]["turn_detection"] == {
         "type": "semantic_vad",
         "eagerness": "auto",
-        "create_response": True,
-        "interrupt_response": True,
+        "create_response": False,
+        "interrupt_response": False,
     }
+
+
+def test_realtime_session_update_can_enable_backend_interrupt_response() -> None:
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        interrupt_response=True,
+        audio_capture_sample_rate_hz=24000,
+        realtime_sample_rate_hz=24000,
+        audio_output=_FakePcmOutput(),
+    )
+
+    event = service._session_update_event()
+
+    assert event["session"]["audio"]["input"]["turn_detection"]["interrupt_response"] is True
+    assert event["session"]["audio"]["input"]["turn_detection"]["create_response"] is False
+
+
+def test_realtime_non_playback_speech_stopped_creates_response() -> None:
+    websocket = _FakeWebSocket(incoming=[])
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=24000,
+        realtime_sample_rate_hz=24000,
+        audio_output=_FakePcmOutput(),
+    )
+
+    async def run() -> None:
+        state = _RealtimeEventState()
+        stop_event = asyncio.Event()
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_started"}, state, stop_event)
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_stopped"}, state, stop_event)
+
+    asyncio.run(run())
+
+    assert websocket.sent == [{"type": "response.create"}]
+
+
+def test_realtime_playback_candidate_speech_stopped_does_not_create_response() -> None:
+    websocket = _FakeWebSocket(incoming=[])
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=24000,
+        realtime_sample_rate_hz=24000,
+        audio_output=_FakePcmOutput(),
+    )
+
+    async def run() -> _RealtimeEventState:
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            response_id="resp_1",
+            playback_started_at=asyncio.get_running_loop().time() - 1.0,
+        )
+        stop_event = asyncio.Event()
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_started"}, state, stop_event)
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_stopped"}, state, stop_event)
+        return state
+
+    state = asyncio.run(run())
+
+    assert websocket.sent == []
+    assert state.response_create_pending is False
+
+
+def test_realtime_confirmed_playback_barge_in_speech_stopped_creates_response() -> None:
+    websocket = _FakeWebSocket(incoming=[])
+    pcm_output = _FakePcmOutput()
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=24000,
+        realtime_sample_rate_hz=24000,
+        audio_output=pcm_output,
+    )
+
+    async def run() -> None:
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            response_id="resp_1",
+            playback_started_at=asyncio.get_running_loop().time() - 1.0,
+            response_create_pending=True,
+        )
+        stop_event = asyncio.Event()
+        await service._interrupt_active_response(websocket, state, source="playback_barge_in")
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_stopped"}, state, stop_event)
+
+    asyncio.run(run())
+
+    sent_types = [message["type"] for message in websocket.sent]
+    assert sent_types == ["response.cancel", "response.create"]
+    assert pcm_output.interrupt_calls == 1
 
 
 def test_local_barge_in_detector_requires_sustained_loud_audio() -> None:
@@ -284,11 +392,13 @@ def test_realtime_session_keeps_socket_open_for_follow_up_turn_audio() -> None:
     asyncio.run(run())
 
     assert pcm_output.chunks == [first_audio, second_audio]
+    sent_types = [message["type"] for message in websocket.sent]
+    assert sent_types.count("response.create") == 1
 
 
-def test_realtime_speech_started_cancels_and_ignores_interrupted_response_audio() -> None:
+def test_realtime_speech_started_during_playback_does_not_immediately_interrupt() -> None:
     first_audio = b"\x01\x00" * 2400
-    stale_audio = b"\x02\x00"
+    continued_audio = b"\x02\x00"
     reply_audio = b"\x03\x00"
     websocket = _FakeWebSocket(
         incoming=[
@@ -305,7 +415,7 @@ def test_realtime_speech_started_cancels_and_ignores_interrupted_response_audio(
             {
                 "type": "response.output_audio.delta",
                 "response_id": "resp_1",
-                "delta": base64.b64encode(stale_audio).decode("ascii"),
+                "delta": base64.b64encode(continued_audio).decode("ascii"),
             },
             {"type": "response.done", "response_id": "resp_1"},
             {"type": "input_audio_buffer.speech_stopped"},
@@ -340,15 +450,16 @@ def test_realtime_speech_started_cancels_and_ignores_interrupted_response_audio(
 
     asyncio.run(run())
 
-    assert pcm_output.chunks == [first_audio, reply_audio]
-    assert pcm_output.interrupt_calls == 1
+    assert pcm_output.chunks == [first_audio, continued_audio, reply_audio]
+    assert pcm_output.interrupt_calls == 0
     sent_types = [message["type"] for message in websocket.sent]
-    assert "response.cancel" in sent_types
-    assert "conversation.item.truncate" in sent_types
-    assert EventName.AUDIO_INTERRUPTED in [event.name for event in events]
+    assert "response.cancel" not in sent_types
+    assert "conversation.item.truncate" not in sent_types
+    assert "response.create" not in sent_types
+    assert EventName.AUDIO_INTERRUPTED not in [event.name for event in events]
 
 
-def test_realtime_speech_started_interrupts_local_playback_after_audio_done() -> None:
+def test_realtime_speech_started_during_local_playback_waits_for_local_confirmation() -> None:
     first_audio = b"\x01\x00" * 2400
     reply_audio = b"\x03\x00"
     websocket = _FakeWebSocket(
@@ -397,11 +508,144 @@ def test_realtime_speech_started_interrupts_local_playback_after_audio_done() ->
     asyncio.run(run())
 
     assert pcm_output.finish_calls == 2
-    assert pcm_output.interrupt_calls == 1
+    assert pcm_output.interrupt_calls == 0
     sent_types = [message["type"] for message in websocket.sent]
     assert "response.cancel" not in sent_types
-    assert "conversation.item.truncate" in sent_types
+    assert "conversation.item.truncate" not in sent_types
+    assert "response.create" not in sent_types
     assert pcm_output.chunks == [first_audio, reply_audio]
+
+
+def test_playback_barge_in_gate_requires_server_candidate_and_sustained_loud_audio() -> None:
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=1000,
+        realtime_sample_rate_hz=1000,
+        audio_output=_FakePcmOutput(),
+        playback_barge_in_threshold=2500,
+        playback_barge_in_required_ms=300,
+        playback_barge_in_grace_ms=200,
+    )
+    detector = _LocalBargeInDetector(sample_rate_hz=1000, threshold=2500, required_speech_ms=300)
+
+    async def run() -> tuple[bool, bool, bool, bool]:
+        now = asyncio.get_running_loop().time()
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            playback_started_at=now - 1.0,
+        )
+        no_server_candidate = service._detects_playback_barge_in(detector, b"\x10\x27" * 400, state)
+        state.pending_server_barge_in = True
+        state.last_server_barge_in_at = now
+        weak_echo = service._detects_playback_barge_in(detector, b"\xd0\x07" * 400, state)
+        first_loud = service._detects_playback_barge_in(detector, b"\x10\x27" * 100, state)
+        confirmed = service._detects_playback_barge_in(detector, b"\x10\x27" * 200, state)
+        return no_server_candidate, weak_echo, first_loud, confirmed
+
+    assert asyncio.run(run()) == (False, False, False, True)
+
+
+def test_playback_barge_in_gate_accepts_fresh_server_vad_with_shorter_local_duration() -> None:
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=1000,
+        realtime_sample_rate_hz=1000,
+        audio_output=_FakePcmOutput(),
+        playback_barge_in_threshold=2500,
+        playback_barge_in_required_ms=320,
+        playback_barge_in_grace_ms=200,
+        playback_barge_in_recent_vad_ms=1200,
+        playback_barge_in_recent_required_ms=180,
+    )
+    detector = _LocalBargeInDetector(sample_rate_hz=1000, threshold=2500, required_speech_ms=320)
+
+    async def run() -> bool:
+        now = asyncio.get_running_loop().time()
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            pending_server_barge_in=True,
+            last_server_barge_in_at=now - 0.35,
+            playback_started_at=now - 2.0,
+        )
+        first_loud = service._detects_playback_barge_in(detector, b"\x10\x27" * 100, state)
+        second_loud = service._detects_playback_barge_in(detector, b"\x10\x27" * 100, state)
+        return first_loud or second_loud
+
+    assert asyncio.run(run()) is True
+
+
+def test_playback_barge_in_gate_rejects_stale_server_vad_short_duration() -> None:
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=1000,
+        realtime_sample_rate_hz=1000,
+        audio_output=_FakePcmOutput(),
+        playback_barge_in_threshold=2500,
+        playback_barge_in_required_ms=320,
+        playback_barge_in_grace_ms=200,
+        playback_barge_in_recent_vad_ms=1200,
+        playback_barge_in_recent_required_ms=180,
+    )
+    detector = _LocalBargeInDetector(sample_rate_hz=1000, threshold=2500, required_speech_ms=320)
+
+    async def run() -> bool:
+        now = asyncio.get_running_loop().time()
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            pending_server_barge_in=True,
+            last_server_barge_in_at=now - 5.0,
+            playback_started_at=now - 6.0,
+        )
+        first_loud = service._detects_playback_barge_in(detector, b"\x10\x27" * 100, state)
+        second_loud = service._detects_playback_barge_in(detector, b"\x10\x27" * 100, state)
+        return first_loud or second_loud
+
+    assert asyncio.run(run()) is False
+
+
+def test_playback_barge_in_gate_ignores_grace_period() -> None:
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=1000,
+        realtime_sample_rate_hz=1000,
+        audio_output=_FakePcmOutput(),
+        playback_barge_in_threshold=2500,
+        playback_barge_in_required_ms=100,
+        playback_barge_in_grace_ms=700,
+    )
+    detector = _LocalBargeInDetector(sample_rate_hz=1000, threshold=2500, required_speech_ms=100)
+
+    async def run() -> bool:
+        now = asyncio.get_running_loop().time()
+        state = _RealtimeEventState(
+            speaker_active=True,
+            audio_started=True,
+            pending_server_barge_in=True,
+            last_server_barge_in_at=now,
+            playback_started_at=now - 0.2,
+        )
+        return service._detects_playback_barge_in(detector, b"\x10\x27" * 200, state)
+
+    assert asyncio.run(run()) is False
 
 
 def test_realtime_follow_up_timeout_waits_for_local_playback_idle() -> None:
@@ -440,6 +684,46 @@ def test_realtime_follow_up_timeout_waits_for_local_playback_idle() -> None:
     assert pcm_output.finish_calls == 1
     assert pcm_output.interrupt_calls == 0
     assert pcm_output.active_checks_remaining == 0
+
+
+def test_realtime_speech_stopped_after_false_playback_candidate_arms_follow_up_timeout() -> None:
+    first_audio = b"\x01\x00"
+    websocket = _FakeWebSocket(
+        incoming=[
+            {
+                "type": "response.output_audio.delta",
+                "response_id": "resp_1",
+                "delta": base64.b64encode(first_audio).decode("ascii"),
+            },
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "response.output_audio.done", "response_id": "resp_1"},
+            {"type": "response.done", "response_id": "resp_1"},
+            {"type": "input_audio_buffer.speech_stopped"},
+        ]
+    )
+    pcm_output = _FakePcmOutput()
+
+    async def run() -> None:
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        service = RealtimeConversationService(
+            api_key="test-key",
+            base_url="wss://api.openai.com/v1/realtime",
+            model="gpt-realtime-test",
+            voice="echo",
+            turn_detection="server_vad",
+            audio_capture_sample_rate_hz=24000,
+            realtime_sample_rate_hz=24000,
+            audio_output=pcm_output,
+            websocket_factory=lambda url, headers: _return_websocket(url, headers, websocket),
+            follow_up_idle_timeout_seconds=0.01,
+        )
+        await service.run_awake_session(audio_chunks=queue)
+
+    asyncio.run(run())
+
+    sent_types = [message["type"] for message in websocket.sent]
+    assert "response.create" not in sent_types
+    assert pcm_output.chunks == [first_audio]
 
 
 def test_realtime_session_does_not_apply_absolute_timeout_between_active_turns() -> None:

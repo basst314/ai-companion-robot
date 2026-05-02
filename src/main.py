@@ -162,6 +162,13 @@ def _build_realtime_conversation_service(
         tools=tools,
         follow_up_idle_timeout_seconds=app_config.runtime.follow_up_listen_timeout_seconds,
         local_barge_in_enabled=app_config.cloud.openai_realtime_local_barge_in_enabled,
+        interrupt_response=app_config.cloud.openai_realtime_interrupt_response,
+        playback_barge_in_enabled=app_config.cloud.openai_realtime_playback_barge_in_enabled,
+        playback_barge_in_threshold=app_config.cloud.openai_realtime_playback_barge_in_threshold,
+        playback_barge_in_required_ms=app_config.cloud.openai_realtime_playback_barge_in_required_ms,
+        playback_barge_in_grace_ms=app_config.cloud.openai_realtime_playback_barge_in_grace_ms,
+        playback_barge_in_recent_vad_ms=app_config.cloud.openai_realtime_playback_barge_in_recent_vad_ms,
+        playback_barge_in_recent_required_ms=app_config.cloud.openai_realtime_playback_barge_in_recent_required_ms,
     )
 
 
@@ -199,6 +206,8 @@ def _build_realtime_speech_services(
         sample_rate=audio_capture.sample_rate,
         channels=audio_capture.channels,
         sample_width=audio_capture.sample_width,
+        session_recording_enabled=runtime.audio_save_session_recording,
+        session_recording_dir=_resolve_runtime_path(runtime.audio_session_recording_dir),
     )
     wake_word = _build_wake_word_service(
         config,

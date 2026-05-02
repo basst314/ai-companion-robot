@@ -9,6 +9,18 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-05-02 — Realtime Barge-In Hardening And Session Audio Diagnostics
+
+### Highlights
+- Added an app-side playback barge-in gate for OpenAI Realtime so backend `speech_started` events during robot speech are treated as candidates until local mic evidence confirms a real user interruption.
+- Disabled backend auto-interrupt/auto-response creation during Realtime turn detection and moved `response.create` timing into the app, preventing false echo VAD from cancelling playback or starting overlapping responses.
+- Tuned the Pi ReSpeaker path around the observed channel-0 AEC stream: fresh server VAD plus local energy can now interrupt quickly, while stale echo still needs stronger sustained evidence.
+- Added opt-in session WAV diagnostics for the exact mic stream sent to Realtime, scoped to wake-triggered active interaction sessions instead of ambient idle time.
+- Rotated active-session recordings so only the five newest `ai-companion-session-*.wav` files are kept.
+
+### Why this matters
+The robot can keep the useful barge-in behavior without constantly interrupting itself from quiet playback echo. The session recordings make future audio debugging concrete and privacy-friendlier: they cover active robot interactions, close when the robot returns to wake-word listening, and clean up old files automatically.
+
 ## 2026-04-30 — Realtime-First Cleanup
 
 ### Highlights

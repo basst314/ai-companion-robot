@@ -35,6 +35,13 @@ class CloudConfig:
     openai_realtime_turn_detection: str = "semantic_vad"
     openai_realtime_turn_eagerness: str = "auto"
     openai_realtime_local_barge_in_enabled: bool = False
+    openai_realtime_interrupt_response: bool = False
+    openai_realtime_playback_barge_in_enabled: bool = True
+    openai_realtime_playback_barge_in_threshold: float = 1800.0
+    openai_realtime_playback_barge_in_required_ms: int = 160
+    openai_realtime_playback_barge_in_grace_ms: int = 450
+    openai_realtime_playback_barge_in_recent_vad_ms: int = 1800
+    openai_realtime_playback_barge_in_recent_required_ms: int = 40
     openai_realtime_base_url: str = "wss://api.openai.com/v1/realtime"
     openai_realtime_audio_sample_rate: int = 24000
 
@@ -59,6 +66,8 @@ class RuntimeConfig:
     audio_alsa_period_frames: int = 512
     audio_alsa_buffer_frames: int = 2048
     audio_alsa_keepalive_interval_ms: int = 20
+    audio_save_session_recording: bool = False
+    audio_session_recording_dir: Path = Path("data/audio/session-recordings")
     wake_word_enabled: bool = False
     follow_up_mode_enabled: bool = True
     follow_up_listen_timeout_seconds: float = 5.0
@@ -195,6 +204,34 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED"),
         default=config.cloud.openai_realtime_local_barge_in_enabled,
     )
+    config.cloud.openai_realtime_interrupt_response = _parse_bool(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_INTERRUPT_RESPONSE"),
+        default=config.cloud.openai_realtime_interrupt_response,
+    )
+    config.cloud.openai_realtime_playback_barge_in_enabled = _parse_bool(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_ENABLED"),
+        default=config.cloud.openai_realtime_playback_barge_in_enabled,
+    )
+    config.cloud.openai_realtime_playback_barge_in_threshold = _parse_float(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_THRESHOLD"),
+        default=config.cloud.openai_realtime_playback_barge_in_threshold,
+    )
+    config.cloud.openai_realtime_playback_barge_in_required_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_REQUIRED_MS"),
+        default=config.cloud.openai_realtime_playback_barge_in_required_ms,
+    )
+    config.cloud.openai_realtime_playback_barge_in_grace_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_GRACE_MS"),
+        default=config.cloud.openai_realtime_playback_barge_in_grace_ms,
+    )
+    config.cloud.openai_realtime_playback_barge_in_recent_vad_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_RECENT_VAD_MS"),
+        default=config.cloud.openai_realtime_playback_barge_in_recent_vad_ms,
+    )
+    config.cloud.openai_realtime_playback_barge_in_recent_required_ms = _parse_int(
+        env.get(f"{ENV_PREFIX}OPENAI_REALTIME_PLAYBACK_BARGE_IN_RECENT_REQUIRED_MS"),
+        default=config.cloud.openai_realtime_playback_barge_in_recent_required_ms,
+    )
     config.cloud.openai_realtime_base_url = env.get(
         f"{ENV_PREFIX}OPENAI_REALTIME_BASE_URL",
         config.cloud.openai_realtime_base_url,
@@ -265,6 +302,14 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
     runtime.audio_alsa_keepalive_interval_ms = _parse_int(
         env.get(f"{ENV_PREFIX}AUDIO_ALSA_KEEPALIVE_INTERVAL_MS"),
         default=runtime.audio_alsa_keepalive_interval_ms,
+    )
+    runtime.audio_save_session_recording = _parse_bool(
+        env.get(f"{ENV_PREFIX}AUDIO_SAVE_SESSION_RECORDING"),
+        default=runtime.audio_save_session_recording,
+    )
+    runtime.audio_session_recording_dir = _parse_path(
+        env.get(f"{ENV_PREFIX}AUDIO_SESSION_RECORDING_DIR"),
+        default=runtime.audio_session_recording_dir,
     )
     runtime.wake_word_enabled = _parse_bool(
         env.get(f"{ENV_PREFIX}WAKE_WORD_ENABLED"),
@@ -459,6 +504,16 @@ def _validate_cloud_config(cloud: CloudConfig, *, runtime: RuntimeConfig) -> Non
         raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_DETECTION must be server_vad, semantic_vad, or none")
     if cloud.openai_realtime_turn_eagerness not in {"auto", "low", "medium", "high"}:
         raise ValueError("AI_COMPANION_OPENAI_REALTIME_TURN_EAGERNESS must be auto, low, medium, or high")
+    if cloud.openai_realtime_playback_barge_in_threshold <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_PLAYBACK_BARGE_IN_THRESHOLD must be greater than zero")
+    if cloud.openai_realtime_playback_barge_in_required_ms <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_PLAYBACK_BARGE_IN_REQUIRED_MS must be greater than zero")
+    if cloud.openai_realtime_playback_barge_in_grace_ms < 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_PLAYBACK_BARGE_IN_GRACE_MS must be zero or greater")
+    if cloud.openai_realtime_playback_barge_in_recent_vad_ms <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_PLAYBACK_BARGE_IN_RECENT_VAD_MS must be greater than zero")
+    if cloud.openai_realtime_playback_barge_in_recent_required_ms <= 0:
+        raise ValueError("AI_COMPANION_OPENAI_REALTIME_PLAYBACK_BARGE_IN_RECENT_REQUIRED_MS must be greater than zero")
 
 
 def _validate_ui_config(ui: UiConfig) -> None:

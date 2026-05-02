@@ -111,7 +111,7 @@ class OrchestratorService:
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
         if self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
-        elif self.shared_live_speech_state is not None:
+        if self.shared_live_speech_state is not None:
             await self.shared_live_speech_state.close()
         if hasattr(self.cloud_response, "shutdown"):
             await self.cloud_response.shutdown()
@@ -223,6 +223,8 @@ class OrchestratorService:
             threshold=0,
             source_path=Path("shared-live-realtime-session.wav"),
         )
+        initial_pcm = initial_window.pcm_data if initial_window is not None else b""
+        shared_state.start_session_recording(initial_pcm=initial_pcm)
         if initial_window is not None and initial_window.pcm_data:
             audio_chunks.put_nowait(initial_window.pcm_data)
 
@@ -242,6 +244,7 @@ class OrchestratorService:
             await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
         finally:
             shared_state.remove_chunk_listener(enqueue_chunk)
+            shared_state.stop_session_recording()
             shared_state.reset_utterance()
             audio_chunks.put_nowait(None)
             self._active_speech_trigger = None

@@ -43,6 +43,22 @@ class _FakeService:
         self.run_calls += 1
 
 
+class _CloseTrackingSharedLiveState:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _ShutdownTrackingWakeWord:
+    def __init__(self) -> None:
+        self.shutdown_calls = 0
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
 def _base_config() -> AppConfig:
     config = AppConfig()
     config.runtime.manual_inputs = ("hello",)
@@ -103,6 +119,13 @@ def test_build_realtime_conversation_service_uses_realtime_config() -> None:
     assert service.turn_detection == "semantic_vad"
     assert service.turn_eagerness == "auto"
     assert service.local_barge_in_enabled is False
+    assert service.interrupt_response is False
+    assert service.playback_barge_in_enabled is True
+    assert service.playback_barge_in_threshold == 1800
+    assert service.playback_barge_in_required_ms == 160
+    assert service.playback_barge_in_grace_ms == 450
+    assert service.playback_barge_in_recent_vad_ms == 1800
+    assert service.playback_barge_in_recent_required_ms == 40
     assert service.realtime_sample_rate_hz == 24000
     tool_names = {tool["name"] for tool in service.tools}
     assert {"turn_head", "camera_snapshot"}.issubset(tool_names)
@@ -152,6 +175,35 @@ def test_realtime_speech_and_wake_services_cover_error_and_success_paths(monkeyp
     config.runtime.input_mode = "manual"
     with pytest.raises(RuntimeError, match="requires speech input mode"):
         main_mod._build_realtime_speech_services(config)
+
+
+def test_build_realtime_speech_services_passes_session_recording_config(monkeypatch, tmp_path: Path) -> None:
+    config = _base_config()
+    config.paths.data_dir = tmp_path / "data"
+    config.runtime.interaction_backend = "openai_realtime"
+    config.runtime.input_mode = "speech"
+    config.runtime.audio_record_command = ("rec", "{output_path}")
+    config.runtime.audio_save_session_recording = True
+    config.runtime.audio_session_recording_dir = Path("recordings")
+
+    shared_kwargs = {}
+    monkeypatch.setattr(
+        main_mod,
+        "ShellAudioCaptureService",
+        lambda **kwargs: type("Audio", (), {"sample_rate": 16000, "channels": 1, "sample_width": 2})(),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "SharedLiveSpeechState",
+        lambda **kwargs: shared_kwargs.update(kwargs) or object(),
+    )
+    monkeypatch.setattr(main_mod, "_build_wake_word_service", lambda *args, **kwargs: None)
+
+    _, shared_state = main_mod._build_realtime_speech_services(config)
+
+    assert shared_state is not None
+    assert shared_kwargs["session_recording_enabled"] is True
+    assert shared_kwargs["session_recording_dir"] == Path.cwd() / "recordings"
 
 
 def test_wake_word_helper_branches() -> None:
@@ -223,6 +275,20 @@ def test_build_application_start_and_stop_warm_cloud(monkeypatch) -> None:
 
     assert fake_cloud.start_calls == 1
     assert fake_cloud.shutdown_calls == 1
+
+
+def test_orchestrator_stop_closes_shared_live_state_with_wake_word() -> None:
+    config = _base_config()
+    service = main_mod.build_application(config)
+    wake_word = _ShutdownTrackingWakeWord()
+    shared_state = _CloseTrackingSharedLiveState()
+    service.wake_word = wake_word
+    service.shared_live_speech_state = shared_state
+
+    asyncio.run(service.stop())
+
+    assert wake_word.shutdown_calls == 1
+    assert shared_state.close_calls == 1
 
 
 def test_main_auto_run_invokes_runtime_branch(monkeypatch, tmp_path: Path) -> None:

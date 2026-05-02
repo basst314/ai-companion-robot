@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import struct
 import tempfile
 import wave
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Protocol
 
 from audio.respeaker_capture import InterleavedChannelExtractor
+
+logger = logging.getLogger(__name__)
 
 
 class AudioCaptureService(Protocol):
@@ -131,6 +134,9 @@ class SharedLiveSpeechState:
     sample_rate: int = 16000
     channels: int = 1
     sample_width: int = 2
+    session_recording_enabled: bool = False
+    session_recording_dir: Path | None = None
+    session_recording_keep_count: int = 5
     session: RecordingSession | None = field(default=None, init=False, repr=False)
     utterance_active: bool = field(default=False, init=False)
     utterance_started_at: datetime | None = field(default=None, init=False)
@@ -141,6 +147,8 @@ class SharedLiveSpeechState:
     _callback_driven: bool = field(default=False, init=False, repr=False)
     _source_path: Path | None = field(default=None, init=False, repr=False)
     _chunk_listeners: list[Callable[[bytes, int], None]] = field(default_factory=list, init=False, repr=False)
+    _session_recording_writer: wave.Wave_write | None = field(default=None, init=False, repr=False)
+    _session_recording_path: Path | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         bytes_per_second = max(1, self.channels * self.sample_width * self.sample_rate)
@@ -260,15 +268,28 @@ class SharedLiveSpeechState:
         self._source_path = None
         self._source_offset_bytes = 0
         self._callback_driven = False
-        if session is None:
+        try:
+            if session is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    if session.returncode is None:
+                        await session.stop()
+        finally:
+            self._close_session_recording()
             self._wake_buffer.clear()
             self.reset_utterance()
-            return
-        with contextlib.suppress(ProcessLookupError):
-            if session.returncode is None:
-                await session.stop()
-        self._wake_buffer.clear()
-        self.reset_utterance()
+
+    def start_session_recording(self, *, initial_pcm: bytes = b"") -> Path | None:
+        """Start a diagnostic WAV for the current active interaction."""
+
+        self._open_session_recording()
+        if self._session_recording_writer is not None and initial_pcm:
+            self._session_recording_writer.writeframes(initial_pcm)
+        return self._session_recording_path
+
+    def stop_session_recording(self) -> None:
+        """Finish the current active interaction WAV if one is open."""
+
+        self._close_session_recording()
 
     def add_chunk_listener(self, listener: Callable[[bytes, int], None]) -> None:
         if listener not in self._chunk_listeners:
@@ -283,10 +304,58 @@ class SharedLiveSpeechState:
             return
         chunk_start_offset = self._wake_buffer.end_offset
         self._wake_buffer.append(chunk)
+        if self._session_recording_writer is not None:
+            self._session_recording_writer.writeframes(chunk)
         if self.utterance_active:
             self.utterance_buffer.extend(chunk)
         for listener in tuple(self._chunk_listeners):
             listener(chunk, chunk_start_offset)
+
+    @property
+    def session_recording_path(self) -> Path | None:
+        return self._session_recording_path
+
+    def _open_session_recording(self) -> None:
+        if not self.session_recording_enabled or self._session_recording_writer is not None:
+            return
+        output_dir = self.session_recording_dir or Path("data/audio/session-recordings")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        path = output_dir / f"ai-companion-session-{timestamp}.wav"
+        writer = wave.open(str(path), "wb")
+        writer.setnchannels(self.channels)
+        writer.setsampwidth(self.sample_width)
+        writer.setframerate(self.sample_rate)
+        self._session_recording_writer = writer
+        self._session_recording_path = path
+        logger.info("audio session_recording_started path=%s", path)
+
+    def _close_session_recording(self) -> None:
+        writer = self._session_recording_writer
+        path = self._session_recording_path
+        self._session_recording_writer = None
+        if writer is None:
+            return
+        writer.close()
+        logger.info("audio session_recording_finished path=%s", path)
+        self._rotate_session_recordings()
+
+    def _rotate_session_recordings(self) -> None:
+        if not self.session_recording_enabled:
+            return
+        keep_count = max(1, self.session_recording_keep_count)
+        output_dir = self.session_recording_dir or Path("data/audio/session-recordings")
+        if not output_dir.exists():
+            return
+        recordings = sorted(
+            output_dir.glob("ai-companion-session-*.wav"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for stale_path in recordings[keep_count:]:
+            with contextlib.suppress(OSError):
+                stale_path.unlink()
+                logger.info("audio session_recording_deleted path=%s", stale_path)
 
     def _build_window(
         self,
