@@ -276,6 +276,17 @@ def _configure_runtime_logging(log_path: Path) -> None:
     root_logger.setLevel(logging.INFO)
 
 
+
+def _configure_console_stream_logging_prefix() -> None:
+    """Ensure interactive console stream logs include timestamps."""
+
+    root_logger = logging.getLogger()
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            continue
+        handler.setFormatter(formatter)
+
 def _resolve_runtime_path(path: Path) -> Path:
     """Resolve app-relative paths from the current working directory."""
 
@@ -291,6 +302,7 @@ def main(config: AppConfig | None = None) -> int:
         log_path = _resolve_runtime_path(app_config.paths.logs_dir / "interactive-console.log")
         configure_console_log(log_path)
         _configure_runtime_logging(log_path)
+        _configure_console_stream_logging_prefix()
         try:
             configure_terminal_debug_screen(service.terminal_debug)
             asyncio.run(service.run())
