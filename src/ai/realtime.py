@@ -11,6 +11,7 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
 import time
 import wave
 from array import array
@@ -227,9 +228,11 @@ class AlsaRealtimePcmOutput:
     sample_rate_hz: int = 24000
     channels: int = 1
     period_frames: int = 512
+    buffer_frames: int = 2048
     lead_in_silence_ms: int = 300
     _pcm: object | None = field(default=None, init=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    _device_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _needs_lead_in: bool = field(default=True, init=False, repr=False)
     _pending_frames: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _playback_generation: int = field(default=0, init=False, repr=False)
@@ -284,10 +287,8 @@ class AlsaRealtimePcmOutput:
             return
         drop = getattr(pcm, "drop", None)
         prepare = getattr(pcm, "prepare", None)
-        if callable(drop):
-            await asyncio.to_thread(drop)
-        if callable(prepare):
-            await asyncio.to_thread(prepare)
+        if callable(drop) or callable(prepare):
+            await asyncio.to_thread(self._drop_and_prepare_pcm, pcm)
         self._needs_lead_in = True
 
     async def shutdown(self) -> None:
@@ -315,7 +316,7 @@ class AlsaRealtimePcmOutput:
         import alsaaudio  # type: ignore[import-not-found]
 
         try:
-            return alsaaudio.PCM(
+            pcm = alsaaudio.PCM(
                 type=alsaaudio.PCM_PLAYBACK,
                 mode=alsaaudio.PCM_NORMAL,
                 device=self.device,
@@ -334,6 +335,9 @@ class AlsaRealtimePcmOutput:
             pcm.setrate(self.sample_rate_hz)
             pcm.setformat(alsaaudio.PCM_FORMAT_S16_LE)
             pcm.setperiodsize(self.period_frames)
+        set_buffer_size = getattr(pcm, "setbuffersize", None)
+        if callable(set_buffer_size):
+            set_buffer_size(max(self.period_frames, self.buffer_frames))
         return pcm
 
     def _lead_in_silence(self) -> bytes:
@@ -371,7 +375,7 @@ class AlsaRealtimePcmOutput:
                             logger.debug("realtime alsa_playback_write_interrupted error=%s", exc)
                         else:
                             logger.warning("realtime alsa_playback_write_failed error=%s", exc)
-                            self._prepare_pcm(pcm)
+                            await asyncio.to_thread(self._prepare_pcm, pcm)
                         break
                     finally:
                         self._playback_active = False
@@ -394,11 +398,12 @@ class AlsaRealtimePcmOutput:
         offset = 0
         while offset < len(pcm_frames):
             chunk = pcm_frames[offset : offset + self._period_chunk_bytes()]
-            try:
-                written = pcm.write(chunk)  # type: ignore[attr-defined]
-            except Exception:
-                self._prepare_pcm(pcm)
-                written = pcm.write(chunk)  # type: ignore[attr-defined]
+            with self._device_lock:
+                try:
+                    written = pcm.write(chunk)  # type: ignore[attr-defined]
+                except Exception:
+                    self._prepare_pcm_unlocked(pcm)
+                    written = pcm.write(chunk)  # type: ignore[attr-defined]
             if isinstance(written, int):
                 if written <= 0:
                     time.sleep(self.period_frames / max(1, self.sample_rate_hz))
@@ -407,8 +412,21 @@ class AlsaRealtimePcmOutput:
             else:
                 offset += len(chunk)
 
+    def _drop_and_prepare_pcm(self, pcm: object) -> None:
+        with self._device_lock:
+            drop = getattr(pcm, "drop", None)
+            prepare = getattr(pcm, "prepare", None)
+            if callable(drop):
+                drop()
+            if callable(prepare):
+                prepare()
+
+    def _prepare_pcm(self, pcm: object) -> None:
+        with self._device_lock:
+            self._prepare_pcm_unlocked(pcm)
+
     @staticmethod
-    def _prepare_pcm(pcm: object) -> None:
+    def _prepare_pcm_unlocked(pcm: object) -> None:
         prepare = getattr(pcm, "prepare", None)
         if callable(prepare):
             prepare()

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import sys
+import threading
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -917,6 +918,118 @@ def test_alsa_realtime_output_recovers_from_device_write_errors(monkeypatch) -> 
     assert len(handles) == 1
     assert handles[0].prepare_calls == 1
     assert handles[0].writes == [b"\x01\x00" * 4]
+
+
+def test_alsa_realtime_output_applies_configured_buffer_size(monkeypatch) -> None:
+    class FakePcm:
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            self.args = args
+            self.kwargs = kwargs
+            self.buffer_sizes: list[int] = []
+
+        def setbuffersize(self, frames: int) -> None:
+            self.buffer_sizes.append(frames)
+
+        def close(self) -> None:
+            return None
+
+    handles: list[FakePcm] = []
+
+    def fake_pcm(*args, **kwargs):  # type: ignore[no-untyped-def]
+        handle = FakePcm(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setitem(
+        sys.modules,
+        "alsaaudio",
+        SimpleNamespace(
+            PCM_PLAYBACK=1,
+            PCM_NORMAL=2,
+            PCM_FORMAT_S16_LE=3,
+            PCM=fake_pcm,
+        ),
+    )
+
+    async def run() -> None:
+        output = AlsaRealtimePcmOutput(
+            device="default",
+            sample_rate_hz=1000,
+            channels=1,
+            period_frames=4,
+            buffer_frames=12,
+            lead_in_silence_ms=0,
+        )
+        await output.start()
+        await output.shutdown()
+
+    asyncio.run(run())
+
+    assert len(handles) == 1
+    assert handles[0].buffer_sizes == [12]
+
+
+def test_alsa_realtime_interrupt_waits_for_inflight_device_write(monkeypatch) -> None:
+    class FakePcm:
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            self.events: list[str] = []
+            self.write_started = threading.Event()
+            self.allow_write_done = threading.Event()
+
+        def write(self, data: bytes) -> None:
+            del data
+            self.events.append("write_start")
+            self.write_started.set()
+            assert self.allow_write_done.wait(timeout=1.0)
+            self.events.append("write_done")
+
+        def drop(self) -> None:
+            self.events.append("drop")
+
+        def prepare(self) -> None:
+            self.events.append("prepare")
+
+        def close(self) -> None:
+            return None
+
+    handles: list[FakePcm] = []
+
+    def fake_pcm(*args, **kwargs):  # type: ignore[no-untyped-def]
+        handle = FakePcm(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setitem(
+        sys.modules,
+        "alsaaudio",
+        SimpleNamespace(
+            PCM_PLAYBACK=1,
+            PCM_NORMAL=2,
+            PCM_FORMAT_S16_LE=3,
+            PCM=fake_pcm,
+        ),
+    )
+
+    async def run() -> list[str]:
+        output = AlsaRealtimePcmOutput(
+            device="default",
+            sample_rate_hz=1000,
+            channels=1,
+            period_frames=4,
+            lead_in_silence_ms=0,
+        )
+        await output.write(b"\x01\x00" * 4)
+        handle = handles[0]
+        assert await asyncio.to_thread(handle.write_started.wait, 1.0)
+        interrupt_task = asyncio.create_task(output.interrupt())
+        await asyncio.sleep(0.05)
+        assert not interrupt_task.done()
+        handle.allow_write_done.set()
+        await interrupt_task
+        await output.shutdown()
+        return handle.events
+
+    assert asyncio.run(run()) == ["write_start", "write_done", "drop", "prepare"]
 
 
 def test_orchestrator_denies_invalid_realtime_tool_arguments() -> None:

@@ -137,6 +137,7 @@ def _build_realtime_conversation_service(
             device=app_config.runtime.audio_alsa_device,
             sample_rate_hz=app_config.cloud.openai_realtime_audio_sample_rate,
             period_frames=app_config.runtime.audio_alsa_period_frames,
+            buffer_frames=app_config.runtime.audio_alsa_buffer_frames,
         )
     tools = build_realtime_tool_definitions(
         capability_registry.list_available(
