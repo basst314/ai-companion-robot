@@ -460,6 +460,46 @@ def test_realtime_speech_started_during_playback_does_not_immediately_interrupt(
     assert EventName.AUDIO_INTERRUPTED not in [event.name for event in events]
 
 
+def test_realtime_playback_candidate_without_speech_stopped_still_arms_timeout() -> None:
+    first_audio = b"\x01\x00"
+    websocket = _FakeWebSocket(
+        incoming=[
+            {
+                "type": "response.output_audio.delta",
+                "response_id": "resp_1",
+                "delta": base64.b64encode(first_audio).decode("ascii"),
+            },
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "response.output_audio.done", "response_id": "resp_1"},
+            {"type": "response.done", "response_id": "resp_1"},
+        ]
+    )
+    pcm_output = _FakePcmOutput()
+
+    async def run() -> None:
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        service = RealtimeConversationService(
+            api_key="test-key",
+            base_url="wss://api.openai.com/v1/realtime",
+            model="gpt-realtime-test",
+            voice="echo",
+            turn_detection="server_vad",
+            audio_capture_sample_rate_hz=24000,
+            realtime_sample_rate_hz=24000,
+            audio_output=pcm_output,
+            websocket_factory=lambda url, headers: _return_websocket(url, headers, websocket),
+            follow_up_idle_timeout_seconds=0.01,
+        )
+        await service.run_awake_session(audio_chunks=queue)
+
+    asyncio.run(run())
+
+    assert websocket.closed is True
+    sent_types = [message["type"] for message in websocket.sent]
+    assert "response.create" not in sent_types
+    assert pcm_output.chunks == [first_audio]
+
+
 def test_realtime_speech_started_during_local_playback_waits_for_local_confirmation() -> None:
     first_audio = b"\x01\x00" * 2400
     reply_audio = b"\x03\x00"

@@ -527,6 +527,7 @@ class RealtimeConversationService:
                 return
             if state.speaker_active:
                 if self._detects_playback_barge_in(playback_barge_in_detector, chunk, state):
+                    state.user_speech_active = True
                     state.response_create_pending = True
                     await self._interrupt_active_response(websocket, state, source="playback_barge_in")
                     playback_barge_in_detector.reset()
@@ -671,10 +672,8 @@ class RealtimeConversationService:
             return
 
         if event_type == "input_audio_buffer.speech_started":
-            state.follow_up_deadline = None
-            state.user_speech_active = True
-            state.user_speech_started_count += 1
             if state.speaker_active or state.audio_started:
+                state.user_speech_started_count += 1
                 state.pending_server_barge_in = True
                 state.last_server_barge_in_at = asyncio.get_running_loop().time()
                 state.playback_barge_peak_energy = 0.0
@@ -690,6 +689,9 @@ class RealtimeConversationService:
                     state.interrupt_count,
                 )
                 return
+            state.follow_up_deadline = None
+            state.user_speech_active = True
+            state.user_speech_started_count += 1
             state.response_create_pending = True
             logger.info(
                 "realtime user_speech_started speaker_active=%s streaming=%s interrupts=%s",
