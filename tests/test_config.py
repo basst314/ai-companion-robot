@@ -40,6 +40,7 @@ def test_load_app_config_reads_realtime_audio_settings(tmp_path: Path) -> None:
                 "AI_COMPANION_AUDIO_SAVE_SESSION_RECORDING=true",
                 "AI_COMPANION_AUDIO_SESSION_RECORDING_DIR=custom/session-recordings",
                 "AI_COMPANION_WAKE_WORD_ENABLED=true",
+                "AI_COMPANION_INITIAL_SPEECH_TIMEOUT_SECONDS=2.5",
                 "AI_COMPANION_WAKE_WORD_PHRASE=Hey Oreo",
                 "AI_COMPANION_WAKE_WORD_MODEL=/models/hey_oreo.onnx",
                 "AI_COMPANION_WAKE_WORD_THRESHOLD=0.6",
@@ -68,6 +69,7 @@ def test_load_app_config_reads_realtime_audio_settings(tmp_path: Path) -> None:
     assert config.runtime.audio_alsa_keepalive_interval_ms == 15
     assert config.runtime.audio_save_session_recording is True
     assert config.runtime.audio_session_recording_dir == Path("custom/session-recordings")
+    assert config.runtime.initial_speech_timeout_seconds == 2.5
     assert config.runtime.wake_word_phrase == "Hey Oreo"
     assert config.runtime.wake_word_model == "/models/hey_oreo.onnx"
     assert config.runtime.wake_word_threshold == 0.6

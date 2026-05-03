@@ -71,6 +71,7 @@ class RuntimeConfig:
     wake_word_enabled: bool = False
     follow_up_mode_enabled: bool = True
     follow_up_listen_timeout_seconds: float = 5.0
+    initial_speech_timeout_seconds: float | None = None
     follow_up_max_turns: int = 10
     wake_word_phrase: str = ""
     wake_word_model: str = ""
@@ -323,6 +324,12 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         env.get(f"{ENV_PREFIX}FOLLOW_UP_LISTEN_TIMEOUT_SECONDS"),
         default=runtime.follow_up_listen_timeout_seconds,
     )
+    initial_speech_timeout = env.get(f"{ENV_PREFIX}INITIAL_SPEECH_TIMEOUT_SECONDS")
+    runtime.initial_speech_timeout_seconds = (
+        _parse_float(initial_speech_timeout, default=runtime.follow_up_listen_timeout_seconds)
+        if initial_speech_timeout is not None
+        else None
+    )
     runtime.follow_up_max_turns = _parse_int(
         env.get(f"{ENV_PREFIX}FOLLOW_UP_MAX_TURNS"),
         default=runtime.follow_up_max_turns,
@@ -349,6 +356,8 @@ def load_app_config(base_dir: Path | None = None) -> AppConfig:
         runtime.wake_word_threshold = 1.0
     if runtime.follow_up_listen_timeout_seconds <= 0:
         runtime.follow_up_listen_timeout_seconds = 5.0
+    if runtime.initial_speech_timeout_seconds is not None and runtime.initial_speech_timeout_seconds <= 0:
+        runtime.initial_speech_timeout_seconds = runtime.follow_up_listen_timeout_seconds
     runtime.follow_up_max_turns = max(1, runtime.follow_up_max_turns)
     runtime.language_mode = _parse_language_mode(
         env.get(f"{ENV_PREFIX}LANGUAGE_MODE"),

@@ -162,6 +162,11 @@ def _build_realtime_conversation_service(
         audio_output=audio_output,
         tools=tools,
         follow_up_idle_timeout_seconds=app_config.runtime.follow_up_listen_timeout_seconds,
+        initial_speech_timeout_seconds=(
+            app_config.runtime.initial_speech_timeout_seconds
+            if app_config.runtime.initial_speech_timeout_seconds is not None
+            else app_config.runtime.follow_up_listen_timeout_seconds
+        ),
         local_barge_in_enabled=app_config.cloud.openai_realtime_local_barge_in_enabled,
         interrupt_response=app_config.cloud.openai_realtime_interrupt_response,
         playback_barge_in_enabled=app_config.cloud.openai_realtime_playback_barge_in_enabled,

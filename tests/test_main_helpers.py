@@ -109,6 +109,7 @@ def test_build_realtime_conversation_service_uses_realtime_config() -> None:
     config.cloud.openai_realtime_model = "gpt-realtime-test"
     config.cloud.openai_realtime_voice = "echo"
     config.cloud.openai_realtime_audio_sample_rate = 24000
+    config.runtime.initial_speech_timeout_seconds = 2.5
     config.runtime.audio_alsa_device = "default"
 
     service = main_mod._build_realtime_conversation_service(config, build_default_capability_registry())
@@ -126,6 +127,7 @@ def test_build_realtime_conversation_service_uses_realtime_config() -> None:
     assert service.playback_barge_in_grace_ms == 450
     assert service.playback_barge_in_recent_vad_ms == 1800
     assert service.playback_barge_in_recent_required_ms == 40
+    assert service.initial_speech_timeout_seconds == 2.5
     assert service.realtime_sample_rate_hz == 24000
     tool_names = {tool["name"] for tool in service.tools}
     assert {"turn_head", "camera_snapshot"}.issubset(tool_names)

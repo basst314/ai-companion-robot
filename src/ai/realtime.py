@@ -453,6 +453,7 @@ class RealtimeConversationService:
     )
     tools: tuple[dict[str, Any], ...] = ()
     follow_up_idle_timeout_seconds: float = 5.0
+    initial_speech_timeout_seconds: float = 8.0
     turn_eagerness: str = "auto"
     local_barge_in_enabled: bool = False
     interrupt_response: bool = False
@@ -487,7 +488,7 @@ class RealtimeConversationService:
         state: _RealtimeEventState | None = None
         try:
             await websocket.send(json.dumps(self._session_update_event()))
-            state = _RealtimeEventState()
+            state = _RealtimeEventState(session_started_at=asyncio.get_running_loop().time())
             sender_task = asyncio.create_task(self._send_audio_loop(websocket, audio_chunks, stop_event, state))
             receiver_task = asyncio.create_task(self._receive_events_loop(websocket, stop_event, state))
             await stop_event.wait()
@@ -634,6 +635,15 @@ class RealtimeConversationService:
                 raw_message = await asyncio.wait_for(websocket.recv(), timeout=0.2)
             except asyncio.TimeoutError:
                 await self._complete_playback_if_idle(state)
+                if (
+                    state.session_started_at is not None
+                    and state.user_speech_started_count == 0
+                    and state.response_count == 0
+                    and asyncio.get_running_loop().time() - state.session_started_at >= self.initial_speech_timeout_seconds
+                ):
+                    logger.info("realtime initial_speech_timeout %s", state.stats_summary())
+                    stop_event.set()
+                    continue
                 if state.follow_up_deadline is not None and asyncio.get_running_loop().time() >= state.follow_up_deadline:
                     logger.info("realtime follow_up_idle_timeout %s", state.stats_summary())
                     stop_event.set()
@@ -1074,6 +1084,7 @@ class RealtimeConversationService:
 
 @dataclass(slots=True)
 class _RealtimeEventState:
+    session_started_at: float | None = None
     audio_started: bool = False
     speaker_active: bool = False
     user_speech_active: bool = False

@@ -820,6 +820,35 @@ def test_realtime_session_does_not_apply_absolute_timeout_between_active_turns()
     assert pcm_output.chunks == [first_audio, second_audio, third_audio]
 
 
+def test_realtime_session_stops_when_no_initial_speech_is_detected() -> None:
+    websocket = _FakeWebSocket(incoming=[])
+    pcm_output = _FakePcmOutput()
+
+    async def run() -> None:
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        queue.put_nowait(b"\x00\x00" * 240)
+        service = RealtimeConversationService(
+            api_key="test-key",
+            base_url="wss://api.openai.com/v1/realtime",
+            model="gpt-realtime-test",
+            voice="echo",
+            turn_detection="server_vad",
+            audio_capture_sample_rate_hz=24000,
+            realtime_sample_rate_hz=24000,
+            audio_output=pcm_output,
+            websocket_factory=lambda url, headers: _return_websocket(url, headers, websocket),
+            initial_speech_timeout_seconds=0.01,
+        )
+        await service.run_awake_session(audio_chunks=queue)
+
+    asyncio.run(run())
+
+    assert websocket.closed is True
+    assert websocket.sent[0]["type"] == "session.update"
+    assert websocket.sent[1]["type"] == "input_audio_buffer.append"
+    assert pcm_output.chunks == []
+
+
 def test_realtime_tool_definitions_skip_response_capabilities() -> None:
     registry = build_default_capability_registry()
 
