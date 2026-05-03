@@ -9,6 +9,16 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-05-02 — Audio-Reactive Robot Face Border
+
+### Highlights
+- Replaced the browser face's static outer border with a smooth animated cyan/blue/purple glow tuned for the 800x480 5-inch Pi display.
+- Added active-turn microphone level telemetry from the shared realtime audio stream so the border responds to speech after wake, including buffered initial requests and barge-in attempts.
+- Kept idle ambient audio visually calm by gating mic-reactive glow to active robot turns only, and optimized the browser render loop to avoid extra per-frame state cloning and idle websocket traffic.
+
+### Why this matters
+The robot face now feels more alive during voice interaction without lighting up before the wake word or adding distracting motion while idle. The browser renderer stays lightweight enough for the Pi while making speech activity visible from a few feet away.
+
 ## 2026-05-02 — Realtime Barge-In Hardening And Session Audio Diagnostics
 
 ### Highlights

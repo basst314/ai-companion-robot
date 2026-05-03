@@ -136,6 +136,16 @@ def build_overlay_update_command(
     )
 
 
+def build_mic_level_command(level: float) -> BrowserCommand:
+    """Build a normalized microphone level update for the browser renderer."""
+
+    clamped = min(1.0, max(0.0, float(level)))
+    return BrowserCommand(
+        command_type="mic_level",
+        payload={"level": clamped},
+    )
+
+
 def build_idle_policy_payload(config: UiConfig) -> dict[str, object]:
     """Translate app config into runtime-tunable idle behavior settings."""
 

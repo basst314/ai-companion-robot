@@ -21,6 +21,7 @@ from shared.config import UiConfig
 from shared.events import Event
 from ui.browser_protocol import (
     BrowserCommand,
+    build_mic_level_command,
     build_overlay_update_command,
     build_renderer_config_command,
     build_renderer_state_command,
@@ -237,6 +238,9 @@ class BrowserFaceUiService:
         self._content_mode = "face"
         self._content_payload = None
         await self._publish_overlay_snapshot()
+
+    async def update_mic_level(self, level: float) -> None:
+        await self._publish_command(build_mic_level_command(level))
 
     async def handle_event(self, event: Event) -> None:
         self.controller.handle_event(event)

@@ -6,6 +6,7 @@ from shared.config import UiConfig
 from shared.events import Event, EventName
 from shared.models import ComponentName
 from ui.browser_protocol import (
+    build_mic_level_command,
     build_overlay_update_command,
     build_renderer_config_command,
     build_renderer_state_command,
@@ -191,3 +192,12 @@ def test_build_overlay_update_command_supports_text_and_rich_content() -> None:
             "icons": ["mic", "spark"],
         },
     }
+
+
+def test_build_mic_level_command_clamps_normalized_level() -> None:
+    assert build_mic_level_command(0.42).as_message() == {
+        "type": "mic_level",
+        "payload": {"level": 0.42},
+    }
+    assert build_mic_level_command(-1).payload == {"level": 0.0}
+    assert build_mic_level_command(2).payload == {"level": 1.0}

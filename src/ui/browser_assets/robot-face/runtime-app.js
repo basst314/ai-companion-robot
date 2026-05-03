@@ -64,6 +64,9 @@ function handleMessage(message) {
       overlayState.blanked = Boolean(payload.displaySleepRequested);
       renderOverlays();
       return;
+    case "mic_level":
+      engine.onMicLevel(payload.level);
+      return;
     case "transient_trigger":
       engine.triggerNamedBehavior(payload.name, payload);
       return;
@@ -116,4 +119,7 @@ function renderOverlays() {
 window.addEventListener("resize", () => engine.resize());
 engine.start();
 connect();
-window.robotFaceRuntime = { engine };
+window.robotFaceRuntime = {
+  engine,
+  onMicLevel: (level) => engine.onMicLevel(level),
+};

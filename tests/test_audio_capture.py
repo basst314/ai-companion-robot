@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import struct
 from pathlib import Path
 import wave
 
-from audio.capture import ShellAudioCaptureService, SharedLiveSpeechState
+from audio.capture import (
+    MicLevelSampler,
+    ShellAudioCaptureService,
+    SharedLiveSpeechState,
+    normalize_pcm16_mic_level,
+    pcm16_rms_energy,
+)
 
 
 class _FakeRecordingSession:
@@ -46,6 +53,40 @@ class _FakeStreamingCapture:
         for chunk in self.chunks:
             on_chunk(chunk)
         return self.session
+
+
+def _pcm16(*samples: int) -> bytes:
+    return struct.pack("<" + "h" * len(samples), *samples)
+
+
+def test_pcm16_rms_energy_and_mic_level_sampler_normalize_audio() -> None:
+    quiet = _pcm16(0, 0, 0, 0)
+    mid = _pcm16(900, -900, 900, -900)
+    loud = _pcm16(6500, -6500, 6500, -6500)
+
+    assert pcm16_rms_energy(quiet) == 0.0
+    assert pcm16_rms_energy(loud) > pcm16_rms_energy(mid) > 0.0
+    assert normalize_pcm16_mic_level(quiet) == 0.0
+    assert normalize_pcm16_mic_level(loud) > normalize_pcm16_mic_level(mid) > 0.0
+
+    sampler = MicLevelSampler(sample_rate=10, channels=1, sample_width=2, updates_per_second=10)
+    quiet_level = sampler.sample(quiet, 0)
+    mid_level = sampler.sample(mid, 2)
+    loud_level = sampler.sample(loud, 4)
+
+    assert quiet_level == 0.0
+    assert mid_level is not None and mid_level > 0.0
+    assert loud_level is not None and loud_level > mid_level
+    assert loud_level <= 1.0
+
+
+def test_mic_level_sampler_throttles_to_publish_interval() -> None:
+    sampler = MicLevelSampler(sample_rate=1000, channels=1, sample_width=2, updates_per_second=10)
+    chunk = _pcm16(1200, -1200)
+
+    assert sampler.sample(chunk, 0) is not None
+    assert sampler.sample(chunk, 20) is None
+    assert sampler.sample(chunk, 200) is not None
 
 
 def test_shared_live_state_session_recording_writes_valid_wav(tmp_path: Path) -> None:

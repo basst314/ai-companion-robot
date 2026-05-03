@@ -12,6 +12,7 @@ import main as main_mod
 from ai.cloud import MockCloudResponseService, OpenAiCloudResponseService
 from ai.realtime import RealtimeConversationService
 from orchestrator.capabilities import build_default_capability_registry
+from orchestrator.state import LifecycleStage
 from shared.config import AppConfig
 from ui.browser_service import BrowserFaceUiService
 from ui.service import MockUiService
@@ -49,6 +50,23 @@ class _CloseTrackingSharedLiveState:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+
+class _MicLevelSharedLiveState(_CloseTrackingSharedLiveState):
+    sample_rate = 16000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.listeners = []
+
+    def add_chunk_listener(self, listener):  # type: ignore[no-untyped-def]
+        self.listeners.append(listener)
+
+    def remove_chunk_listener(self, listener):  # type: ignore[no-untyped-def]
+        if listener in self.listeners:
+            self.listeners.remove(listener)
 
 
 class _ShutdownTrackingWakeWord:
@@ -291,6 +309,32 @@ def test_orchestrator_stop_closes_shared_live_state_with_wake_word() -> None:
 
     assert wake_word.shutdown_calls == 1
     assert shared_state.close_calls == 1
+
+
+def test_orchestrator_registers_mic_level_updates_without_events(monkeypatch) -> None:
+    config = _base_config()
+    ui = MockUiService()
+    monkeypatch.setattr(main_mod, "_build_ui_service", lambda *args, **kwargs: ui)
+    service = main_mod.build_application(config)
+    shared_state = _MicLevelSharedLiveState()
+    service.shared_live_speech_state = shared_state
+
+    async def run() -> None:
+        await service.start()
+        assert len(shared_state.listeners) == 1
+        shared_state.listeners[0](b"\x00\x30\x00\xd0", 0)
+        await asyncio.sleep(0)
+        assert ui.mic_levels == []
+        service.state.lifecycle = LifecycleStage.LISTENING
+        shared_state.listeners[0](b"\x00\x30\x00\xd0", 0)
+        await asyncio.sleep(0)
+        await service.stop()
+
+    asyncio.run(run())
+
+    assert ui.mic_levels
+    assert service.event_history == []
+    assert shared_state.listeners == []
 
 
 def test_main_auto_run_invokes_runtime_branch(monkeypatch, tmp_path: Path) -> None:

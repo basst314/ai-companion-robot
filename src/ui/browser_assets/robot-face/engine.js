@@ -122,6 +122,13 @@ export class RobotFaceEngine {
         activeUntil: 0,
         lastImpactAt: 0,
       },
+      border: {
+        targetLevel: 0,
+        currentLevel: 0,
+        lastLevelAt: 0,
+      },
+      composedState: null,
+      composedStateKey: "",
     };
     this._rafId = 0;
     this._tick = this._tick.bind(this);
@@ -171,6 +178,7 @@ export class RobotFaceEngine {
     const next = buildState();
     mergePatch(next, override);
     this.baseState = next;
+    this.invalidateComposedState();
   }
 
   setIdlePolicy(policy = {}) {
@@ -192,6 +200,7 @@ export class RobotFaceEngine {
         secondaryMicroMotion: Boolean(this.idlePolicy.secondaryMicroMotion),
       },
     };
+    this.invalidateComposedState();
     this.markInteraction();
   }
 
@@ -202,6 +211,11 @@ export class RobotFaceEngine {
       ...this.externalState,
       ...next,
     };
+    this.invalidateComposedState();
+    if (prevLifecycle !== "idle" && this.externalState.lifecycle === "idle") {
+      this.runtime.border.targetLevel = 0;
+      this.runtime.border.lastLevelAt = 0;
+    }
     if (
       this.externalState.lifecycle !== prevLifecycle ||
       this.externalState.scene !== prevScene ||
@@ -211,8 +225,19 @@ export class RobotFaceEngine {
     }
   }
 
+  onMicLevel(level) {
+    const parsed = Number(level);
+    this.runtime.border.targetLevel = Number.isFinite(parsed) ? clamp(parsed, 0, 1) : 0;
+    this.runtime.border.lastLevelAt = performance.now() / 1000;
+  }
+
   buildCurrentState() {
     return deepClone(this.baseState);
+  }
+
+  invalidateComposedState() {
+    this.runtime.composedState = null;
+    this.runtime.composedStateKey = "";
   }
 
   clearActiveMotion() {
@@ -858,12 +883,27 @@ export class RobotFaceEngine {
   }
 
   _composedState() {
+    const key = [
+      this.externalState.scene,
+      this.externalState.lifecycle,
+      this.externalState.emotion,
+      this.idlePolicy.enabled ? "idle-on" : "idle-off",
+      this.idlePolicy.frequency,
+      this.idlePolicy.intensity,
+      this.idlePolicy.pauseRandomness,
+      this.idlePolicy.secondaryMicroMotion ? "micro-on" : "micro-off",
+    ].join("|");
+    if (this.runtime.composedState && this.runtime.composedStateKey === key) {
+      return this.runtime.composedState;
+    }
     const next = deepClone(this.baseState);
     mergePatch(next, this.runtimeOverrides);
     const presetPatch = this._composePresetPatch();
     if (presetPatch) {
       mergePatch(next, presetPatch);
     }
+    this.runtime.composedState = next;
+    this.runtime.composedStateKey = key;
     return next;
   }
 
@@ -1286,25 +1326,86 @@ export class RobotFaceEngine {
     ctx.restore();
   }
 
-  drawOuterBox(box, state) {
+  updateBorderLevel() {
+    const border = this.runtime.border;
+    border.currentLevel = lerp(border.currentLevel, border.targetLevel, 0.1);
+    border.currentLevel = Math.max(border.targetLevel, border.currentLevel * 0.92);
+    return border.currentLevel;
+  }
+
+  createBorderGradient(box, now, alpha = 1) {
+    const ctx = this.ctx;
+    const phase = (now % 9) / 9;
+    const angle = phase * Math.PI * 2;
+    const centerX = box.x + (box.width / 2);
+    const centerY = box.y + (box.height / 2);
+    const length = Math.hypot(box.width, box.height) * 0.58;
+    const gradient = ctx.createLinearGradient(
+      centerX + Math.cos(angle) * length,
+      centerY + Math.sin(angle) * length,
+      centerX - Math.cos(angle) * length,
+      centerY - Math.sin(angle) * length,
+    );
+    gradient.addColorStop(0.00, rgba("#48f8ff", alpha));
+    gradient.addColorStop(0.48, rgba("#287cff", alpha));
+    gradient.addColorStop(1.00, rgba("#9b6dff", alpha * 0.82));
+    return gradient;
+  }
+
+  drawOuterBox(box, state, now) {
     if (!state.baseVisual.outerBoxEnabled) {
       return;
     }
     const ctx = this.ctx;
-    const color = state.baseVisual.outerBoxColor;
     const width = state.baseVisual.outerBoxWidth;
+    const smoothedLevel = this.updateBorderLevel();
+    const wobble = Math.sin(now * 6) * 0.05;
+    const finalLevel = clamp(smoothedLevel + wobble, 0, 1);
+    const listening = this.externalState.lifecycle === "listening";
+    const turnActive = this.externalState.scene === "face" && this.externalState.lifecycle !== "idle";
+    const recentMicLevel = now - this.runtime.border.lastLevelAt < 0.45;
+    const micVoiceActive = recentMicLevel && Math.max(this.runtime.border.targetLevel, smoothedLevel) > 0.10;
+    const reactive = turnActive && (listening || micVoiceActive);
+    const breath = (Math.sin(now * 1.5) * 0.5) + 0.5;
+    const visualLevel = reactive ? finalLevel : 0.08 + (breath * 0.07);
+    const activeBase = listening ? 0.34 : 0.24;
+    const brightness = reactive ? clamp(activeBase + (visualLevel * 0.66), 0, 1) : visualLevel;
+    const shimmer = 1 + (Math.sin(now * 2) * 0.035);
+    const sharpWidth = clamp(width, 4.5, 6.0) + (reactive ? visualLevel * 1.35 : breath * 0.32);
+    const glowWidth = sharpWidth + lerp(7, 10, brightness);
+    const glowBlur = lerp(6, 12, brightness);
+    const gradient = this.createBorderGradient(box, now, 1);
+    const highlightGradient = this.createBorderGradient(box, now + 2.8, 1);
     ctx.save();
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    ctx.strokeStyle = rgba(color, 0.22);
-    ctx.lineWidth = width + 6;
-    ctx.shadowBlur = 6;
-    ctx.shadowColor = rgba(color, 0.22);
+    ctx.globalCompositeOperation = "screen";
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = glowWidth;
+    ctx.globalAlpha = clamp((0.24 + (brightness * 0.38)) * shimmer, 0, 0.72);
+    ctx.shadowBlur = glowBlur;
+    ctx.shadowColor = rgba("#48f8ff", 0.18 + (brightness * 0.24));
     roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
     ctx.stroke();
+
+    ctx.lineWidth = sharpWidth + 3.5;
+    ctx.globalAlpha = clamp((0.12 + (brightness * 0.22)) * shimmer, 0, 0.42);
+    ctx.shadowBlur = Math.max(0, glowBlur * 0.45);
+    roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+    ctx.stroke();
+
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = sharpWidth;
+    ctx.globalAlpha = clamp((reactive ? 0.74 : 0.56) + (brightness * 0.16), 0, 0.95);
+    roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+    ctx.stroke();
+
+    ctx.globalCompositeOperation = "screen";
+    ctx.strokeStyle = highlightGradient;
+    ctx.lineWidth = Math.max(2.2, sharpWidth * 0.42);
+    ctx.globalAlpha = clamp((0.14 + (brightness * 0.16)) * shimmer, 0, 0.32);
     roundedRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
     ctx.stroke();
     ctx.restore();
@@ -1638,7 +1739,7 @@ export class RobotFaceEngine {
     ctx.fillStyle = state.baseVisual.backgroundColor;
     ctx.fillRect(0, 0, this.runtime.width, this.runtime.height);
     const box = this.getBoxRect(state);
-    this.drawOuterBox(box, state);
+    this.drawOuterBox(box, state, now);
     const minDim = Math.min(this.runtime.width, this.runtime.height);
     let centerX = (this.runtime.width / 2) + (state.baseVisual.eyeXOffset * minDim * 0.35) + (pose.motionX * minDim * 0.24);
     let centerY = (this.runtime.height * 0.47) + (pose.eyeY * this.runtime.height) + (pose.motionY * minDim * 0.20);

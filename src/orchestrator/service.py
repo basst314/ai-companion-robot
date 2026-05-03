@@ -10,6 +10,7 @@ import os
 import select
 import sys
 import termios
+from collections.abc import Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,7 +43,7 @@ from shared.models import (
     Transcript,
     TurnPlan,
 )
-from audio.capture import SharedLiveSpeechState
+from audio.capture import MicLevelSampler, SharedLiveSpeechState, normalize_pcm16_mic_level
 from audio.wake import WakeDetectionResult, WakeWordService
 from ui.service import UiService
 from vision.service import VisionService
@@ -90,6 +91,7 @@ class OrchestratorService:
     _active_speech_trigger: str | None = field(default=None, init=False, repr=False)
     _last_wake_detection: WakeDetectionResult | None = field(default=None, init=False, repr=False)
     _turn_latency_marks: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
+    _mic_level_listener: Callable[[bytes, int], None] | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
         """Prepare startup state for the local runtime."""
@@ -103,12 +105,14 @@ class OrchestratorService:
             await self.cloud_response.start()
         if self.realtime_conversation is not None:
             await self.realtime_conversation.start()
+        self._start_mic_level_updates()
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
 
     async def stop(self) -> None:
         """Prepare shutdown wiring for the local runtime."""
 
         await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+        self._stop_mic_level_updates()
         if self.wake_word is not None and hasattr(self.wake_word, "shutdown"):
             await self.wake_word.shutdown()
         if self.shared_live_speech_state is not None:
@@ -122,6 +126,43 @@ class OrchestratorService:
         if self.terminal_debug is not None:
             self.terminal_debug.close()
             configure_terminal_debug_screen(None)
+
+    def _start_mic_level_updates(self) -> None:
+        if self.shared_live_speech_state is None or self._mic_level_listener is not None:
+            return
+        update_mic_level = getattr(self.ui, "update_mic_level", None)
+        if not callable(update_mic_level):
+            return
+        loop = asyncio.get_running_loop()
+        sampler = MicLevelSampler(
+            sample_rate=self.shared_live_speech_state.sample_rate,
+            channels=self.shared_live_speech_state.channels,
+            sample_width=self.shared_live_speech_state.sample_width,
+            updates_per_second=10.0,
+        )
+
+        def publish_mic_level(chunk: bytes, chunk_start_offset: int) -> None:
+            if self.state.lifecycle is LifecycleStage.IDLE:
+                return
+            level = sampler.sample(chunk, chunk_start_offset)
+            if level is None:
+                return
+            loop.call_soon_threadsafe(asyncio.create_task, update_mic_level(level))
+
+        self._mic_level_listener = publish_mic_level
+        self.shared_live_speech_state.add_chunk_listener(publish_mic_level)
+
+    def _stop_mic_level_updates(self) -> None:
+        if self.shared_live_speech_state is None or self._mic_level_listener is None:
+            return
+        self.shared_live_speech_state.remove_chunk_listener(self._mic_level_listener)
+        self._mic_level_listener = None
+
+    async def _publish_mic_level_for_pcm(self, pcm_data: bytes) -> None:
+        update_mic_level = getattr(self.ui, "update_mic_level", None)
+        if not callable(update_mic_level) or not pcm_data:
+            return
+        await update_mic_level(normalize_pcm16_mic_level(pcm_data))
 
     async def run(self) -> None:
         """Run the manual or speech-driven end-to-end interaction loop."""
@@ -226,6 +267,7 @@ class OrchestratorService:
         initial_pcm = initial_window.pcm_data if initial_window is not None else b""
         shared_state.start_session_recording(initial_pcm=initial_pcm)
         if initial_window is not None and initial_window.pcm_data:
+            await self._publish_mic_level_for_pcm(initial_window.pcm_data)
             audio_chunks.put_nowait(initial_window.pcm_data)
 
         shared_state.add_chunk_listener(enqueue_chunk)

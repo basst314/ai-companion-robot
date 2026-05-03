@@ -551,6 +551,7 @@ def test_browser_service_websocket_and_socket_helpers_cover_length_branches(monk
         publish_service.controller.render_state("thinking", "thinking")
         await publish_service._publish_state_snapshot()
         await publish_service._publish_overlay_snapshot()
+        await publish_service.update_mic_level(0.72)
         await publish_service._publish_command(browser_mod.build_overlay_update_command(
             show_text_overlay=True,
             text="hi",
@@ -558,6 +559,7 @@ def test_browser_service_websocket_and_socket_helpers_cover_length_branches(monk
             content_payload={},
         ))
         assert good_peer.messages
+        assert {"type": "mic_level", "payload": {"level": 0.72}} in good_peer.messages
         assert bad_peer.closed is True
 
         shutdown_service = BrowserFaceUiService(

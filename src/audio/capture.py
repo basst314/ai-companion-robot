@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import struct
 import tempfile
 import wave
@@ -437,6 +438,64 @@ class ShellRecordingSession:
     def note_chunk(self, chunk: bytes) -> None:
         if chunk:
             self._bytes_received += len(chunk)
+
+
+@dataclass(slots=True)
+class MicLevelSampler:
+    """Convert PCM16 microphone chunks into throttled normalized UI levels."""
+
+    sample_rate: int = 16000
+    channels: int = 1
+    sample_width: int = 2
+    updates_per_second: float = 10.0
+    noise_floor: float = 90.0
+    speech_energy: float = 5200.0
+    _next_publish_offset: int = field(default=0, init=False, repr=False)
+    _last_level: float = field(default=0.0, init=False, repr=False)
+
+    def sample(self, chunk: bytes, chunk_start_offset: int) -> float | None:
+        if self.sample_width != 2 or not chunk:
+            return None
+        interval_bytes = self._publish_interval_bytes()
+        if chunk_start_offset < self._next_publish_offset:
+            return None
+        self._next_publish_offset = chunk_start_offset + interval_bytes
+        self._last_level = normalize_pcm16_mic_level(
+            chunk,
+            noise_floor=self.noise_floor,
+            speech_energy=self.speech_energy,
+        )
+        return self._last_level
+
+    def _publish_interval_bytes(self) -> int:
+        bytes_per_second = max(1, self.channels * self.sample_width * self.sample_rate)
+        return max(self.sample_width, int(bytes_per_second / max(1.0, self.updates_per_second)))
+
+
+def pcm16_rms_energy(window: bytes) -> float:
+    """Return RMS energy for little-endian signed 16-bit PCM data."""
+
+    if not window:
+        return 0.0
+    sample_count = len(window) // 2
+    if sample_count == 0:
+        return 0.0
+    samples = struct.unpack("<" + "h" * sample_count, window[: sample_count * 2])
+    mean_square = sum(float(sample) * sample for sample in samples) / sample_count
+    return math.sqrt(mean_square)
+
+
+def normalize_pcm16_mic_level(
+    window: bytes,
+    *,
+    noise_floor: float = 90.0,
+    speech_energy: float = 5200.0,
+) -> float:
+    """Map PCM16 RMS energy to a conservative normalized microphone level."""
+
+    energy = pcm16_rms_energy(window)
+    raw_level = (energy - noise_floor) / max(1.0, speech_energy - noise_floor)
+    return min(1.0, max(0.0, math.sqrt(min(1.0, max(0.0, raw_level)))))
 
 
 @dataclass(slots=True)

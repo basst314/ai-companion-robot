@@ -27,6 +27,9 @@ class UiService(Protocol):
     async def clear_content(self) -> None:
         """Return to the default face mode after temporary content."""
 
+    async def update_mic_level(self, level: float) -> None:
+        """Send a normalized microphone level to renderers that support audio-reactive UI."""
+
     async def shutdown(self) -> None:
         """Release renderer resources during app shutdown."""
 
@@ -42,6 +45,7 @@ class MockUiService:
     visible_text: list[str] = field(default_factory=list)
     content_modes: list[tuple[str, dict[str, object] | None]] = field(default_factory=list)
     received_events: list[Event] = field(default_factory=list)
+    mic_levels: list[float] = field(default_factory=list)
     echo_state_to_console: bool = True
     echo_text_to_console: bool = True
 
@@ -77,6 +81,9 @@ class MockUiService:
 
     async def clear_content(self) -> None:
         self.content_modes.append(("face", None))
+
+    async def update_mic_level(self, level: float) -> None:
+        self.mic_levels.append(min(1.0, max(0.0, float(level))))
 
     async def shutdown(self) -> None:
         return None
