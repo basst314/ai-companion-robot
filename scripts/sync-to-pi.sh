@@ -114,6 +114,7 @@ rsync -az --delete \
   --exclude '.env' \
   --exclude '.env.local' \
   --exclude 'artifacts/' \
+  --exclude 'external/' \
   --exclude 'logs/' \
   ./ "${REMOTE}:${TARGET_DIR}/"
 
