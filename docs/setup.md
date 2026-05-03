@@ -49,12 +49,13 @@ AI_COMPANION_AUDIO_CHANNEL_INDEX=0
 Raspberry Pi / ReSpeaker example:
 
 ```bash
+AI_COMPANION_AUDIO_INIT_COMMAND=./scripts/respeaker_init.sh
 AI_COMPANION_AUDIO_RECORD_COMMAND=arecord -D plughw:2,0 -f S16_LE -r 16000 -c 6 -t raw {output_path}
 AI_COMPANION_AUDIO_INPUT_CHANNELS=6
 AI_COMPANION_AUDIO_CHANNEL_INDEX=0
 ```
 
-For ReSpeaker-style devices, `audio.capture` extracts the configured channel from the interleaved stream before wake detection and realtime streaming.
+For ReSpeaker-style devices, `audio.capture` extracts the configured channel from the interleaved stream before wake detection and realtime streaming. On Raspberry Pi, `scripts/setup.sh` also downloads `respeaker/usb_4_mic_array` into `external/usb_4_mic_array`, prepares its tuning virtualenv, and configures `scripts/respeaker_init.sh` as the audio init command.
 
 ## Audio Output
 

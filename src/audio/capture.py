@@ -525,15 +525,23 @@ class ShellAudioCaptureService:
         async with self._init_lock:
             if self._init_ran:
                 return
+            logger.info("audio init command starting command=%s", " ".join(self.init_command))
             process = await asyncio.create_subprocess_exec(
                 *self.init_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await process.communicate()
+            stdout_text = stdout.decode(errors="replace").strip()
+            stderr_text = stderr.decode(errors="replace").strip()
             if process.returncode != 0:
-                message = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
+                message = stderr_text or stdout_text
                 raise RuntimeError(f"audio init command failed with status {process.returncode}: {message}")
+            for line in stdout_text.splitlines():
+                logger.info("audio init stdout %s", line)
+            for line in stderr_text.splitlines():
+                logger.info("audio init stderr %s", line)
+            logger.info("audio init command completed")
             self._init_ran = True
 
     def materialize_wav_bytes(self, pcm_data: bytes, wav_path: Path) -> Path:

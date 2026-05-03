@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 import wave
 
-from audio.capture import SharedLiveSpeechState
+from audio.capture import ShellAudioCaptureService, SharedLiveSpeechState
 
 
 class _FakeRecordingSession:
@@ -149,3 +150,25 @@ def test_shared_live_state_session_recording_is_optional(tmp_path: Path) -> None
 
     assert state.session_recording_path is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_shell_audio_capture_logs_successful_init_output(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    init_script = tmp_path / "init.sh"
+    init_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'GAMMA_E: 3.0\\n'\n"
+        "printf 'calibration note\\n' >&2\n"
+    )
+    init_script.chmod(0o755)
+    capture = ShellAudioCaptureService(
+        command_template=("unused-recorder", "{output_path}"),
+        init_command=(str(init_script),),
+    )
+
+    with caplog.at_level(logging.INFO, logger="audio.capture"):
+        asyncio.run(capture._ensure_initialized())
+
+    assert "audio init command starting" in caplog.text
+    assert "audio init stdout GAMMA_E: 3.0" in caplog.text
+    assert "audio init stderr calibration note" in caplog.text
+    assert "audio init command completed" in caplog.text

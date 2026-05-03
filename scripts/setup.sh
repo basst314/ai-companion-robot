@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RESPEAKER_TUNING_REPO_URL="https://github.com/respeaker/usb_4_mic_array.git"
+RESPEAKER_TUNING_DIR="${REPO_DIR}/external/usb_4_mic_array"
 
 PLATFORM=""
 ASSUME_YES=0
@@ -177,6 +179,62 @@ install_system_packages() {
   fi
 
   fail "could not find a supported Raspberry Pi desktop package set for browser kiosk mode"
+}
+
+setup_respeaker_tuning_repo() {
+  local python_cmd="$1"
+
+  if [[ "${PLATFORM}" != "rpi" ]]; then
+    return 0
+  fi
+
+  require_command git
+  log "setting up ReSpeaker USB 4 Mic Array tuning repo"
+  mkdir -p "$(dirname "${RESPEAKER_TUNING_DIR}")"
+
+  if [[ -d "${RESPEAKER_TUNING_DIR}/.git" ]]; then
+    log "updating existing ReSpeaker tuning checkout"
+    git -C "${RESPEAKER_TUNING_DIR}" pull --ff-only
+  elif [[ -e "${RESPEAKER_TUNING_DIR}" ]]; then
+    fail "ReSpeaker tuning path exists but is not a git checkout: ${RESPEAKER_TUNING_DIR}"
+  else
+    git clone "${RESPEAKER_TUNING_REPO_URL}" "${RESPEAKER_TUNING_DIR}"
+  fi
+
+  patch_respeaker_tuning_repo
+
+  if [[ ! -x "${RESPEAKER_TUNING_DIR}/venv/bin/python" ]]; then
+    log "creating ReSpeaker tuning virtual environment"
+    "${python_cmd}" -m venv "${RESPEAKER_TUNING_DIR}/venv"
+  fi
+
+  log "installing ReSpeaker tuning Python dependencies"
+  "${RESPEAKER_TUNING_DIR}/venv/bin/python" -m pip install --upgrade pip
+  if [[ -f "${RESPEAKER_TUNING_DIR}/requirements.txt" ]]; then
+    "${RESPEAKER_TUNING_DIR}/venv/bin/python" -m pip install -r "${RESPEAKER_TUNING_DIR}/requirements.txt"
+  else
+    "${RESPEAKER_TUNING_DIR}/venv/bin/python" -m pip install pyusb
+  fi
+}
+
+patch_respeaker_tuning_repo() {
+  local tuning_py="${RESPEAKER_TUNING_DIR}/tuning.py"
+
+  [[ -f "${tuning_py}" ]] || fail "ReSpeaker tuning script not found: ${tuning_py}"
+
+  if grep -q "response.tostring()" "${tuning_py}"; then
+    log "patching ReSpeaker tuning.py for Python 3.13 array.tobytes compatibility"
+    "${REPO_DIR}/.venv/bin/python" - "${tuning_py}" <<'EOF'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+updated = text.replace("response.tostring()", "response.tobytes()")
+if updated != text:
+    path.write_text(updated)
+EOF
+  fi
 }
 
 python_at_least_311() {
@@ -480,6 +538,7 @@ write_env_file() {
   local interactive_console
   local audio_input_channels
   local audio_channel_index
+  local audio_init_command
 
   if [[ "${PLATFORM}" == "macos" ]]; then
     audio_record_command="rec -q -c 1 -r 16000 -b 16 -e signed-integer -t raw {output_path}"
@@ -493,6 +552,7 @@ write_env_file() {
     interactive_console="true"
     audio_input_channels="1"
     audio_channel_index="0"
+    audio_init_command=""
   else
     audio_record_command='arecord -D hw:CARD=ArrayUAC10,DEV=0 -t raw -f S16_LE -r 16000 -c 6 -q {output_path}'
     audio_play_command=""
@@ -511,6 +571,7 @@ write_env_file() {
     interactive_console="false"
     audio_input_channels="6"
     audio_channel_index="0"
+    audio_init_command="./scripts/respeaker_init.sh"
   fi
 
   if [[ -f "${ENV_FILE}" ]] && [[ "${FORCE}" -eq 0 ]] && ! confirm "Overwrite existing ${ENV_FILE}?"; then
@@ -548,7 +609,7 @@ AI_COMPANION_OPENAI_REALTIME_LOCAL_BARGE_IN_ENABLED=false
 AI_COMPANION_OPENAI_REALTIME_BASE_URL=wss://api.openai.com/v1/realtime
 AI_COMPANION_OPENAI_REALTIME_AUDIO_SAMPLE_RATE=24000
 
-AI_COMPANION_AUDIO_INIT_COMMAND=
+AI_COMPANION_AUDIO_INIT_COMMAND=${audio_init_command}
 AI_COMPANION_AUDIO_RECORD_COMMAND=${audio_record_command}
 AI_COMPANION_AUDIO_INPUT_CHANNELS=${audio_input_channels}
 AI_COMPANION_AUDIO_CHANNEL_INDEX=${audio_channel_index}
@@ -726,6 +787,7 @@ main() {
   log "using Python interpreter: ${python_cmd}"
 
   create_virtualenv "${python_cmd}"
+  setup_respeaker_tuning_repo "${python_cmd}"
   prepare_openwakeword_runtime_support
   if [[ "${wake_setup}" != "off" ]]; then
     log "resolving OpenWakeWord model '${wake_model}'"
