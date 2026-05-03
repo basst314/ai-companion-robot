@@ -34,9 +34,19 @@ function hexToRgb(value) {
   };
 }
 
+const RGBA_CACHE = new Map();
+
 function rgba(hex, alpha) {
+  const safeAlpha = Math.round(clamp(alpha, 0, 1) * 1000) / 1000;
+  const key = `${hex}|${safeAlpha}`;
+  const cached = RGBA_CACHE.get(key);
+  if (cached) {
+    return cached;
+  }
   const { r, g, b } = hexToRgb(hex);
-  return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
+  const value = `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+  RGBA_CACHE.set(key, value);
+  return value;
 }
 
 function ellipsePath(ctx, x, y, rx, ry) {
@@ -62,7 +72,7 @@ function roundedRectPath(ctx, x, y, width, height, radius) {
 export class RobotFaceEngine {
   constructor({ canvas, initialState = null, seed = null } = {}) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
+    this.ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
     this.random = createSeededRandom(seed);
     this.baseState = buildState(initialState);
     this.runtimeOverrides = {};
@@ -129,7 +139,13 @@ export class RobotFaceEngine {
       },
       composedState: null,
       composedStateKey: "",
+      geometry: {
+        boxRect: null,
+        boxRectKey: "",
+      },
     };
+    this._glowSpriteCache = new Map();
+    this._maxGlowSpriteCacheEntries = 48;
     this._rafId = 0;
     this._tick = this._tick.bind(this);
     this.resize();
@@ -157,12 +173,29 @@ export class RobotFaceEngine {
   }
 
   resize() {
-    this.runtime.dpr = window.devicePixelRatio || 1;
-    this.runtime.width = Math.max(320, window.innerWidth || this.canvas.clientWidth || 320);
-    this.runtime.height = Math.max(220, window.innerHeight || this.canvas.clientHeight || 220);
-    this.canvas.width = Math.floor(this.runtime.width * this.runtime.dpr);
-    this.canvas.height = Math.floor(this.runtime.height * this.runtime.dpr);
+    const nextDpr = window.devicePixelRatio || 1;
+    const nextWidth = Math.max(320, window.innerWidth || this.canvas.clientWidth || 320);
+    const nextHeight = Math.max(220, window.innerHeight || this.canvas.clientHeight || 220);
+    const nextCanvasWidth = Math.floor(nextWidth * nextDpr);
+    const nextCanvasHeight = Math.floor(nextHeight * nextDpr);
+    if (
+      this.runtime.dpr === nextDpr &&
+      this.runtime.width === nextWidth &&
+      this.runtime.height === nextHeight &&
+      this.canvas.width === nextCanvasWidth &&
+      this.canvas.height === nextCanvasHeight
+    ) {
+      return;
+    }
+    this.runtime.dpr = nextDpr;
+    this.runtime.width = nextWidth;
+    this.runtime.height = nextHeight;
+    this.canvas.width = nextCanvasWidth;
+    this.canvas.height = nextCanvasHeight;
     this.ctx.setTransform(this.runtime.dpr, 0, 0, this.runtime.dpr, 0, 0);
+    this.runtime.geometry.boxRect = null;
+    this.runtime.geometry.boxRectKey = "";
+    this._glowSpriteCache.clear();
   }
 
   setRendererConfig(config = {}) {
@@ -1133,7 +1166,8 @@ export class RobotFaceEngine {
         return false;
       }
       const contribution = clip.sample(elapsed, clip.duration) || {};
-      Object.entries(contribution).forEach(([key, value]) => {
+      for (const key in contribution) {
+        const value = contribution[key];
         if (key === "blinkClosedness") {
           overlay[key] = Math.max(overlay[key], value);
         } else if (key === "lidOverride") {
@@ -1141,7 +1175,7 @@ export class RobotFaceEngine {
         } else {
           overlay[key] += value;
         }
-      });
+      }
       return true;
     });
     if (this.externalState.scene === "sleep") {
@@ -1281,6 +1315,17 @@ export class RobotFaceEngine {
   }
 
   getBoxRect(state) {
+    const key = [
+      this.runtime.width,
+      this.runtime.height,
+      state.baseVisual.outerBoxPaddingPx,
+      state.baseVisual.outerBoxPadding,
+      state.baseVisual.outerBoxWidth,
+      state.baseVisual.outerBoxRadius,
+    ].join("|");
+    if (this.runtime.geometry.boxRect && this.runtime.geometry.boxRectKey === key) {
+      return this.runtime.geometry.boxRect;
+    }
     const minDim = Math.min(this.runtime.width, this.runtime.height);
     const outerPaddingPx = clamp(
       Number.isFinite(state.baseVisual.outerBoxPaddingPx)
@@ -1291,38 +1336,83 @@ export class RobotFaceEngine {
     );
     const strokeInset = Math.max(0, state.baseVisual.outerBoxWidth * 0.5);
     const paddingPx = outerPaddingPx + strokeInset;
-    return {
+    const rect = {
       x: paddingPx,
       y: paddingPx,
       width: Math.max(0, this.runtime.width - (paddingPx * 2)),
       height: Math.max(0, this.runtime.height - (paddingPx * 2)),
       radius: state.baseVisual.outerBoxRadius,
     };
+    this.runtime.geometry.boxRect = rect;
+    this.runtime.geometry.boxRectKey = key;
+    return rect;
+  }
+
+  _createCanvas(width, height) {
+    if (typeof OffscreenCanvas === "function") {
+      return new OffscreenCanvas(width, height);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+
+  _getGlowSprite(rx, ry, color, strength) {
+    const dpr = this.runtime.dpr;
+    const quantizedRx = Math.max(4, Math.round(rx / 4) * 4);
+    const quantizedRy = Math.max(4, Math.round(ry / 4) * 4);
+    const quantizedStrength = Math.round(strength * 20) / 20;
+    const key = `${quantizedRx}|${quantizedRy}|${color}|${quantizedStrength}|${dpr}`;
+    const cached = this._glowSpriteCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const margin = quantizedRx * (2.65 + quantizedStrength);
+    const cssWidth = (quantizedRx * 2) + (margin * 2);
+    const cssHeight = (quantizedRy * 2) + (margin * 2);
+    const canvas = this._createCanvas(Math.ceil(cssWidth * dpr), Math.ceil(cssHeight * dpr));
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(margin + quantizedRx, margin + quantizedRy);
+    ctx.scale(1, quantizedRy / Math.max(quantizedRx, 1));
+    ctx.beginPath();
+    ctx.arc(0, 0, quantizedRx * 1.55, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.shadowBlur = quantizedRx * (0.60 + (quantizedStrength * 1.10));
+    ctx.shadowColor = rgba(color, 0.30 * quantizedStrength);
+    ctx.strokeStyle = rgba(color, 0.12 * quantizedStrength);
+    ctx.lineWidth = quantizedRx * 0.92;
+    ctx.beginPath();
+    ctx.arc(0, 0, quantizedRx * 0.96, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = quantizedRx * (1.10 + (quantizedStrength * 1.30));
+    ctx.shadowColor = rgba(color, 0.14 * quantizedStrength);
+    ctx.strokeStyle = rgba(color, 0.06 * quantizedStrength);
+    ctx.lineWidth = quantizedRx * 1.40;
+    ctx.beginPath();
+    ctx.arc(0, 0, quantizedRx * 1.06, 0, Math.PI * 2);
+    ctx.stroke();
+    const sprite = { canvas, margin, rx: quantizedRx, ry: quantizedRy, cssWidth, cssHeight };
+    this._glowSpriteCache.set(key, sprite);
+    if (this._glowSpriteCache.size > this._maxGlowSpriteCacheEntries) {
+      this._glowSpriteCache.delete(this._glowSpriteCache.keys().next().value);
+    }
+    return sprite;
   }
 
   drawGlow(x, y, rx, ry, color, strength) {
     const ctx = this.ctx;
+    const sprite = this._getGlowSprite(rx, ry, color, strength);
     ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(1, ry / Math.max(rx, 1));
     ctx.globalCompositeOperation = "screen";
-    ctx.beginPath();
-    ctx.arc(0, 0, rx * 1.55, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.shadowBlur = rx * (0.60 + (strength * 1.10));
-    ctx.shadowColor = rgba(color, 0.30 * strength);
-    ctx.strokeStyle = rgba(color, 0.12 * strength);
-    ctx.lineWidth = rx * 0.92;
-    ctx.beginPath();
-    ctx.arc(0, 0, rx * 0.96, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.shadowBlur = rx * (1.10 + (strength * 1.30));
-    ctx.shadowColor = rgba(color, 0.14 * strength);
-    ctx.strokeStyle = rgba(color, 0.06 * strength);
-    ctx.lineWidth = rx * 1.40;
-    ctx.beginPath();
-    ctx.arc(0, 0, rx * 1.06, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.drawImage(
+      sprite.canvas,
+      x - sprite.rx - sprite.margin,
+      y - sprite.ry - sprite.margin,
+      sprite.cssWidth,
+      sprite.cssHeight,
+    );
     ctx.restore();
   }
 
