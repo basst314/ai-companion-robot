@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import main as main_mod
+import pytest
 from ai.realtime import (
     AlsaRealtimePcmOutput,
     Pcm16RateConverter,
@@ -43,6 +44,16 @@ class _FakeWebSocket:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@dataclass(slots=True)
+class _FailingAfterIncomingWebSocket(_FakeWebSocket):
+    error_message: str = "realtime socket closed"
+
+    async def recv(self) -> str:
+        if self.incoming:
+            return json.dumps(self.incoming.pop(0))
+        raise RuntimeError(self.error_message)
 
 
 @dataclass(slots=True)
@@ -179,6 +190,42 @@ def test_realtime_session_update_can_enable_backend_interrupt_response() -> None
 
     assert event["session"]["audio"]["input"]["turn_detection"]["interrupt_response"] is True
     assert event["session"]["audio"]["input"]["turn_detection"]["create_response"] is False
+
+
+def test_realtime_session_exits_when_receiver_task_fails() -> None:
+    output_audio = b"\x01\x00\x02\x00"
+    websocket = _FailingAfterIncomingWebSocket(
+        incoming=[
+            {
+                "type": "response.output_audio.delta",
+                "response_id": "resp_1",
+                "delta": base64.b64encode(output_audio).decode("ascii"),
+            }
+        ]
+    )
+    pcm_output = _FakePcmOutput()
+
+    async def run() -> None:
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        service = RealtimeConversationService(
+            api_key="test-key",
+            base_url="wss://api.openai.com/v1/realtime",
+            model="gpt-realtime-test",
+            voice="echo",
+            turn_detection="server_vad",
+            audio_capture_sample_rate_hz=24000,
+            realtime_sample_rate_hz=24000,
+            audio_output=pcm_output,
+            websocket_factory=lambda url, headers: _return_websocket(url, headers, websocket),
+            follow_up_idle_timeout_seconds=0.01,
+        )
+        await asyncio.wait_for(service.run_awake_session(audio_chunks=queue), timeout=1.0)
+
+    with pytest.raises(RuntimeError, match="realtime socket closed"):
+        asyncio.run(run())
+
+    assert websocket.closed is True
+    assert pcm_output.chunks == [output_audio]
 
 
 def test_realtime_non_playback_speech_stopped_creates_response() -> None:

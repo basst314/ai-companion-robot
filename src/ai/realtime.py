@@ -484,6 +484,7 @@ class RealtimeConversationService:
         )
         sender_task: asyncio.Task[None] | None = None
         receiver_task: asyncio.Task[None] | None = None
+        stop_task: asyncio.Task[bool] | None = None
         stop_event = asyncio.Event()
         state: _RealtimeEventState | None = None
         try:
@@ -491,19 +492,32 @@ class RealtimeConversationService:
             state = _RealtimeEventState(session_started_at=asyncio.get_running_loop().time())
             sender_task = asyncio.create_task(self._send_audio_loop(websocket, audio_chunks, stop_event, state))
             receiver_task = asyncio.create_task(self._receive_events_loop(websocket, stop_event, state))
-            await stop_event.wait()
+            stop_task = asyncio.create_task(stop_event.wait())
+            done, _pending = await asyncio.wait(
+                {stop_task, sender_task, receiver_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                if task is stop_task:
+                    continue
+                task.result()
+                task_name = "sender" if task is sender_task else "receiver"
+                logger.info("realtime session task ended task=%s %s", task_name, state.stats_summary())
+                stop_event.set()
             logger.info("realtime session stop %s", state.stats_summary())
         finally:
             stop_event.set()
+            if stop_task is not None:
+                stop_task.cancel()
             if sender_task is not None:
                 sender_task.cancel()
             if receiver_task is not None:
                 receiver_task.cancel()
-            for task in (sender_task, receiver_task):
+            await websocket.close()
+            for task in (stop_task, sender_task, receiver_task):
                 if task is not None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
-            await websocket.close()
 
     async def _send_audio_loop(
         self,
