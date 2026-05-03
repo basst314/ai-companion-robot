@@ -20,13 +20,24 @@ const overlayState = {
   blanked: false,
 };
 
+function statusLabel(lifecycle) {
+  switch (String(lifecycle || "idle").toLowerCase()) {
+    case "listening":
+      return "Listening";
+    case "speaking":
+      return "Speaking";
+    case "idle":
+    default:
+      return "Idle";
+  }
+}
+
 function connect() {
   const wsParam = new URLSearchParams(window.location.search).get("ws");
   const wsPort = Number.parseInt(wsParam || "", 10);
   const port = Number.isFinite(wsPort) ? wsPort : (Number.parseInt(window.location.port || "80", 10) + 1);
   const socket = new WebSocket(`ws://${window.location.hostname}:${port}`);
   socket.addEventListener("open", () => {
-    DOM.status.textContent = "Connected";
     socket.send(JSON.stringify({ type: "hello", payload: { userAgent: navigator.userAgent } }));
   });
   socket.addEventListener("message", (event) => {
@@ -57,9 +68,9 @@ function handleMessage(message) {
         scene: payload.scene || "face",
         lifecycle: payload.lifecycle || "idle",
         emotion: payload.emotion || "neutral",
-        speechActive: Boolean(payload.speechActive),
         previewText: payload.previewText || "",
       });
+      DOM.status.textContent = statusLabel(payload.lifecycle);
       overlayState.previewText = String(payload.previewText || "");
       overlayState.blanked = Boolean(payload.displaySleepRequested);
       renderOverlays();

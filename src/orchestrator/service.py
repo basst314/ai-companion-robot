@@ -230,7 +230,7 @@ class OrchestratorService:
         self._update_realtime_debug_session_started()
         await self.handle_event(
             Event(
-                name=EventName.LISTENING_STARTED,
+                name=EventName.LISTENING,
                 source=ComponentName.ORCHESTRATOR,
                 payload={"trigger": self._active_speech_trigger or "wake"},
             )
@@ -276,14 +276,7 @@ class OrchestratorService:
         except Exception as exc:
             logger.exception("realtime session failed")
             self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.CLOUD,
-                    payload={"error": str(exc)},
-                )
-            )
-            await self._set_lifecycle(LifecycleStage.ERROR, EmotionState.CURIOUS)
+            await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.CURIOUS)
         finally:
             shared_state.remove_chunk_listener(enqueue_chunk)
             shared_state.stop_session_recording()
@@ -292,6 +285,13 @@ class OrchestratorService:
             self._active_speech_trigger = None
             self.state.response_emotion = None
             await self._set_lifecycle(LifecycleStage.IDLE, EmotionState.NEUTRAL)
+            await self.handle_event(
+                Event(
+                    name=EventName.IDLE,
+                    source=ComponentName.ORCHESTRATOR,
+                    payload={},
+                )
+            )
 
     def _update_realtime_debug_session_started(self) -> None:
         if self.terminal_debug is None:
@@ -327,13 +327,6 @@ class OrchestratorService:
         preview_text = None if self.config.runtime.interactive_console else transcript.text
         await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, preview_text)
         self._update_terminal_debug_transcript(transcript, is_final=False)
-        await self.handle_event(
-            Event(
-                name=EventName.TRANSCRIPT_PARTIAL,
-                source=ComponentName.ORCHESTRATOR,
-                payload={"transcript": transcript},
-            )
-        )
         await self._apply_reactive_steps(self.reactive_policy.partial_transcript(self.state, transcript))
 
     async def run_turn(self, transcript: Transcript) -> bool:
@@ -352,14 +345,7 @@ class OrchestratorService:
         self.state.last_plan = None
         self.state.last_step_results = ()
         self._update_terminal_debug_transcript(transcript, is_final=True)
-        await self._set_lifecycle(LifecycleStage.PROCESSING, EmotionState.THINKING, transcript.text)
-        await self.handle_event(
-            Event(
-                name=EventName.TRANSCRIPT_FINAL,
-                source=ComponentName.ORCHESTRATOR,
-                payload={"transcript": transcript},
-            )
-        )
+        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.THINKING, transcript.text)
         await self._apply_reactive_steps(self.reactive_policy.processing_started(self.state))
 
         context = await self._build_context()
@@ -380,13 +366,6 @@ class OrchestratorService:
                 len(transcript.text),
             )
             plan = await self.turn_director.direct_turn(transcript, context, available_capabilities)
-            await self.handle_event(
-                Event(
-                    name=EventName.PLAN_CREATED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"plan": plan},
-                )
-            )
             validated_plan, skipped_results = self.capability_registry.validate_plan(
                 plan,
                 available_components=available_components,
@@ -417,20 +396,6 @@ class OrchestratorService:
                     route_summary=self._route_summary(validated_plan.route_kind),
                     last_error=self.state.last_error,
                 )
-            await self.handle_event(
-                Event(
-                    name=EventName.ROUTE_SELECTED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"route_kind": validated_plan.route_kind.value},
-                )
-            )
-            await self.handle_event(
-                Event(
-                    name=EventName.PLAN_VALIDATED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"plan": validated_plan, "skipped_steps": skipped_results},
-                )
-            )
             response, step_results = await self.execute_plan(validated_plan, context, transcript, skipped_results)
         except Exception as exc:
             logger.exception("turn routing/execution failed")
@@ -442,13 +407,6 @@ class OrchestratorService:
                 response_active=False,
                 plan_preview="routing failed",
                 response_preview="error",
-            )
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"error": str(exc)},
-                )
             )
             response = AiResponse(
                 text="I hit a problem, but I am still here and ready for the next turn.",
@@ -474,13 +432,6 @@ class OrchestratorService:
                 route_summary=route_summary,
                 last_error=self.state.last_error,
             )
-        await self.handle_event(
-            Event(
-                name=EventName.RESPONSE_READY,
-                source=ComponentName.ORCHESTRATOR,
-                payload={"response": response},
-            )
-        )
         return await self._deliver_response(
             response,
             transcript,
@@ -503,13 +454,6 @@ class OrchestratorService:
 
         for skipped in skipped_results:
             completed_results.append(skipped)
-            await self.handle_event(
-                Event(
-                    name=EventName.STEP_SKIPPED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"result": skipped},
-                )
-            )
 
         for phase in (
             StepPhase.IMMEDIATE,
@@ -542,58 +486,18 @@ class OrchestratorService:
         self.event_history.append(event)
         self.state.last_event_name = event.name.value
         logger.info("event=%s source=%s", event.name.value, event.source.value)
-        if event.name is EventName.AUDIO_SYNTHESIS_STARTED:
-            self._mark_turn_latency("audio_synth_start")
-            self._log_turn_latency_span("cloud_done->audio_synth_start", "cloud_done", "audio_synth_start")
-            logger.info(
-                "turn_trace audio_synthesis_started job_id=%s text_len=%s",
-                event.payload.get("job_id", "--"),
-                len(str(event.payload.get("text", ""))),
-            )
-        elif event.name is EventName.AUDIO_SYNTHESIS_FINISHED:
-            logger.info(
-                "turn_trace audio_synthesis_finished job_id=%s text_len=%s",
-                event.payload.get("job_id", "--"),
-                len(str(event.payload.get("text", ""))),
-            )
-        elif event.name is EventName.AUDIO_PLAYBACK_STARTED:
+        if event.name is EventName.SPEAKING:
             self._mark_turn_latency("audio_playback_started")
-            self._log_turn_latency_span(
-                "audio_synth_start->audio_playback_started",
-                "audio_synth_start",
-                "audio_playback_started",
-            )
             self._log_turn_latency_span("total_to_first_audio", "wake_detected", "audio_playback_started")
             logger.info(
-                "%s playback_started job_id=%s text_len=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
+                "realtime_trace speaking job_id=%s text_len=%s",
                 event.payload.get("job_id", "--"),
                 len(str(event.payload.get("text", ""))),
             )
-        elif event.name is EventName.AUDIO_PLAYBACK_FINISHED:
-            logger.info(
-                "%s playback_finished job_id=%s duration_ms=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
-                event.payload.get("job_id", "--"),
-                event.payload.get("duration_ms", "--"),
-            )
-        elif event.name is EventName.AUDIO_INTERRUPTED:
-            logger.info(
-                "%s interrupted job_id=%s source=%s in=%sB/%sch out=%sB/%sch interrupts=%s",
-                "realtime_trace" if self.config.runtime.interaction_backend == "openai_realtime" else "turn_trace audio",
-                event.payload.get("job_id", "--"),
-                event.payload.get("source", "--"),
-                event.payload.get("input_audio_bytes", "--"),
-                event.payload.get("input_audio_chunks", "--"),
-                event.payload.get("output_audio_bytes", "--"),
-                event.payload.get("output_audio_chunks", "--"),
-                event.payload.get("interrupt_count", "--"),
-            )
-        elif event.name is EventName.RESPONSE_READY:
-            logger.info(
-                "turn_trace response_ready text_len=%s",
-                len(str(getattr(event.payload.get("response"), "text", ""))),
-            )
+        elif event.name is EventName.LISTENING:
+            logger.info("realtime_trace listening trigger=%s", event.payload.get("trigger", "--"))
+        elif event.name is EventName.IDLE:
+            logger.info("realtime_trace idle")
         self._update_realtime_debug_from_event(event)
         await self._apply_audio_lifecycle_event(event)
         await self.event_bus.publish(event)
@@ -627,37 +531,15 @@ class OrchestratorService:
         transcript: Transcript,
         prior_results: tuple[PlanStepResult, ...],
     ) -> tuple[PlanStepResult, AiResponse | None]:
-        await self.handle_event(
-            Event(
-                name=EventName.STEP_STARTED,
-                source=ComponentName.ORCHESTRATOR,
-                payload={"step": step},
-            )
-        )
-
         try:
             if step.capability_id == "look_at_user":
                 action_result = await self.hardware.execute_action(ActionRequest(name="look_at_user"))
-                await self.handle_event(
-                    Event(
-                        name=EventName.ACTION_EXECUTED,
-                        source=ComponentName.HARDWARE,
-                        payload={"result": action_result},
-                    )
-                )
                 self._apply_state_changes(action_result.state_changes)
                 result = PlanStepResult(
                     capability_id=step.capability_id,
                     success=action_result.success,
                     message=action_result.message,
                     state_changes=action_result.state_changes,
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
                 )
                 return result, None
 
@@ -665,26 +547,12 @@ class OrchestratorService:
                 action_result = await self.hardware.execute_action(
                     ActionRequest(name="turn_head", arguments=step.arguments)
                 )
-                await self.handle_event(
-                    Event(
-                        name=EventName.ACTION_EXECUTED,
-                        source=ComponentName.HARDWARE,
-                        payload={"result": action_result},
-                    )
-                )
                 self._apply_state_changes(action_result.state_changes)
                 result = PlanStepResult(
                     capability_id=step.capability_id,
                     success=action_result.success,
                     message=action_result.message,
                     state_changes=action_result.state_changes,
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
                 )
                 return result, None
 
@@ -700,13 +568,6 @@ class OrchestratorService:
                     message=f"Showing {emotion.value} emotion.",
                     state_changes={"emotion": emotion.value},
                 )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
-                )
                 return result, None
 
             if step.capability_id == "visible_people":
@@ -716,20 +577,6 @@ class OrchestratorService:
                     success=True,
                     message=query.answer_text,
                     data=query.data,
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.QUERY_EXECUTED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": query},
-                    )
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
                 )
                 return result, None
 
@@ -741,20 +588,6 @@ class OrchestratorService:
                     message=query.answer_text,
                     data=query.data,
                 )
-                await self.handle_event(
-                    Event(
-                        name=EventName.QUERY_EXECUTED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": query},
-                    )
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
-                )
                 return result, None
 
             if step.capability_id == "robot_status":
@@ -764,20 +597,6 @@ class OrchestratorService:
                     success=True,
                     message=query.answer_text,
                     data=query.data,
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.QUERY_EXECUTED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": query},
-                    )
-                )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
                 )
                 return result, None
 
@@ -797,37 +616,16 @@ class OrchestratorService:
                     message=reply.text,
                     data={"emotion": reply.emotion.value},
                 )
-                await self.handle_event(
-                    Event(
-                        name=EventName.STEP_FINISHED,
-                        source=ComponentName.ORCHESTRATOR,
-                        payload={"result": result},
-                    )
-                )
                 return result, reply
 
             raise RuntimeError(f"unsupported capability '{step.capability_id}'")
         except Exception as exc:
             logger.exception("plan step failed")
             self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"error": str(exc), "step": step.capability_id},
-                )
-            )
             result = PlanStepResult(
                 capability_id=step.capability_id,
                 success=False,
                 message=f"Failed to execute {step.capability_id}: {exc}",
-            )
-            await self.handle_event(
-                Event(
-                    name=EventName.STEP_FINISHED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"result": result},
-                )
             )
             return result, None
 
@@ -905,13 +703,6 @@ class OrchestratorService:
         except Exception as exc:
             logger.exception("cloud response failed")
             self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.CLOUD,
-                    payload={"error": str(exc)},
-                )
-            )
             return AiResponse(
                 text="My cloud brain is unavailable, so I am falling back to a simple local reply.",
                 language=transcript.language,
@@ -944,7 +735,7 @@ class OrchestratorService:
                 snapshot = await self.vision.capture_snapshot()
                 summary = snapshot.summary or "I captured the current camera view."
                 await self._set_lifecycle(
-                    LifecycleStage.PROCESSING,
+                    LifecycleStage.LISTENING,
                     EmotionState.CURIOUS,
                     self.state.current_transcript.text if self.state.current_transcript else None,
                 )
@@ -957,15 +748,8 @@ class OrchestratorService:
             except Exception as exc:
                 logger.exception("tool request failed")
                 self.state.last_error = str(exc)
-                await self.handle_event(
-                    Event(
-                        name=EventName.ERROR_OCCURRED,
-                        source=ComponentName.VISION,
-                        payload={"error": str(exc), "tool": request.tool_name},
-                    )
-                )
                 await self._set_lifecycle(
-                    LifecycleStage.PROCESSING,
+                    LifecycleStage.LISTENING,
                     EmotionState.CURIOUS,
                     self.state.current_transcript.text if self.state.current_transcript else None,
                 )
@@ -1109,7 +893,7 @@ class OrchestratorService:
         response_language = response.language or transcript.language
         self.state.active_language = response_language
         self.state.response_emotion = response.emotion
-        await self._set_lifecycle(LifecycleStage.RESPONDING, response.emotion, display_text)
+        await self._set_lifecycle(LifecycleStage.LISTENING, response.emotion, display_text)
         await self.ui.show_text(display_text)
 
         await self.memory.save_interaction(
@@ -1133,13 +917,9 @@ class OrchestratorService:
         return False
 
     async def _apply_audio_lifecycle_event(self, event: Event) -> None:
-        if event.source is not ComponentName.AUDIO:
-            return
-
         preview_text = self.state.current_response
-        response_emotion = self.state.response_emotion or EmotionState.NEUTRAL
 
-        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
+        if event.name is EventName.SPEAKING:
             await self._set_lifecycle(
                 LifecycleStage.SPEAKING,
                 EmotionState.SPEAKING,
@@ -1147,10 +927,7 @@ class OrchestratorService:
             )
             return
 
-        if (
-            self.config.runtime.interaction_backend == "openai_realtime"
-            and event.name is EventName.AUDIO_INTERRUPTED
-        ):
+        if event.name is EventName.LISTENING:
             await self._set_lifecycle(
                 LifecycleStage.LISTENING,
                 EmotionState.LISTENING,
@@ -1158,19 +935,15 @@ class OrchestratorService:
             )
             return
 
-        if event.name in {EventName.AUDIO_PLAYBACK_FINISHED, EventName.AUDIO_INTERRUPTED, EventName.AUDIO_FAILED}:
-            if self.state.lifecycle is not LifecycleStage.SPEAKING:
-                return
+        if event.name is EventName.IDLE:
             await self._set_lifecycle(
-                LifecycleStage.RESPONDING,
-                response_emotion,
-                preview_text,
+                LifecycleStage.IDLE,
+                EmotionState.NEUTRAL,
+                None,
             )
 
     def _update_realtime_debug_from_event(self, event: Event) -> None:
         if self.config.runtime.interaction_backend != "openai_realtime":
-            return
-        if event.source is not ComponentName.AUDIO:
             return
         if self.terminal_debug is None:
             return
@@ -1178,14 +951,14 @@ class OrchestratorService:
         if not callable(update_realtime_status):
             return
         phase = None
-        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
+        if event.name is EventName.SPEAKING:
             phase = "speaking"
-        elif event.name is EventName.AUDIO_PLAYBACK_FINISHED:
+        elif event.name is EventName.LISTENING:
             phase = "listening"
-        elif event.name is EventName.AUDIO_INTERRUPTED:
-            phase = "listening"
-        elif event.name is EventName.AUDIO_FAILED:
-            phase = "error"
+        elif event.name is EventName.IDLE:
+            phase = "idle"
+        if phase is None:
+            return
         update_realtime_status(
             phase=phase,
             voice=str(event.payload.get("voice_id", "")) or None,
@@ -1216,25 +989,10 @@ class OrchestratorService:
     async def _safe_get_detections(self) -> tuple:
         try:
             detections = await self.vision.get_current_detections()
-            if detections:
-                await self.handle_event(
-                    Event(
-                        name=EventName.FACE_DETECTED,
-                        source=ComponentName.VISION,
-                        payload={"detections": detections},
-                    )
-                )
             return detections
         except Exception as exc:
             logger.exception("vision lookup failed")
             self.state.last_error = str(exc)
-            await self.handle_event(
-                Event(
-                    name=EventName.ERROR_OCCURRED,
-                    source=ComponentName.VISION,
-                    payload={"error": str(exc)},
-                )
-            )
             return ()
 
     def _available_components(self) -> set[ComponentName]:
@@ -1265,15 +1023,6 @@ class OrchestratorService:
             available_components=self._available_components(),
         )
         results: list[PlanStepResult] = list(skipped)
-
-        for skipped_result in skipped:
-            await self.handle_event(
-                Event(
-                    name=EventName.STEP_SKIPPED,
-                    source=ComponentName.ORCHESTRATOR,
-                    payload={"result": skipped_result},
-                )
-            )
 
         if self.state.current_transcript is None:
             transcript = Transcript(

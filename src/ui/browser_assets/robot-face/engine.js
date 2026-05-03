@@ -80,7 +80,6 @@ export class RobotFaceEngine {
       scene: "face",
       lifecycle: "idle",
       emotion: "neutral",
-      speechActive: false,
       previewText: null,
     };
     this.idlePolicy = {
@@ -252,7 +251,7 @@ export class RobotFaceEngine {
     if (
       this.externalState.lifecycle !== prevLifecycle ||
       this.externalState.scene !== prevScene ||
-      this.externalState.speechActive
+      this.externalState.lifecycle === "speaking"
     ) {
       this.markInteraction();
     }
@@ -944,7 +943,7 @@ export class RobotFaceEngine {
     if (!this.idlePolicy.enabled || !state.motionModifiers.idleEnabled) {
       return;
     }
-    if (this.externalState.scene !== "face" || this.externalState.lifecycle !== "idle" || this.externalState.speechActive) {
+    if (this.externalState.scene !== "face" || this.externalState.lifecycle !== "idle" || this.externalState.lifecycle === "speaking") {
       return;
     }
     if (this.runtime.activeClips.length > 0) {
@@ -1206,7 +1205,7 @@ export class RobotFaceEngine {
       1,
     );
     const hasActiveClip = this.runtime.activeClips.length > 0;
-    const idleLidsHidden = !hasActiveClip && !this.externalState.speechActive;
+    const idleLidsHidden = !hasActiveClip && this.externalState.lifecycle !== "speaking";
     const lidBase = idleLidsHidden
       ? 0
       : clamp(state.expressionModifiers.lidAmount + (bored * 0.40) - (behavior.eyeOpenBoost * 0.52), 0, 1);
@@ -1235,7 +1234,7 @@ export class RobotFaceEngine {
       0,
       1,
     );
-    if (this.externalState.speechActive) {
+    if (this.externalState.lifecycle === "speaking") {
       motionEnergy = Math.max(motionEnergy, 0.24);
     }
     const impact = this.runtime.trap.impact * state.timing.bounceIntensity;
@@ -1295,7 +1294,7 @@ export class RobotFaceEngine {
       sleepLine: behavior.sleepLine,
       impactSquashX,
       impactSquashY,
-      speechActive: this.externalState.speechActive,
+      lifecycle: this.externalState.lifecycle,
     };
   }
 
@@ -1674,7 +1673,7 @@ export class RobotFaceEngine {
       1,
     );
     const expressiveEnergy = clamp(
-      ((this.runtime.activeClips.length || this.externalState.speechActive) ? 0.36 : 0.10) + (mood.motionEnergy * 0.84),
+      ((this.runtime.activeClips.length || this.externalState.lifecycle === "speaking") ? 0.36 : 0.10) + (mood.motionEnergy * 0.84),
       0,
       1,
     );
@@ -1687,7 +1686,7 @@ export class RobotFaceEngine {
     const openAmount = clamp(state.baseVisual.mouthOpenBias + mood.mouthOpen + waveMix, 0, 1);
     const widthScale = clamp(1 - (mood.bored * 0.22) + (mood.cute * 0.08) + (mood.curious * 0.06) + (openAmount * 0.18) + (mood.mouthWidthBias || 0), 0.55, 1.45);
     const mouthWidth = width * widthScale;
-    const animateMouth = (this.runtime.activeClips.length > 0 || this.externalState.speechActive) && !mood.mouthStill;
+    const animateMouth = (this.runtime.activeClips.length > 0 || this.externalState.lifecycle === "speaking") && !mood.mouthStill;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = thickness;

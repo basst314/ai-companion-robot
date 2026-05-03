@@ -59,6 +59,48 @@ class CapturingCloudResponseService:
         )
 
 
+class _CompletingRealtimeConversation:
+    async def run_awake_session(self, *, audio_chunks):  # type: ignore[no-untyped-def]
+        del audio_chunks
+
+
+class _AwakeSessionSharedState:
+    sample_rate = 16000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self) -> None:
+        self.listeners = []
+
+    async def ensure_session(self) -> None:
+        return None
+
+    async def sync(self) -> None:
+        return None
+
+    def start_utterance(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        del kwargs
+
+    def current_utterance_window(self, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        return None
+
+    def start_session_recording(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        del kwargs
+
+    def add_chunk_listener(self, listener) -> None:  # type: ignore[no-untyped-def]
+        self.listeners.append(listener)
+
+    def remove_chunk_listener(self, listener) -> None:  # type: ignore[no-untyped-def]
+        self.listeners.remove(listener)
+
+    def stop_session_recording(self) -> None:
+        return None
+
+    def reset_utterance(self) -> None:
+        return None
+
+
 def _transcript(text: str) -> Transcript:
     return Transcript(
         text=text,
@@ -100,6 +142,21 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     assert service.memory.records[-1].user_text == "look at me"
 
 
+def test_realtime_awake_session_publishes_idle_only_after_session_exit() -> None:
+    service = build_application(AppConfig())
+    service.realtime_conversation = _CompletingRealtimeConversation()
+    service.shared_live_speech_state = _AwakeSessionSharedState()
+
+    asyncio.run(service._run_realtime_awake_session())
+
+    assert [event.name for event in service.event_history] == [
+        EventName.LISTENING,
+        EventName.IDLE,
+    ]
+    assert service.event_history[-1].payload == {}
+    assert service.state.lifecycle is LifecycleStage.IDLE
+
+
 def test_turn_director_chooses_local_cloud_and_hybrid_paths() -> None:
     transcript = _transcript("who do you see")
     context = asyncio.run(build_application(AppConfig())._build_context())
@@ -131,7 +188,11 @@ def test_partial_transcript_updates_state_without_triggering_plan() -> None:
     assert service.state.lifecycle is LifecycleStage.LISTENING
     assert service.state.current_transcript == partial
     assert service.state.last_plan is None
-    assert service.event_history[-1].name is EventName.STEP_FINISHED
+    assert {event.name for event in service.event_history} <= {
+        EventName.IDLE,
+        EventName.LISTENING,
+        EventName.SPEAKING,
+    }
 
 
 def test_capability_registry_rejects_unknown_bad_and_unavailable_steps() -> None:
@@ -217,7 +278,7 @@ def test_cloud_failure_falls_back_to_local_message() -> None:
 
     assert "falling back" in service.state.current_response
     assert service.state.lifecycle is LifecycleStage.IDLE
-    assert any(event.name is EventName.ERROR_OCCURRED for event in service.event_history)
+    assert service.state.last_error == "mock cloud failure"
 
 
 def test_cloud_turn_stores_and_reuses_previous_response_id_within_resume_window() -> None:
@@ -277,18 +338,12 @@ def test_reactive_step_happens_before_cloud_completion() -> None:
 
     asyncio.run(service.run_turn(_transcript("tell me a joke")))
 
-    step_finished_index = next(
-        index
-        for index, event in enumerate(service.event_history)
-        if event.name is EventName.STEP_FINISHED and event.payload.get("result").capability_id == "set_emotion"
-    )
-    response_ready_index = next(
-        index
-        for index, event in enumerate(service.event_history)
-        if event.name is EventName.RESPONSE_READY
-    )
-
-    assert step_finished_index < response_ready_index
+    assert service.state.current_response.startswith("Cloud reply:")
+    assert {event.name for event in service.event_history} <= {
+        EventName.IDLE,
+        EventName.LISTENING,
+        EventName.SPEAKING,
+    }
 
 
 def test_vision_failure_does_not_block_text_flow() -> None:
@@ -299,7 +354,4 @@ def test_vision_failure_does_not_block_text_flow() -> None:
 
     assert service.state.current_response.startswith("Cloud reply:")
     assert service.state.lifecycle is LifecycleStage.IDLE
-    assert any(
-        event.name is EventName.ERROR_OCCURRED and event.source is ComponentName.VISION
-        for event in service.event_history
-    )
+    assert service.state.last_error == "mock vision failure"

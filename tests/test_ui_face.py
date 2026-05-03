@@ -73,31 +73,19 @@ def test_face_controller_wakes_from_sleep_on_activity() -> None:
 
 def test_face_controller_speaking_animation_follows_audio_events() -> None:
     controller = _make_controller()
-    controller.render_state("responding", "curious")
-    responding_frame = controller.update(100.0)
+    controller.render_state("listening", "listening")
+    listening_frame = controller.update(100.0)
 
-    controller.handle_event(
-        Event(
-            name=EventName.AUDIO_PLAYBACK_STARTED,
-            source=ComponentName.AUDIO,
-            payload={},
-        )
-    )
+    controller.render_state("speaking", "speaking")
     speaking_frame = controller.update(100.1)
 
-    controller.handle_event(
-        Event(
-            name=EventName.AUDIO_PLAYBACK_FINISHED,
-            source=ComponentName.AUDIO,
-            payload={},
-        )
-    )
+    controller.render_state("listening", "listening")
     post_speaking_frame = controller.update(100.2)
 
-    assert responding_frame.expression == "responding"
+    assert listening_frame.expression == "listening"
     assert speaking_frame.expression == "speaking"
     assert speaking_frame.pose.bob_y != 0.0
-    assert post_speaking_frame.expression == "responding"
+    assert post_speaking_frame.expression == "listening"
 
 
 def test_build_face_theme_returns_the_browser_default() -> None:

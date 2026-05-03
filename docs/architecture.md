@@ -78,7 +78,7 @@ Responsibilities:
 - stream microphone PCM to the model
 - receive streamed assistant PCM
 - play audio locally through command or ALSA output
-- emit playback lifecycle events
+- emit robot status updates for speaking/listening transitions
 - handle server VAD / semantic VAD events
 - handle barge-in by interrupting local playback and truncating unheard assistant audio
 - dispatch tool calls to the orchestrator
@@ -147,7 +147,7 @@ Realtime model tool call
 ### Face/UI Flow
 
 ```text
-Orchestrator lifecycle event
+Robot status update
 -> event bus
 -> UI service / browser bridge
 -> robot face state update
@@ -178,19 +178,18 @@ Orchestrator lifecycle event
 
 ## 6. Event Model
 
-The system is event-driven. Important events include:
+The robot-facing event model is intentionally small. Public status events are:
 
-- `listening_started`
-- `face_detected`
-- `plan_created`
-- `step_started`
-- `step_finished`
-- `response_ready`
-- `audio_playback_started`
-- `audio_playback_finished`
-- `audio_interrupted`
-- `audio_finished`
-- `error_occurred`
+- `idle`
+- `listening`
+- `speaking`
+
+Status transitions are explicit:
+
+- wake-triggered realtime session start publishes `listening`
+- assistant audio start publishes `speaking`
+- playback drain and confirmed barge-in publish `listening`
+- realtime session exit back to wake-word mode publishes `idle`
 
 ## 7. Configuration
 
@@ -211,7 +210,7 @@ Pi deployments commonly use a local `.env.local.rpi` on the development machine 
 The system should degrade gracefully:
 
 - if wake detection fails to initialize, fail early during runtime startup
-- if realtime session errors, publish an error event and return to idle
+- if realtime session errors, log the failure and return to idle
 - if local playback is interrupted, keep the realtime session state consistent
 - if a tool fails, return a tool failure result instead of exposing uncontrolled exceptions to the model
 - if UI/browser launch fails, keep the orchestrator error visible through logs

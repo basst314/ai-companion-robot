@@ -816,7 +816,7 @@ class RealtimeConversationService:
             state.response_count += 1
             logger.info("realtime response_audio_started response_id=%s", response_id)
             await self._emit_audio_event(
-                EventName.AUDIO_PLAYBACK_STARTED,
+                EventName.SPEAKING,
                 {
                     "job_id": state.response_id,
                     "text": "",
@@ -866,10 +866,11 @@ class RealtimeConversationService:
         await self.audio_output.interrupt()
         await self._truncate_interrupted_assistant_audio(websocket, state)
         await self._emit_audio_event(
-            EventName.AUDIO_INTERRUPTED,
+            EventName.LISTENING,
             {
                 "job_id": interrupted_response_id,
                 "source": source,
+                "voice_id": self.voice,
                 "input_audio_bytes": state.input_audio_bytes,
                 "input_audio_chunks": state.input_audio_chunks,
                 "output_audio_bytes": state.output_audio_bytes,
@@ -958,12 +959,10 @@ class RealtimeConversationService:
         state.pending_playback_job_id = None
         logger.info("realtime response_audio_finished response_id=%s %s", job_id, state.stats_summary())
         await self._emit_audio_event(
-            EventName.AUDIO_PLAYBACK_FINISHED,
+            EventName.LISTENING,
             {
                 "job_id": job_id,
-                "text": "",
                 "voice_id": self.voice,
-                "duration_ms": None,
                 "input_audio_bytes": state.input_audio_bytes,
                 "input_audio_chunks": state.input_audio_chunks,
                 "output_audio_bytes": state.output_audio_bytes,
@@ -971,10 +970,6 @@ class RealtimeConversationService:
                 "response_count": state.response_count,
                 "interrupt_count": state.interrupt_count,
             },
-        )
-        await self._emit_audio_event(
-            EventName.AUDIO_FINISHED,
-            {"job_id": job_id, "text": "", "duration_ms": None},
         )
         if state.response_done_waiting_for_playback:
             state.response_done_waiting_for_playback = False

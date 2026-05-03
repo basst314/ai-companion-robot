@@ -111,7 +111,6 @@ def build_renderer_state_command(
             "displaySleepRequested": display_sleep_requested,
             "lifecycle": controller_state.lifecycle,
             "emotion": controller_state.emotion,
-            "speechActive": controller_state.speech_active,
             "previewText": controller_state.preview_text,
         },
     )
@@ -169,7 +168,7 @@ def build_idle_policy_payload(config: UiConfig) -> dict[str, object]:
 def map_event_to_trigger_command(event: Event) -> BrowserCommand | None:
     """Map orchestrator-visible events into transient face behaviors."""
 
-    if event.name is EventName.LISTENING_STARTED:
+    if event.name is EventName.LISTENING:
         trigger = str(event.payload.get("trigger", ""))
         if trigger == "wake":
             return BrowserCommand(
@@ -187,7 +186,7 @@ def map_event_to_trigger_command(event: Event) -> BrowserCommand | None:
             },
         )
 
-    if event.name is EventName.AUDIO_PLAYBACK_STARTED:
+    if event.name is EventName.SPEAKING:
         return BrowserCommand(
             command_type="transient_trigger",
             payload={

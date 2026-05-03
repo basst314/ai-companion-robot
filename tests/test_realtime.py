@@ -143,11 +143,7 @@ def test_realtime_service_streams_audio_and_emits_playback_events() -> None:
     assert websocket.sent[1]["type"] == "input_audio_buffer.append"
     assert websocket.sent[0]["session"]["audio"]["output"]["voice"] == "echo"
     assert pcm_output.chunks == [output_audio]
-    assert [event.name for event in events] == [
-        EventName.AUDIO_PLAYBACK_STARTED,
-        EventName.AUDIO_PLAYBACK_FINISHED,
-        EventName.AUDIO_FINISHED,
-    ]
+    assert [event.name for event in events] == [EventName.SPEAKING, EventName.LISTENING]
 
 
 def test_realtime_session_update_supports_semantic_vad_auto_eagerness() -> None:
@@ -286,6 +282,7 @@ def test_realtime_playback_candidate_speech_stopped_does_not_create_response() -
 def test_realtime_confirmed_playback_barge_in_speech_stopped_creates_response() -> None:
     websocket = _FakeWebSocket(incoming=[])
     pcm_output = _FakePcmOutput()
+    events = []
     service = RealtimeConversationService(
         api_key="test-key",
         base_url="wss://api.openai.com/v1/realtime",
@@ -295,6 +292,7 @@ def test_realtime_confirmed_playback_barge_in_speech_stopped_creates_response() 
         audio_capture_sample_rate_hz=24000,
         realtime_sample_rate_hz=24000,
         audio_output=pcm_output,
+        event_handler=lambda event: _record_event(events, event),
     )
 
     async def run() -> None:
@@ -314,6 +312,8 @@ def test_realtime_confirmed_playback_barge_in_speech_stopped_creates_response() 
     sent_types = [message["type"] for message in websocket.sent]
     assert sent_types == ["response.cancel", "response.create"]
     assert pcm_output.interrupt_calls == 1
+    assert [event.name for event in events] == [EventName.LISTENING]
+    assert events[0].payload["source"] == "playback_barge_in"
 
 
 def test_local_barge_in_detector_requires_sustained_loud_audio() -> None:
@@ -504,7 +504,12 @@ def test_realtime_speech_started_during_playback_does_not_immediately_interrupt(
     assert "response.cancel" not in sent_types
     assert "conversation.item.truncate" not in sent_types
     assert "response.create" not in sent_types
-    assert EventName.AUDIO_INTERRUPTED not in [event.name for event in events]
+    assert [event.name for event in events] == [
+        EventName.SPEAKING,
+        EventName.LISTENING,
+        EventName.SPEAKING,
+        EventName.LISTENING,
+    ]
 
 
 def test_realtime_playback_candidate_without_speech_stopped_still_arms_timeout() -> None:

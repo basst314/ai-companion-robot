@@ -15,32 +15,11 @@ EventHandler = Callable[["Event"], Awaitable[None]]
 
 
 class EventName(StrEnum):
-    """Core event names implied by the architecture docs."""
+    """Robot status names shared by the realtime runtime and UI."""
 
-    SPEECH_DETECTED = "speech_detected"
-    LISTENING_STARTED = "listening_started"
-    TRANSCRIPT_PARTIAL = "transcript_partial"
-    TRANSCRIPT_FINAL = "transcript_final"
-    FACE_DETECTED = "face_detected"
-    ROUTE_SELECTED = "route_selected"
-    PLAN_CREATED = "plan_created"
-    PLAN_VALIDATED = "plan_validated"
-    STEP_STARTED = "step_started"
-    STEP_FINISHED = "step_finished"
-    STEP_SKIPPED = "step_skipped"
-    RESPONSE_READY = "response_ready"
-    ACTION_EXECUTED = "action_executed"
-    QUERY_EXECUTED = "query_executed"
-    AUDIO_ENQUEUED = "audio_enqueued"
-    AUDIO_SYNTHESIS_STARTED = "audio_synthesis_started"
-    AUDIO_SYNTHESIS_FINISHED = "audio_synthesis_finished"
-    AUDIO_PLAYBACK_STARTED = "audio_playback_started"
-    AUDIO_PLAYBACK_FINISHED = "audio_playback_finished"
-    AUDIO_INTERRUPTED = "audio_interrupted"
-    AUDIO_FAILED = "audio_failed"
-    AUDIO_STARTED = "audio_started"
-    AUDIO_FINISHED = "audio_finished"
-    ERROR_OCCURRED = "error_occurred"
+    IDLE = "idle"
+    LISTENING = "listening"
+    SPEAKING = "speaking"
 
 
 @dataclass(slots=True, frozen=True)

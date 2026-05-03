@@ -9,6 +9,17 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-05-03 — Three-State Robot Face Status
+
+### Highlights
+- Collapsed the robot-facing event model to three status events: `idle`, `listening`, and `speaking`.
+- Updated the browser face badge to show the current robot status instead of bridge connection health.
+- Removed the browser `speechActive` state contract and now drives speaking mouth/motion animation from `lifecycle == "speaking"`.
+- Replaced legacy playback-finished/interrupted/failed UI semantics with explicit status transitions: playback start sets `speaking`, playback drain and confirmed barge-in set `listening`, and realtime session exit sets `idle`.
+
+### Why this matters
+The face now has a simple, shippable state foundation for future expressions. Idle only means the robot has returned to wake-word mode, while listening remains active between turns and during barge-in capture.
+
 ## 2026-05-02 — Audio-Reactive Robot Face Border
 
 ### Highlights

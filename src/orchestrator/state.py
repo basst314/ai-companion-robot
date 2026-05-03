@@ -8,14 +8,11 @@ from shared.models import EmotionState, Language, PlanStepResult, Transcript, Tu
 
 
 class LifecycleStage(StrEnum):
-    """High-level lifecycle stages for the local orchestrator."""
+    """Robot status values shown by the UI."""
 
     IDLE = "idle"
     LISTENING = "listening"
-    PROCESSING = "processing"
-    RESPONDING = "responding"
     SPEAKING = "speaking"
-    ERROR = "error"
 
 
 @dataclass(slots=True)

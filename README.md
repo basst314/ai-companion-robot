@@ -121,7 +121,7 @@ On the Pi, kiosk mode is usually preferred:
 AI_COMPANION_UI_BROWSER_LAUNCH_MODE=kiosk
 ```
 
-The Python app starts the local browser bridge and launches Chromium when configured to do so. UI events are driven by orchestrator lifecycle events, realtime audio playback events, and local reactive policy steps.
+The Python app starts the local browser bridge and launches Chromium when configured to do so. The robot face badge and animations are driven by the current robot status: `idle`, `listening`, or `speaking`.
 
 ## Run
 

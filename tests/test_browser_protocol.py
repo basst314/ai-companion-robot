@@ -71,43 +71,17 @@ def test_renderer_state_command_covers_core_robot_states() -> None:
             {
                 "lifecycle": "listening",
                 "emotion": "listening",
-                "speechActive": False,
                 "previewText": None,
             },
         ),
         (
-            "thinking",
-            FacePresentationState(lifecycle="processing", emotion="thinking", scene="face", preview_text="Thinking"),
-            "face",
-            False,
-            {
-                "lifecycle": "processing",
-                "emotion": "thinking",
-                "speechActive": False,
-                "previewText": "Thinking",
-            },
-        ),
-        (
-            "responding",
-            FacePresentationState(lifecycle="responding", emotion="curious", scene="face", preview_text="Answer"),
-            "face",
-            False,
-            {
-                "lifecycle": "responding",
-                "emotion": "curious",
-                "speechActive": False,
-                "previewText": "Answer",
-            },
-        ),
-        (
             "speaking",
-            FacePresentationState(lifecycle="speaking", emotion="speaking", scene="face", speech_active=True),
+            FacePresentationState(lifecycle="speaking", emotion="speaking", scene="face"),
             "face",
             False,
             {
                 "lifecycle": "speaking",
                 "emotion": "speaking",
-                "speechActive": True,
                 "previewText": None,
             },
         ),
@@ -119,7 +93,6 @@ def test_renderer_state_command_covers_core_robot_states() -> None:
             {
                 "lifecycle": "idle",
                 "emotion": "neutral",
-                "speechActive": False,
                 "previewText": None,
             },
         ),
@@ -137,23 +110,23 @@ def test_renderer_state_command_covers_core_robot_states() -> None:
         assert command.payload["displaySleepRequested"] is display_sleep_requested
         assert command.payload["lifecycle"] == expected["lifecycle"]
         assert command.payload["emotion"] == expected["emotion"]
-        assert command.payload["speechActive"] is expected["speechActive"]
+        assert "speechActive" not in command.payload
         assert command.payload["previewText"] == expected["previewText"]
 
 
 def test_map_event_to_trigger_command_marks_wake_attention_and_speech_scoot() -> None:
     wake_event = Event(
-        name=EventName.LISTENING_STARTED,
+        name=EventName.LISTENING,
         source=ComponentName.ORCHESTRATOR,
         payload={"trigger": "wake"},
     )
     follow_up_event = Event(
-        name=EventName.LISTENING_STARTED,
+        name=EventName.LISTENING,
         source=ComponentName.ORCHESTRATOR,
         payload={"trigger": "follow_up"},
     )
     audio_event = Event(
-        name=EventName.AUDIO_PLAYBACK_STARTED,
+        name=EventName.SPEAKING,
         source=ComponentName.AUDIO,
         payload={},
     )

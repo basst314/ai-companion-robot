@@ -288,7 +288,6 @@ class FacePresentationState:
     lifecycle: str = "idle"
     emotion: str = "neutral"
     scene: str = "face"
-    speech_active: bool = False
     overlay_text: str | None = None
     preview_text: str | None = None
     active_expression: str = "neutral"
@@ -353,21 +352,7 @@ class FaceController:
 
     def handle_event(self, event: Event) -> None:
         now = time.monotonic()
-        if event.name is EventName.AUDIO_PLAYBACK_STARTED:
-            self.state.speech_active = True
-            self._mark_activity(now)
-            return
-        if event.name in {EventName.AUDIO_PLAYBACK_FINISHED, EventName.AUDIO_INTERRUPTED, EventName.AUDIO_FAILED}:
-            self.state.speech_active = False
-            self._mark_activity(now)
-            return
-        if event.name in {
-            EventName.LISTENING_STARTED,
-            EventName.TRANSCRIPT_PARTIAL,
-            EventName.TRANSCRIPT_FINAL,
-            EventName.RESPONSE_READY,
-            EventName.FACE_DETECTED,
-        }:
+        if event.name in {EventName.IDLE, EventName.LISTENING, EventName.SPEAKING}:
             self._mark_activity(now)
 
     def update(self, now: float | None = None) -> FaceFrame:
@@ -422,7 +407,6 @@ class FaceController:
             self._schedule_next_glance(now)
             if (
                 self.state.lifecycle == "idle"
-                and not self.state.speech_active
                 and self.rng.random() < self.theme.idle.playful_variant_chance
             ):
                 self._idle_variant_name = self.rng.choice(("playful", "curious"))
@@ -436,7 +420,7 @@ class FaceController:
             self.state.display_sleep_requested = False
             return
 
-        if self.state.lifecycle != "idle" or self.state.speech_active:
+        if self.state.lifecycle != "idle":
             self.state.scene = "face"
             self.state.display_sleep_requested = False
             return
@@ -455,14 +439,10 @@ class FaceController:
     def _resolve_expression(self, now: float) -> str:
         if self.state.scene == "sleep":
             return "sleepy"
-        if self.state.speech_active or self.state.lifecycle == "speaking":
+        if self.state.lifecycle == "speaking":
             return "speaking"
         if self.state.lifecycle == "listening":
             return "listening"
-        if self.state.lifecycle == "processing":
-            return "thinking"
-        if self.state.lifecycle == "responding":
-            return "responding"
         if self.state.emotion == "happy":
             return "playful"
         if self.state.emotion in {"curious", "thinking"}:
@@ -476,7 +456,7 @@ class FaceController:
         blink_modifier = self._blink_openness_modifier(now)
         breathing = math.sin((now / self.theme.idle.breathing_period_seconds) * math.tau)
         speaking_bob = 0.0
-        if self.state.speech_active:
+        if self.state.lifecycle == "speaking":
             speaking_bob = math.sin(now * self.theme.idle.speaking_bob_frequency_hz * math.tau)
         gaze_x = self._gaze_target_x
         gaze_y = self._gaze_target_y
@@ -531,7 +511,7 @@ class FaceController:
             return self.theme.transitions.sleep_seconds
         if expression_name == "listening":
             return self.theme.transitions.quick_seconds
-        if self.state.speech_active:
+        if self.state.lifecycle == "speaking":
             return self.theme.transitions.quick_seconds
         if expression_name in {"playful", "curious"}:
             return self.theme.transitions.normal_seconds
