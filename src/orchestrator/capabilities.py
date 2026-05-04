@@ -98,6 +98,29 @@ def build_default_capability_registry() -> CapabilityRegistry:
     """Return the default capability catalog exposed to the orchestrator."""
 
     definitions = {
+        "turn_head": CapabilityDefinition(
+            capability_id="turn_head",
+            description="Turn the robot head to a supported direction.",
+            kind=CapabilityKind.ACTION,
+            target=ComponentName.HARDWARE,
+            phase=StepPhase.IMMEDIATE,
+            requires_components=(ComponentName.HARDWARE,),
+            argument_schema={
+                "direction": {
+                    "type": "string",
+                    "enum": ("left", "right", "center", "user"),
+                    "required": True,
+                }
+            },
+        ),
+        "cloud_reply": CapabilityDefinition(
+            capability_id="cloud_reply",
+            description="Generate final spoken reply from cloud model.",
+            kind=CapabilityKind.RESPONSE,
+            target=ComponentName.CLOUD,
+            phase=StepPhase.REPLY,
+            requires_components=(ComponentName.CLOUD,),
+        ),
         "set_face_animation": CapabilityDefinition(
             capability_id="set_face_animation",
             description=(

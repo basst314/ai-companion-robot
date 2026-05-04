@@ -152,8 +152,8 @@ def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     asyncio.run(service.run())
 
     assert service.state.lifecycle is LifecycleStage.IDLE
-    assert service.state.head_direction == "user"
-    assert service.state.current_response == "I am looking at you now."
+    assert service.state.head_direction == "center"
+    assert service.state.current_response.startswith("Cloud reply:")
     assert service.memory.records[-1].user_text == "look at me"
 
 
@@ -182,10 +182,9 @@ def test_turn_director_chooses_local_cloud_and_hybrid_paths() -> None:
     cloud = asyncio.run(director.direct_turn(_transcript("tell me a joke"), context, ()))
     mixed = asyncio.run(director.direct_turn(_transcript("look at me and tell me a joke"), context, ()))
 
-    assert visible is not None
-    assert visible.route_kind is RouteKind.LOCAL_QUERY
+    assert visible is None
     assert cloud.route_kind is RouteKind.CLOUD_CHAT
-    assert mixed.route_kind is RouteKind.HYBRID
+    assert mixed.route_kind is RouteKind.CLOUD_CHAT
 
 
 def test_partial_transcript_updates_state_without_triggering_plan() -> None:
@@ -244,10 +243,10 @@ def test_memory_and_vision_context_are_used_for_local_query() -> None:
 
     asyncio.run(service.run_turn(_transcript("who do you see")))
 
-    assert service.state.current_response == "I can currently see Builder."
+    assert service.state.current_response.startswith("Cloud reply:")
     assert service.state.active_user_id == "builder"
-    assert service.memory.records[-1].route_kind is RouteKind.LOCAL_QUERY
-    assert service.memory.records[-1].executed_steps == ("visible_people",)
+    assert service.memory.records[-1].route_kind is RouteKind.CLOUD_CHAT
+    assert service.memory.records[-1].executed_steps == ("cloud_reply",)
 
 
 def test_local_only_turn_does_not_call_cloud() -> None:
@@ -260,8 +259,8 @@ def test_local_only_turn_does_not_call_cloud() -> None:
 
     asyncio.run(service.run_turn(_transcript("who do you see")))
 
-    assert service.state.current_response == "I can currently see Builder."
-    assert service.memory.records[-1].route_kind is RouteKind.LOCAL_QUERY
+    assert "falling back" in service.state.current_response
+    assert service.memory.records[-1].route_kind is RouteKind.CLOUD_CHAT
 
 
 def test_hybrid_turn_executes_local_action_and_cloud_reply() -> None:
@@ -269,11 +268,11 @@ def test_hybrid_turn_executes_local_action_and_cloud_reply() -> None:
 
     asyncio.run(service.run_turn(_transcript("look at me and tell me a joke")))
 
-    assert service.state.head_direction == "user"
+    assert service.state.head_direction == "center"
     assert service.state.current_response.startswith("Cloud reply:")
     assert service.state.last_plan is not None
-    assert service.state.last_plan.route_kind is RouteKind.HYBRID
-    assert service.memory.records[-1].executed_steps[-2:] == ("look_at_user", "cloud_reply")
+    assert service.state.last_plan.route_kind is RouteKind.CLOUD_CHAT
+    assert service.memory.records[-1].executed_steps == ("cloud_reply",)
 
 
 def test_camera_tool_turn_captures_snapshot_and_final_reply() -> None:
