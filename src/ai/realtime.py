@@ -772,6 +772,7 @@ class RealtimeConversationService:
             return
 
         if event_type == "response.done":
+            state.response_active = False
             if state.audio_started:
                 await self._finish_audio_output(state)
             await self._complete_playback_if_idle(state)
@@ -1022,6 +1023,7 @@ class RealtimeConversationService:
                     }
                 )
             )
+        state.response_active = True
         await websocket.send(json.dumps({"type": "response.create"}))
 
     async def _create_response_if_pending(
@@ -1033,16 +1035,23 @@ class RealtimeConversationService:
     ) -> bool:
         if not state.response_create_pending:
             return False
-        if state.speaker_active or state.audio_started or state.response_done_waiting_for_playback:
+        if (
+            state.response_active
+            or state.speaker_active
+            or state.audio_started
+            or state.response_done_waiting_for_playback
+        ):
             state.response_create_pending = False
             logger.info(
-                "realtime response_create_skipped reason=assistant_active source=%s speaker_active=%s streaming=%s",
+                "realtime response_create_skipped reason=assistant_active source=%s response_active=%s speaker_active=%s streaming=%s",
                 source,
+                state.response_active,
                 state.speaker_active,
                 state.audio_started,
             )
             return False
         state.response_create_pending = False
+        state.response_active = True
         logger.info("realtime response_create_sent source=%s %s", source, state.stats_summary())
         await websocket.send(json.dumps({"type": "response.create"}))
         return True
@@ -1098,6 +1107,7 @@ class _RealtimeEventState:
     speaker_active: bool = False
     user_speech_active: bool = False
     user_speech_stopped: bool = False
+    response_active: bool = False
     response_id: str | None = None
     response_item_id: str | None = None
     pending_playback_job_id: str | None = None

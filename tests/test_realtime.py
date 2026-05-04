@@ -279,6 +279,35 @@ def test_realtime_playback_candidate_speech_stopped_does_not_create_response() -
     assert state.response_create_pending is False
 
 
+def test_realtime_does_not_create_second_response_before_audio_starts() -> None:
+    websocket = _FakeWebSocket(incoming=[])
+    service = RealtimeConversationService(
+        api_key="test-key",
+        base_url="wss://api.openai.com/v1/realtime",
+        model="gpt-realtime-test",
+        voice="echo",
+        turn_detection="server_vad",
+        audio_capture_sample_rate_hz=24000,
+        realtime_sample_rate_hz=24000,
+        audio_output=_FakePcmOutput(),
+    )
+
+    async def run() -> _RealtimeEventState:
+        state = _RealtimeEventState()
+        stop_event = asyncio.Event()
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_started"}, state, stop_event)
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_stopped"}, state, stop_event)
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_started"}, state, stop_event)
+        await service._handle_server_event(websocket, {"type": "input_audio_buffer.speech_stopped"}, state, stop_event)
+        return state
+
+    state = asyncio.run(run())
+
+    assert websocket.sent == [{"type": "response.create"}]
+    assert state.response_active is True
+    assert state.response_create_pending is False
+
+
 def test_realtime_confirmed_playback_barge_in_speech_stopped_creates_response() -> None:
     websocket = _FakeWebSocket(incoming=[])
     pcm_output = _FakePcmOutput()
