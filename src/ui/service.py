@@ -30,6 +30,22 @@ class UiService(Protocol):
     async def update_mic_level(self, level: float) -> None:
         """Send a normalized microphone level to renderers that support audio-reactive UI."""
 
+    async def trigger_face_behavior(self, name: str, *, label: str | None = None, reason: str = "debug") -> None:
+        """Trigger a one-shot face behavior for debugging and tuning."""
+
+    async def set_face_idle_enabled(self, enabled: bool) -> None:
+        """Enable or disable renderer-side idle behaviors for debugging."""
+
+    async def set_face_animation(
+        self,
+        name: str,
+        *,
+        label: str | None = None,
+        duration_seconds: float | None = None,
+        reason: str = "realtime_tool",
+    ) -> None:
+        """Apply a timed semantic face animation override."""
+
     async def shutdown(self) -> None:
         """Release renderer resources during app shutdown."""
 
@@ -46,6 +62,9 @@ class MockUiService:
     content_modes: list[tuple[str, dict[str, object] | None]] = field(default_factory=list)
     received_events: list[Event] = field(default_factory=list)
     mic_levels: list[float] = field(default_factory=list)
+    triggered_face_behaviors: list[tuple[str, str | None, str]] = field(default_factory=list)
+    face_animations: list[tuple[str, str | None, float | None, str]] = field(default_factory=list)
+    face_idle_enabled: bool = True
     echo_state_to_console: bool = True
     echo_text_to_console: bool = True
 
@@ -84,6 +103,22 @@ class MockUiService:
 
     async def update_mic_level(self, level: float) -> None:
         self.mic_levels.append(min(1.0, max(0.0, float(level))))
+
+    async def trigger_face_behavior(self, name: str, *, label: str | None = None, reason: str = "debug") -> None:
+        self.triggered_face_behaviors.append((name, label, reason))
+
+    async def set_face_idle_enabled(self, enabled: bool) -> None:
+        self.face_idle_enabled = bool(enabled)
+
+    async def set_face_animation(
+        self,
+        name: str,
+        *,
+        label: str | None = None,
+        duration_seconds: float | None = None,
+        reason: str = "realtime_tool",
+    ) -> None:
+        self.face_animations.append((name, label, duration_seconds, reason))
 
     async def shutdown(self) -> None:
         return None

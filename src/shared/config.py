@@ -108,12 +108,11 @@ class UiConfig:
     face_secondary_micro_motion: bool = True
     face_idle_behaviors: tuple[str, ...] = (
         "blink",
-        "look_side",
         "quick_glance",
         "bored",
-        "curious",
+        "cute",
+        "thinking",
         "scoot",
-        "boundary_press",
     )
 
 

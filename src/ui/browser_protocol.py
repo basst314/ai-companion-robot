@@ -35,6 +35,19 @@ _KNOWN_IDLE_BEHAVIORS = frozenset(
     }
 )
 
+FACE_DEBUG_BEHAVIORS: tuple[tuple[str, str], ...] = (
+    ("blink", "Blink"),
+    ("quick_glance", "Quick glance"),
+    ("bored", "Bored half-lid"),
+    ("cute", "Cute mode"),
+    ("thinking", "Thinking"),
+    ("attention_mode", "Attention mode"),
+    ("surprise", "Surprise"),
+    ("deadpan", "Deadpan stare"),
+    ("sleeping", "Sleep close"),
+    ("scoot", "Tiny scoot"),
+)
+
 
 @dataclass(slots=True, frozen=True)
 class BrowserCommand:
@@ -145,6 +158,52 @@ def build_mic_level_command(level: float) -> BrowserCommand:
     )
 
 
+def build_transient_trigger_command(
+    name: str,
+    *,
+    reason: str,
+    label: str | None = None,
+    delay_seconds: float | None = None,
+) -> BrowserCommand:
+    """Build a one-shot named behavior trigger for the browser renderer."""
+
+    payload: dict[str, object] = {
+        "name": name,
+        "reason": reason,
+    }
+    if label:
+        payload["label"] = label
+    if delay_seconds is not None:
+        payload["delaySeconds"] = max(0.0, float(delay_seconds))
+    return BrowserCommand(
+        command_type="transient_trigger",
+        payload=payload,
+    )
+
+
+def build_expression_override_command(
+    name: str,
+    *,
+    label: str | None = None,
+    duration_seconds: float | None = None,
+    reason: str = "realtime_tool",
+) -> BrowserCommand:
+    """Build a timed expression override command for semantic model-selected looks."""
+
+    payload: dict[str, object] = {
+        "name": name,
+        "reason": reason,
+    }
+    if label:
+        payload["label"] = label
+    if duration_seconds is not None:
+        payload["durationSeconds"] = float(duration_seconds)
+    return BrowserCommand(
+        command_type="expression_override",
+        payload=payload,
+    )
+
+
 def build_idle_policy_payload(config: UiConfig) -> dict[str, object]:
     """Translate app config into runtime-tunable idle behavior settings."""
 
@@ -165,37 +224,38 @@ def build_idle_policy_payload(config: UiConfig) -> dict[str, object]:
     }
 
 
-def map_event_to_trigger_command(event: Event) -> BrowserCommand | None:
+def map_event_to_trigger_commands(event: Event) -> tuple[BrowserCommand, ...]:
     """Map orchestrator-visible events into transient face behaviors."""
 
     if event.name is EventName.LISTENING:
         trigger = str(event.payload.get("trigger", ""))
-        if trigger == "wake":
-            return BrowserCommand(
-                command_type="transient_trigger",
-                payload={
-                    "name": "attention_mode",
-                    "reason": "wake_word",
-                },
+        source = str(event.payload.get("source", ""))
+        if source in {"playback_barge_in", "local_barge_in"}:
+            return (
+                build_transient_trigger_command(
+                    "surprise",
+                    reason=source,
+                    label="Surprise",
+                ),
             )
-        return BrowserCommand(
-            command_type="transient_trigger",
-            payload={
-                "name": "quick_glance",
-                "reason": "listening_started",
-            },
+        if trigger != "wake":
+            return ()
+        return (
+            build_transient_trigger_command(
+                "attention_mode",
+                reason="wake_word",
+                label="Attention mode",
+            ),
         )
 
-    if event.name is EventName.SPEAKING:
-        return BrowserCommand(
-            command_type="transient_trigger",
-            payload={
-                "name": "scoot",
-                "reason": "speech_started",
-            },
-        )
+    return ()
 
-    return None
+
+def map_event_to_trigger_command(event: Event) -> BrowserCommand | None:
+    """Return the first transient face behavior for legacy callers."""
+
+    commands = map_event_to_trigger_commands(event)
+    return commands[0] if commands else None
 
 
 def _looks_like_face_state(payload: Mapping[str, object]) -> bool:

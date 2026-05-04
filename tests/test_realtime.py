@@ -939,8 +939,19 @@ def test_realtime_tool_definitions_skip_response_capabilities() -> None:
     assert "cloud_reply" not in tool_names
     assert "turn_head" in tool_names
     assert "camera_snapshot" in tool_names
+    assert "set_face_animation" in tool_names
     turn_head = next(tool for tool in tools if tool["name"] == "turn_head")
     assert turn_head["parameters"]["required"] == ["direction"]
+    face_tool = next(tool for tool in tools if tool["name"] == "set_face_animation")
+    assert face_tool["parameters"]["properties"]["animation"]["enum"] == [
+        "curious",
+        "cute",
+        "thinking",
+        "deadpan",
+        "sleeping",
+        "speaking",
+    ]
+    assert face_tool["parameters"]["properties"]["duration_seconds"]["maximum"] == 10
 
 
 def test_pcm16_rate_converter_upsamples_without_audioop_dependency() -> None:
@@ -1198,6 +1209,62 @@ def test_orchestrator_denies_invalid_realtime_tool_arguments() -> None:
 
     assert result.call_id == "call_1"
     assert "must be one of" in result.output_text
+
+
+def test_orchestrator_handles_realtime_face_animation_tool(capsys: pytest.CaptureFixture[str]) -> None:
+    service = main_mod.build_application(AppConfig())
+
+    result = asyncio.run(
+        service.handle_realtime_tool_request(
+            RealtimeToolCall(
+                call_id="call_face",
+                tool_name="set_face_animation",
+                arguments={"animation": "cute", "duration_seconds": 99},
+            )
+        )
+    )
+
+    assert result.call_id == "call_face"
+    assert result.output_text == "Face animation set to cute for 10.0s."
+    assert service.ui.face_animations == [("cute", "Cute", 10.0, "realtime_tool")]
+    console_output = capsys.readouterr().out
+    assert "AI requested cute" in console_output
+    assert "duration 10.0s" in console_output
+
+
+def test_orchestrator_realtime_face_animation_speaking_clears_override() -> None:
+    service = main_mod.build_application(AppConfig())
+
+    result = asyncio.run(
+        service.handle_realtime_tool_request(
+            RealtimeToolCall(
+                call_id="call_face",
+                tool_name="set_face_animation",
+                arguments={"animation": "speaking"},
+            )
+        )
+    )
+
+    assert result.output_text == "Face animation reset to normal speaking."
+    assert service.ui.face_animations == [("speaking", "Speaking", None, "realtime_tool")]
+
+
+def test_orchestrator_camera_snapshot_triggers_curious_face_animation() -> None:
+    service = main_mod.build_application(AppConfig())
+
+    result = asyncio.run(
+        service.handle_realtime_tool_request(
+            RealtimeToolCall(
+                call_id="call_camera",
+                tool_name="camera_snapshot",
+                arguments={},
+            )
+        )
+    )
+
+    assert result.call_id == "call_camera"
+    assert result.image_url is not None
+    assert service.ui.face_animations == [("curious", "Curious", 4.0, "camera_snapshot")]
 
 
 async def _return_websocket(url: str, headers: object, websocket: _FakeWebSocket) -> _FakeWebSocket:

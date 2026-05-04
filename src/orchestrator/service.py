@@ -45,11 +45,27 @@ from shared.models import (
 )
 from audio.capture import MicLevelSampler, SharedLiveSpeechState, normalize_pcm16_mic_level
 from audio.wake import WakeDetectionResult, WakeWordService
+from ui.browser_protocol import FACE_DEBUG_BEHAVIORS
 from ui.service import UiService
 from vision.service import VisionService
 
 logger = logging.getLogger(__name__)
 _OPENAI_RESPONSE_RESUME_WINDOW_SECONDS = 5 * 60
+_REALTIME_FACE_ANIMATION_DEFAULT_SECONDS = {
+    "curious": 4.0,
+    "cute": 6.5,
+    "thinking": 6.0,
+    "deadpan": 5.0,
+    "sleeping": 6.0,
+}
+_REALTIME_FACE_ANIMATION_LABELS = {
+    "curious": "Curious",
+    "cute": "Cute",
+    "thinking": "Thinking",
+    "deadpan": "Deadpan",
+    "sleeping": "Sleeping",
+    "speaking": "Speaking",
+}
 
 
 def _payload_int(value: object) -> int | None:
@@ -92,6 +108,7 @@ class OrchestratorService:
     _last_wake_detection: WakeDetectionResult | None = field(default=None, init=False, repr=False)
     _turn_latency_marks: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
     _mic_level_listener: Callable[[bytes, int], None] | None = field(default=None, init=False, repr=False)
+    _face_idle_debug_enabled: bool | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
         """Prepare startup state for the local runtime."""
@@ -172,6 +189,7 @@ class OrchestratorService:
             if self.config.runtime.interaction_backend == "openai_realtime":
                 await self._run_realtime_speech_loop()
             elif self.config.runtime.interactive_console:
+                self._emit_face_debug_shortcuts()
                 while True:
                     try:
                         raw_text = await asyncio.to_thread(input, "You> ")
@@ -213,8 +231,36 @@ class OrchestratorService:
             raise RuntimeError("openai_realtime interaction backend requires a realtime conversation service")
         if self.shared_live_speech_state is None:
             raise RuntimeError("openai_realtime interaction backend requires shared live speech state")
+        input_task: asyncio.Task[str] | None = None
+        if self.config.runtime.interactive_console:
+            self._emit_face_debug_shortcuts()
         while True:
-            wake_detected = await self._await_wake_word()
+            wake_task = asyncio.create_task(self._await_wake_word())
+            wait_tasks: set[asyncio.Task] = {wake_task}
+            if self.config.runtime.interactive_console and input_task is None:
+                input_task = asyncio.create_task(asyncio.to_thread(input, "Face> "))
+            if input_task is not None:
+                wait_tasks.add(input_task)
+            done, _pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+            if input_task is not None and input_task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    wake_task.cancel()
+                    await wake_task
+                try:
+                    raw_text = input_task.result()
+                except (EOFError, KeyboardInterrupt):
+                    logger.info("interactive console closed; stopping realtime loop")
+                    break
+                input_task = None
+                text = raw_text.strip()
+                if text.lower() in {"quit", "exit"}:
+                    break
+                if await self._try_run_face_debug_shortcut(text):
+                    continue
+                if text:
+                    logger.info("interactive realtime console ignored non-shortcut input=%r", text)
+                continue
+            wake_detected = wake_task.result()
             if not wake_detected:
                 continue
             await self._run_realtime_awake_session()
@@ -794,8 +840,17 @@ class OrchestratorService:
                 output_text=message,
             )
 
+        if request.tool_name == "set_face_animation":
+            step = validated_plan.steps[0]
+            return await self._handle_realtime_face_animation_tool(request, step.arguments)
+
         if request.tool_name == "camera_snapshot":
             try:
+                await self._apply_realtime_face_animation(
+                    "curious",
+                    duration_seconds=4.0,
+                    reason="camera_snapshot",
+                )
                 snapshot = await self.vision.capture_snapshot()
                 return RealtimeToolResult(
                     call_id=request.call_id,
@@ -830,6 +885,76 @@ class OrchestratorService:
             call_id=request.call_id,
             tool_name=request.tool_name,
             output_text=result.message,
+            )
+
+    async def _handle_realtime_face_animation_tool(
+        self,
+        request: RealtimeToolCall,
+        arguments: dict[str, object],
+    ) -> RealtimeToolResult:
+        animation = str(arguments.get("animation", "speaking")).lower()
+        if animation == "speaking":
+            await self._apply_realtime_face_animation(
+                "speaking",
+                duration_seconds=None,
+                reason="realtime_tool",
+            )
+            self._log_realtime_face_animation_request(animation, duration_seconds=None)
+            return RealtimeToolResult(
+                call_id=request.call_id,
+                tool_name=request.tool_name,
+                output_text="Face animation reset to normal speaking.",
+            )
+
+        raw_duration = arguments.get("duration_seconds")
+        if isinstance(raw_duration, (int, float)):
+            duration = max(0.5, min(float(raw_duration), 10.0))
+        else:
+            duration = _REALTIME_FACE_ANIMATION_DEFAULT_SECONDS.get(animation, 4.0)
+        await self._apply_realtime_face_animation(
+            animation,
+            duration_seconds=duration,
+            reason="realtime_tool",
+        )
+        self._log_realtime_face_animation_request(animation, duration_seconds=duration)
+        return RealtimeToolResult(
+            call_id=request.call_id,
+            tool_name=request.tool_name,
+            output_text=f"Face animation set to {animation} for {duration:.1f}s.",
+        )
+
+    async def _apply_realtime_face_animation(
+        self,
+        animation: str,
+        *,
+        duration_seconds: float | None,
+        reason: str,
+    ) -> None:
+        set_face_animation = getattr(self.ui, "set_face_animation", None)
+        if not callable(set_face_animation):
+            return
+        await set_face_animation(
+            animation,
+            label=_REALTIME_FACE_ANIMATION_LABELS.get(animation, animation.title()),
+            duration_seconds=duration_seconds,
+            reason=reason,
+        )
+
+    def _log_realtime_face_animation_request(
+        self,
+        animation: str,
+        *,
+        duration_seconds: float | None,
+    ) -> None:
+        formatter = ConsoleFormatter()
+        duration = "reset" if duration_seconds is None else f"{duration_seconds:.1f}s"
+        plain = formatter.stamp(f"[FACE] AI requested animation={animation} duration={duration}")
+        formatter.emit(
+            formatter.stamp(
+                f"{formatter.ui_label('[FACE]')} AI requested "
+                f"{formatter.response(animation)} {formatter.label('duration')} {formatter.transcript(duration)}"
+            ),
+            plain_text=plain,
         )
 
     async def _apply_turn_attention(self, context: InteractionContext) -> None:
@@ -893,7 +1018,7 @@ class OrchestratorService:
         response_language = response.language or transcript.language
         self.state.active_language = response_language
         self.state.response_emotion = response.emotion
-        await self._set_lifecycle(LifecycleStage.LISTENING, response.emotion, display_text)
+        await self._set_lifecycle(LifecycleStage.LISTENING, EmotionState.LISTENING, display_text)
         await self.ui.show_text(display_text)
 
         await self.memory.save_interaction(
@@ -975,6 +1100,8 @@ class OrchestratorService:
         text = raw_text.strip()
         if not text:
             return
+        if await self._try_run_face_debug_shortcut(text):
+            return
 
         transcript = Transcript(
             text=text,
@@ -985,6 +1112,46 @@ class OrchestratorService:
             ended_at=datetime.now(UTC),
         )
         await self.run_turn(transcript)
+
+    async def _try_run_face_debug_shortcut(self, text: str) -> bool:
+        if not self.config.runtime.interactive_console:
+            return False
+        if text.lower() == "i":
+            await self._toggle_face_idle_debug()
+            return True
+        if not text.isdecimal():
+            return False
+        index = int(text)
+        if index < 1 or index > len(FACE_DEBUG_BEHAVIORS):
+            return False
+        name, label = FACE_DEBUG_BEHAVIORS[index - 1]
+        trigger_face_behavior = getattr(self.ui, "trigger_face_behavior", None)
+        if not callable(trigger_face_behavior):
+            return False
+        await trigger_face_behavior(name, label=label, reason="interactive_console")
+        formatter = ConsoleFormatter()
+        plain = formatter.stamp(f"[FACE] triggered {index}: {label} ({name})")
+        formatter.emit(
+            formatter.stamp(f"{formatter.ui_label('[FACE]')} triggered {index}: {formatter.response(label)} {formatter.label(name)}"),
+            plain_text=plain,
+        )
+        return True
+
+    async def _toggle_face_idle_debug(self) -> None:
+        current = self.config.ui.face_idle_enabled if self._face_idle_debug_enabled is None else self._face_idle_debug_enabled
+        enabled = not current
+        self._face_idle_debug_enabled = enabled
+        set_face_idle_enabled = getattr(self.ui, "set_face_idle_enabled", None)
+        if callable(set_face_idle_enabled):
+            await set_face_idle_enabled(enabled)
+        self._update_face_debug_header()
+        formatter = ConsoleFormatter()
+        state = "enabled" if enabled else "disabled"
+        plain = formatter.stamp(f"[FACE] idle animations {state}")
+        formatter.emit(
+            formatter.stamp(f"{formatter.ui_label('[FACE]')} idle animations {formatter.response(state)}"),
+            plain_text=plain,
+        )
 
     async def _safe_get_detections(self) -> tuple:
         try:
@@ -1115,6 +1282,53 @@ class OrchestratorService:
             formatter.stamp(f"{formatter.mic_label('[TXT]')} {formatter.transcript(line.removeprefix('[TXT] '))}"),
             plain_text=formatter.stamp(line),
         )
+
+    def _emit_face_debug_shortcuts(self) -> None:
+        trigger_face_behavior = getattr(self.ui, "trigger_face_behavior", None)
+        if not callable(trigger_face_behavior):
+            return
+        self._update_face_debug_header()
+        formatter = ConsoleFormatter()
+        shortcuts = self._face_shortcut_summary()
+        plain = formatter.stamp(f"[FACE] animation shortcuts: {shortcuts}")
+        formatter.emit(
+            formatter.stamp(
+                f"{formatter.ui_label('[FACE]')} animation shortcuts: "
+                f"{formatter.transcript(shortcuts)}"
+            ),
+            plain_text=plain,
+        )
+
+    def _update_face_debug_header(self) -> None:
+        if self.terminal_debug is None:
+            return
+        update_face_debug = getattr(self.terminal_debug, "update_face_debug", None)
+        if not callable(update_face_debug):
+            return
+        idle_enabled = self.config.ui.face_idle_enabled if self._face_idle_debug_enabled is None else self._face_idle_debug_enabled
+        update_face_debug(
+            shortcuts=self._face_shortcut_summary(),
+            idle_enabled=idle_enabled,
+        )
+
+    def _face_shortcut_summary(self) -> str:
+        compact_labels = (
+            "blink",
+            "glance",
+            "bored",
+            "cute",
+            "think",
+            "attention",
+            "surprise",
+            "deadpan",
+            "sleep",
+            "scoot",
+        )
+        numbered = " ".join(
+            f"{index}={compact_labels[index - 1]}"
+            for index, _behavior in enumerate(FACE_DEBUG_BEHAVIORS, start=1)
+        )
+        return f"i=idle {numbered}"
 
     def _show_transcript_update(self, transcript: Transcript, *, is_final: bool) -> None:
         if not self.config.runtime.interactive_console:

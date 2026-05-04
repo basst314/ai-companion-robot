@@ -107,7 +107,7 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
 
     rows = screen.snapshot_rows(width=160)
 
-    assert len(rows) == 6
+    assert len(rows) == 7
     assert "[DBG]" in rows[0]
     assert "route local action" in rows[0]
     assert "[MIC]" in rows[1]
@@ -132,8 +132,11 @@ def test_terminal_debug_screen_formats_rows_with_meter_and_transcript() -> None:
     assert "[phase play]" in rows[4]
     assert "[queue 1]" in rows[4]
     assert "en_US-hfc_female-medium" in rows[4]
-    assert "[TXT en/live]" in rows[5]
-    assert "open your eyes please" in rows[5]
+    assert "[FACE]" in rows[5]
+    assert "[idle --]" in rows[5]
+    assert "1..10 trigger animations" in rows[5]
+    assert "[TXT en/live]" in rows[6]
+    assert "open your eyes please" in rows[6]
 
 
 def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
@@ -146,10 +149,10 @@ def test_terminal_debug_screen_truncates_transcript_for_narrow_width() -> None:
 
     rows = screen.snapshot_rows(width=36)
 
-    assert len(rows[5]) == 36
-    assert rows[5].startswith("[TXT en/live]")
-    assert "..." in rows[5]
-    assert "narrow terminals" in rows[5]
+    assert len(rows[6]) == 36
+    assert rows[6].startswith("[TXT en/live]")
+    assert "..." in rows[6]
+    assert "narrow terminals" in rows[6]
 
 
 def test_terminal_debug_screen_shows_ai_phase_durations() -> None:
@@ -309,6 +312,17 @@ def test_terminal_debug_screen_shows_running_status_with_last_duration() -> None
     rows = screen.snapshot_rows(width=120)
 
     assert "[input running 0.85s]" in rows[1]
+
+
+def test_terminal_debug_screen_shows_face_debug_shortcuts_and_idle_state() -> None:
+    screen = TerminalDebugScreen(stream=FakeTty())
+    screen.update_face_debug(shortcuts="i=toggle idle, 1=Blink", idle_enabled=False)
+
+    rows = screen.snapshot_rows(width=120)
+
+    assert "[FACE]" in rows[5]
+    assert "[idle off]" in rows[5]
+    assert "i=toggle idle, 1=Blink" in rows[5]
 
 
 def test_terminal_debug_screen_uses_alternate_screen_buffer() -> None:

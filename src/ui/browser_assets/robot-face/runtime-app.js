@@ -3,6 +3,7 @@ import { RobotFaceEngine } from "./engine.js";
 const DOM = {
   canvas: document.getElementById("faceCanvas"),
   status: document.getElementById("bridgeStatus"),
+  animationStatus: document.getElementById("animationStatus"),
   textOverlay: document.getElementById("textOverlay"),
   contentOverlay: document.getElementById("contentOverlay"),
   contentTitle: document.getElementById("contentTitle"),
@@ -79,7 +80,12 @@ function handleMessage(message) {
       engine.onMicLevel(payload.level);
       return;
     case "transient_trigger":
-      engine.triggerNamedBehavior(payload.name, payload);
+      triggerBehavior(payload);
+      renderAnimationStatus();
+      return;
+    case "expression_override":
+      engine.setExpressionOverride(payload);
+      renderAnimationStatus();
       return;
     case "overlay_update":
       overlayState.text = String(payload.text || "");
@@ -92,8 +98,21 @@ function handleMessage(message) {
   }
 }
 
+function triggerBehavior(payload) {
+  const delayMs = Math.max(0, Number(payload.delaySeconds || 0) * 1000);
+  if (delayMs > 0) {
+    window.setTimeout(() => {
+      engine.triggerNamedBehavior(payload.name, payload);
+      renderAnimationStatus();
+    }, delayMs);
+    return;
+  }
+  engine.triggerNamedBehavior(payload.name, payload);
+}
+
 function renderOverlays() {
   document.body.classList.toggle("display-blanked", overlayState.blanked);
+  renderAnimationStatus();
   const text = overlayState.text || overlayState.previewText || "";
   DOM.textOverlay.textContent = text;
   DOM.textOverlay.hidden = !text || overlayState.blanked;
@@ -127,7 +146,14 @@ function renderOverlays() {
   }
 }
 
+function renderAnimationStatus() {
+  const label = engine.getActiveBehaviorLabel();
+  DOM.animationStatus.textContent = label || "";
+  DOM.animationStatus.hidden = !label || overlayState.blanked;
+}
+
 window.addEventListener("resize", () => engine.resize());
+window.setInterval(renderAnimationStatus, 120);
 engine.start();
 connect();
 window.robotFaceRuntime = {

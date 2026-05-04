@@ -148,7 +148,7 @@ def test_build_realtime_conversation_service_uses_realtime_config() -> None:
     assert service.initial_speech_timeout_seconds == 2.5
     assert service.realtime_sample_rate_hz == 24000
     tool_names = {tool["name"] for tool in service.tools}
-    assert {"turn_head", "camera_snapshot"}.issubset(tool_names)
+    assert {"turn_head", "camera_snapshot", "set_face_animation"}.issubset(tool_names)
 
 
 def test_build_ui_service_cover_backend_branches() -> None:

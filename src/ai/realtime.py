@@ -1214,6 +1214,12 @@ def _capability_parameters_schema(capability: CapabilityDefinition) -> dict[str,
         prop: dict[str, Any] = {"type": spec.get("type", "string")}
         if "enum" in spec:
             prop["enum"] = list(spec["enum"])
+        if "description" in spec:
+            prop["description"] = str(spec["description"])
+        if "minimum" in spec:
+            prop["minimum"] = spec["minimum"]
+        if "maximum" in spec:
+            prop["maximum"] = spec["maximum"]
         properties[name] = prop
         if spec.get("required"):
             required.append(name)

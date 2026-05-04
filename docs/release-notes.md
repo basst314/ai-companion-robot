@@ -9,6 +9,18 @@ This file captures major project evolution over time based on commit history.
 
 ---
 
+## 2026-05-04 — Expressive Realtime Face Controls
+
+### Highlights
+- Added a Realtime-only `set_face_animation` tool so the AI can briefly select meaning-bearing face animations: `curious`, `cute`, `thinking`, `deadpan`, `sleeping`, or `speaking` to reset.
+- Tightened automatic face policy so idle animations are quieter and more intentional: default idle is now blink, quick glance, bored, cute, thinking, and scoot, with longer holds for bored/cute/thinking and fewer glances.
+- Updated listening and speaking event wiring so wake-word listening gets attention mode, playback-complete listening stays calm, barge-in gets surprise, and speaking no longer fires unrelated transient clips.
+- Refined the browser face visuals for sleep, speaking, and AI-selected expressions, including slow sleep breathing, stronger sleep accents, speaking-focused eyes, and a bounded cute override that matches the normal cute idle look.
+- Added sticky interactive-console face controls, numeric animation shortcuts, an idle toggle, and console logging when the AI requests a face animation.
+
+### Why this matters
+The robot face now has a small expressive vocabulary that the Realtime model can use sparingly while the default behavior stays calm. This keeps the face readable during conversation without letting automatic idle motion or oversized expression presets distract from the interaction.
+
 ## 2026-05-03 — Three-State Robot Face Status
 
 ### Highlights

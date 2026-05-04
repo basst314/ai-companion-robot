@@ -167,6 +167,14 @@ class TerminalDebugSink(Protocol):
     ) -> None:
         """Update OpenAI Realtime stream state shown in the sticky header."""
 
+    def update_face_debug(
+        self,
+        *,
+        shortcuts: str | None = None,
+        idle_enabled: bool | None = None,
+    ) -> None:
+        """Update face animation debug controls shown in the sticky header."""
+
 
 @dataclass(slots=True)
 class TerminalDebugState:
@@ -227,6 +235,8 @@ class TerminalDebugState:
     realtime_response_count: int = 0
     realtime_interrupt_count: int = 0
     realtime_last_event: str | None = None
+    face_shortcuts: str | None = None
+    face_idle_enabled: bool | None = None
 
 
 @dataclass(slots=True)
@@ -235,7 +245,7 @@ class TerminalDebugScreen(TerminalDebugSink):
 
     stream: TextIO = field(default_factory=lambda: sys.stdout)
     state: TerminalDebugState = field(default_factory=TerminalDebugState)
-    header_height: int = 6
+    header_height: int = 7
     active: bool = False
     control_enabled: bool = False
     _last_terminal_size: os.terminal_size = field(
@@ -520,6 +530,18 @@ class TerminalDebugScreen(TerminalDebugSink):
             self.state.realtime_last_event = last_event
         self.render()
 
+    def update_face_debug(
+        self,
+        *,
+        shortcuts: str | None = None,
+        idle_enabled: bool | None = None,
+    ) -> None:
+        if shortcuts is not None:
+            self.state.face_shortcuts = shortcuts
+        if idle_enabled is not None:
+            self.state.face_idle_enabled = idle_enabled
+        self.render()
+
     def emit_log(self, styled_text: str, *, plain_text: str, end: str, flush: bool) -> None:
         """Write a scrolling log message while preserving the sticky header."""
 
@@ -584,14 +606,15 @@ class TerminalDebugScreen(TerminalDebugSink):
         rows = max(self._last_terminal_size.lines, self.header_height + 2)
         self.stream.write(f"\033[{self.header_height + 1};{rows}r")
 
-    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str, str, str]:
+    def _render_header_rows(self, *, width: int) -> tuple[str, str, str, str, str, str, str]:
         status_row = self._status_row(width)
         audio_row = self._audio_row(width)
         ring_row = self._ring_row(width)
         ai_row = self._ai_row(width)
         playback_row = self._playback_row(width)
+        face_row = self._face_row(width)
         transcript_row = self._transcript_row(width)
-        return (status_row, audio_row, ring_row, ai_row, playback_row, transcript_row)
+        return (status_row, audio_row, ring_row, ai_row, playback_row, face_row, transcript_row)
 
     def _status_row(self, width: int) -> str:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -763,6 +786,24 @@ class TerminalDebugScreen(TerminalDebugSink):
         ]
         if self.state.realtime_last_event:
             parts.append(f"{self.label('event')} {self.transcript(self._clip_plain(self.state.realtime_last_event, 24))}")
+        return self._pad_row("  ".join(parts), width)
+
+    def _face_row(self, width: int) -> str:
+        shortcuts = self.state.face_shortcuts or "1..10 trigger animations"
+        if self.state.face_idle_enabled is None:
+            idle_value = "--"
+            idle_style = self.subtle_value
+        elif self.state.face_idle_enabled:
+            idle_value = "on"
+            idle_style = self.success_value
+        else:
+            idle_value = "off"
+            idle_style = self.warning_value
+        parts = [
+            self.label("[FACE]"),
+            self.badge("idle", idle_value, value_style=idle_style),
+            f"{self.label('keys')} {self.transcript(shortcuts)}",
+        ]
         return self._pad_row("  ".join(parts), width)
 
     def _ai_duration(

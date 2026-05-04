@@ -22,11 +22,13 @@ from shared.events import Event
 from ui.browser_protocol import (
     BrowserCommand,
     build_mic_level_command,
+    build_expression_override_command,
     build_overlay_update_command,
     build_renderer_config_command,
     build_renderer_state_command,
+    build_transient_trigger_command,
     load_browser_state_override,
-    map_event_to_trigger_command,
+    map_event_to_trigger_commands,
 )
 from ui.face import FaceController
 
@@ -242,11 +244,51 @@ class BrowserFaceUiService:
     async def update_mic_level(self, level: float) -> None:
         await self._publish_command(build_mic_level_command(level))
 
+    async def trigger_face_behavior(self, name: str, *, label: str | None = None, reason: str = "debug") -> None:
+        self.controller.note_activity()
+        await self._publish_command(
+            build_transient_trigger_command(
+                name,
+                label=label,
+                reason=reason,
+            )
+        )
+
+    async def set_face_idle_enabled(self, enabled: bool) -> None:
+        idle_policy = dict(build_renderer_config_command(self.config).payload["idlePolicy"])
+        idle_policy["enabled"] = bool(enabled)
+        command = BrowserCommand(
+            command_type="renderer_config",
+            payload={
+                "stateOverride": None,
+                "idlePolicy": idle_policy,
+            },
+        )
+        self._last_renderer_config = command
+        await self._publish_command(command)
+
+    async def set_face_animation(
+        self,
+        name: str,
+        *,
+        label: str | None = None,
+        duration_seconds: float | None = None,
+        reason: str = "realtime_tool",
+    ) -> None:
+        self.controller.note_activity()
+        await self._publish_command(
+            build_expression_override_command(
+                name,
+                label=label,
+                duration_seconds=duration_seconds,
+                reason=reason,
+            )
+        )
+
     async def handle_event(self, event: Event) -> None:
         self.controller.handle_event(event)
         await self._publish_state_snapshot()
-        trigger_command = map_event_to_trigger_command(event)
-        if trigger_command is not None:
+        for trigger_command in map_event_to_trigger_commands(event):
             await self._publish_command(trigger_command)
 
     async def _bridge_loop(self) -> None:

@@ -11,6 +11,7 @@ from ui.browser_protocol import (
     build_renderer_config_command,
     build_renderer_state_command,
     map_event_to_trigger_command,
+    map_event_to_trigger_commands,
     normalize_browser_state_override,
 )
 from ui.face import FacePresentationState
@@ -114,7 +115,7 @@ def test_renderer_state_command_covers_core_robot_states() -> None:
         assert command.payload["previewText"] == expected["previewText"]
 
 
-def test_map_event_to_trigger_command_marks_wake_attention_and_speech_scoot() -> None:
+def test_map_event_to_trigger_command_marks_wake_attention_only_and_no_speech_clip() -> None:
     wake_event = Event(
         name=EventName.LISTENING,
         source=ComponentName.ORCHESTRATOR,
@@ -136,11 +137,30 @@ def test_map_event_to_trigger_command_marks_wake_attention_and_speech_scoot() ->
     audio_command = map_event_to_trigger_command(audio_event)
 
     assert wake_command is not None
-    assert wake_command.payload == {"name": "attention_mode", "reason": "wake_word"}
-    assert follow_up_command is not None
-    assert follow_up_command.payload == {"name": "quick_glance", "reason": "listening_started"}
-    assert audio_command is not None
-    assert audio_command.payload == {"name": "scoot", "reason": "speech_started"}
+    assert wake_command.payload == {
+        "name": "attention_mode",
+        "reason": "wake_word",
+        "label": "Attention mode",
+    }
+    assert follow_up_command is None
+    assert audio_command is None
+
+
+def test_map_event_to_trigger_commands_marks_barge_in_surprise_only() -> None:
+    event = Event(
+        name=EventName.LISTENING,
+        source=ComponentName.ORCHESTRATOR,
+        payload={"source": "playback_barge_in"},
+    )
+
+    commands = map_event_to_trigger_commands(event)
+
+    assert [command.command_type for command in commands] == ["transient_trigger"]
+    assert commands[0].payload == {
+        "name": "surprise",
+        "reason": "playback_barge_in",
+        "label": "Surprise",
+    }
 
 
 def test_build_overlay_update_command_supports_text_and_rich_content() -> None:

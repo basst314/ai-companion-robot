@@ -443,8 +443,6 @@ class FaceController:
             return "speaking"
         if self.state.lifecycle == "listening":
             return "listening"
-        if self.state.emotion == "happy":
-            return "playful"
         if self.state.emotion in {"curious", "thinking"}:
             return "curious"
         if self._idle_variant_name is not None and now < self._idle_variant_until:

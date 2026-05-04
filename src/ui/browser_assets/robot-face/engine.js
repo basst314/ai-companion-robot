@@ -90,12 +90,11 @@ export class RobotFaceEngine {
       secondaryMicroMotion: this.baseState.timing.secondaryMicroMotion,
       allowedBehaviors: [
         "blink",
-        "look_side",
         "quick_glance",
         "bored",
-        "curious",
+        "cute",
+        "thinking",
         "scoot",
-        "boundary_press",
       ],
     };
     this.runtime = {
@@ -105,7 +104,9 @@ export class RobotFaceEngine {
       lastTime: 0,
       nextIdleAt: 0,
       recentInteractionAt: 0,
+      recentExternalInteractionAt: 0,
       suppressMicroUntil: 0,
+      expressionOverride: null,
       renderPose: null,
       activeClips: [],
       micro: {
@@ -136,6 +137,8 @@ export class RobotFaceEngine {
         currentLevel: 0,
         lastLevelAt: 0,
       },
+      sleepSparkles: [],
+      nextSleepSparkleAt: 0,
       composedState: null,
       composedStateKey: "",
       geometry: {
@@ -151,6 +154,7 @@ export class RobotFaceEngine {
     const now = performance.now() / 1000;
     this.runtime.lastTime = now;
     this.runtime.recentInteractionAt = now;
+    this.runtime.recentExternalInteractionAt = now;
     this.runtime.nextIdleAt = now + 2.0;
     this.runtime.micro.nextTargetAt = now + 1.2;
   }
@@ -233,7 +237,7 @@ export class RobotFaceEngine {
       },
     };
     this.invalidateComposedState();
-    this.markInteraction();
+    this.markInteraction({ external: false });
   }
 
   setExternalState(next = {}) {
@@ -286,10 +290,26 @@ export class RobotFaceEngine {
     this.markInteraction();
   }
 
+  getActiveBehaviorLabel() {
+    const override = this.getActiveExpressionOverride();
+    if (override) {
+      return override.label || override.name || "";
+    }
+    const now = performance.now() / 1000;
+    const active = this.runtime.activeClips
+      .filter((clip) => now >= clip.startAt && now <= clip.startAt + clip.duration)
+      .map((clip) => clip.name)
+      .filter(Boolean);
+    if (!active.length) {
+      return "";
+    }
+    return active[active.length - 1];
+  }
+
   triggerNamedBehavior(name, payload = {}) {
     switch (String(name || "").toLowerCase()) {
       case "blink":
-        this.triggerBlink(0, payload.depth ?? 1, "Blink");
+        this.triggerBlink(0, payload.depth ?? 1, payload.label || "Blink");
         return;
       case "double_blink":
         this.triggerDoubleBlink();
@@ -336,6 +356,7 @@ export class RobotFaceEngine {
         this.triggerDeadpanStare();
         return;
       case "sleep":
+      case "sleeping":
       case "sleepy_close":
         this.triggerSleepyClose();
         return;
@@ -350,10 +371,70 @@ export class RobotFaceEngine {
     }
   }
 
-  markInteraction() {
+  markInteraction({ external = true } = {}) {
     const now = performance.now() / 1000;
     this.runtime.recentInteractionAt = now;
+    if (external) {
+      this.runtime.recentExternalInteractionAt = now;
+    }
     this.runtime.nextIdleAt = now + 1.8 + (this.random() * 0.9);
+  }
+
+  getActiveExpressionOverride(now = performance.now() / 1000) {
+    const override = this.runtime.expressionOverride;
+    if (!override) {
+      return null;
+    }
+    if (override.until != null && now >= override.until) {
+      this.runtime.expressionOverride = null;
+      this.invalidateComposedState();
+      return null;
+    }
+    return override;
+  }
+
+  setExpressionOverride(payload = {}) {
+    const rawName = String(payload.name || payload.animation || "").toLowerCase();
+    const now = performance.now() / 1000;
+    if (!rawName || rawName === "speaking" || rawName === "reset" || rawName === "normal") {
+      this.runtime.expressionOverride = null;
+      this.invalidateComposedState();
+      this.markInteraction();
+      return;
+    }
+    const known = new Set(["curious", "cute", "thinking", "deadpan", "sleeping"]);
+    if (!known.has(rawName)) {
+      return;
+    }
+    const duration = Number(payload.durationSeconds);
+    const safeDuration = Number.isFinite(duration) ? clamp(duration, 0.5, 10) : 4;
+    this.runtime.expressionOverride = {
+      name: rawName,
+      label: payload.label || this.labelForExpressionOverride(rawName),
+      until: now + safeDuration,
+      reason: payload.reason || "expression_override",
+      direction: this.random() > 0.5 ? 1 : -1,
+    };
+    this.runtime.activeClips = [];
+    this.invalidateComposedState();
+    this.markInteraction();
+  }
+
+  labelForExpressionOverride(name) {
+    switch (name) {
+      case "curious":
+        return "Curious";
+      case "cute":
+        return "Cute";
+      case "thinking":
+        return "Thinking";
+      case "deadpan":
+        return "Deadpan";
+      case "sleeping":
+        return "Sleeping";
+      default:
+        return "";
+    }
   }
 
   resolveBurstTiming(state, extraHold = 0, holdScale = 1) {
@@ -429,9 +510,9 @@ export class RobotFaceEngine {
     }
   }
 
-  triggerBlink(delay = 0, depth = 1, label = "Blink") {
+  triggerBlink(delay = 0, depth = 1, label = "Blink", options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const speed = clamp(state.timing.masterSpeed, 0.2, 3);
     const closeTime = clamp(state.timing.blinkSpeed / speed, 0.03, 0.22);
     const hold = clamp(state.timing.blinkHoldDuration / speed, 0, 0.24);
@@ -460,17 +541,17 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerDoubleBlink() {
+  triggerDoubleBlink(options = {}) {
     const state = this._composedState();
     const speed = clamp(state.timing.masterSpeed, 0.2, 3);
     const gap = 0.26 / speed;
-    this.triggerBlink(0, 1, "Double blink");
-    this.triggerBlink(gap, 0.94, "Double blink");
+    this.triggerBlink(0, 1, "Double blink", options);
+    this.triggerBlink(gap, 0.94, "Double blink", options);
   }
 
   triggerLook(dx, dy, label, options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const randomness = state.timing.randomnessAmount;
     const driftX = dx + ((this.random() - 0.5) * 0.18 * randomness);
     const driftY = dy + ((this.random() - 0.5) * 0.14 * randomness);
@@ -501,9 +582,9 @@ export class RobotFaceEngine {
     }
   }
 
-  triggerQuickGlance() {
+  triggerQuickGlance(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const first = this.random() > 0.5 ? 1 : -1;
     const now = performance.now() / 1000;
     const timing = this.resolveBurstTiming(state, 0.04, 1);
@@ -562,10 +643,13 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerBoredHalfLid() {
+  triggerBoredHalfLid(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
-    const timing = this.resolveBurstTiming(state, 0.26, 1.2);
+    this.markInteraction({ external: !options.idle });
+    const holdSeconds = Number(options.holdSeconds);
+    const timing = Number.isFinite(holdSeconds)
+      ? this.resolveBurstTiming(state, Math.max(0.2, holdSeconds), 0)
+      : this.resolveBurstTiming(state, 0.26, 1.2);
     this.queueClip({
       name: "Bored half-lid",
       duration: timing.total + 0.12,
@@ -590,9 +674,9 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerCuriousLook() {
+  triggerCuriousLook(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const first = this.random() > 0.5 ? 1 : -1;
     const timing = this.resolveBurstTiming(state, 0.10, 1.05);
     const sideIn = Math.max(0.06, timing.attack * 0.72);
@@ -645,10 +729,13 @@ export class RobotFaceEngine {
     this.pushTowardBoundary(first * 0.16, -0.10, 0.72, { duration: total + 0.3, forward: 0.015 });
   }
 
-  triggerCuteMode() {
+  triggerCuteMode(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
-    const timing = this.resolveBurstTiming(state, 0.20, 1.12);
+    this.markInteraction({ external: !options.idle });
+    const holdSeconds = Number(options.holdSeconds);
+    const timing = Number.isFinite(holdSeconds)
+      ? this.resolveBurstTiming(state, Math.max(0.2, holdSeconds), 0)
+      : this.resolveBurstTiming(state, 0.20, 1.12);
     const direction = this.random() > 0.5 ? 1 : -1;
     this.queueClip({
       name: "Cute mode",
@@ -666,22 +753,25 @@ export class RobotFaceEngine {
           tearfulIntensity: amount * 0.12,
           leftSizeBias: amount * 0.08,
           rightSizeBias: amount * 0.08,
-          mouthSmile: amount * 0.26,
+          mouthSmile: amount * 0.34,
           mouthOpen: amount * 0.10,
         };
       },
     });
   }
 
-  triggerThinking() {
+  triggerThinking(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const first = this.random() > 0.5 ? 1 : -1;
     const timing = this.resolveBurstTiming(state, 0.12, 1.05);
     const sideIn = Math.max(0.06, timing.attack * 0.72);
-    const sideHold = timing.hold * 0.9;
+    const configuredSideHold = Number(options.sideHoldSeconds);
+    const sideHold = Number.isFinite(configuredSideHold)
+      ? clamp(configuredSideHold, 0.25, 6)
+      : timing.hold * 0.9;
     const crossTime = Math.max(0.10, timing.move * 0.75);
-    const otherHold = timing.hold * 0.9;
+    const otherHold = sideHold;
     const returnTime = Math.max(0.08, timing.release * 0.8);
     const total = sideIn + sideHold + crossTime + otherHold + returnTime;
     this.queueClip({
@@ -733,9 +823,9 @@ export class RobotFaceEngine {
     this.pushTowardBoundary(first * 0.12, -0.16, 0.72, { duration: total + 0.3, forward: 0.01 });
   }
 
-  triggerAttentionMode() {
+  triggerAttentionMode(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const timing = this.resolveBurstTiming(state, 0.55, 1.2);
     this.queueClip({
       name: "Attention mode",
@@ -760,9 +850,9 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerSurprise() {
+  triggerSurprise(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const timing = this.resolveBurstTiming(state, 0.08, 0.55);
     this.queueClip({
       name: "Surprise",
@@ -783,9 +873,9 @@ export class RobotFaceEngine {
     this.pushTowardBoundary(0, -0.12, 0.45, { duration: timing.total + 0.2, forward: 0.065 });
   }
 
-  triggerDeadpanStare() {
+  triggerDeadpanStare(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const timing = this.resolveBurstTiming(state, 0.30, 1.5);
     this.queueClip({
       name: "Deadpan stare",
@@ -814,10 +904,13 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerScoot() {
+  triggerScoot(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
-    const timing = this.resolveBurstTiming(state, 0.04, 0.28);
+    this.markInteraction({ external: !options.idle });
+    const holdSeconds = Number(options.holdSeconds);
+    const timing = Number.isFinite(holdSeconds)
+      ? this.resolveBurstTiming(state, Math.max(0.2, holdSeconds), 0)
+      : this.resolveBurstTiming(state, 0.04, 0.28);
     const randomness = state.timing.randomnessAmount;
     const direction = this.random() > 0.5 ? 1 : -1;
     const vertical = (this.random() - 0.5) * lerp(0.16, 0.35, randomness);
@@ -839,9 +932,9 @@ export class RobotFaceEngine {
     this.pushTowardBoundary(direction, vertical, 0.86, { duration: timing.total + 0.28, forward: 0.008 });
   }
 
-  triggerSleepyClose() {
+  triggerSleepyClose(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const timing = this.resolveBurstTiming(state, 0.85, 1.6);
     this.queueClip({
       name: "Sleep / closed eyes",
@@ -862,9 +955,9 @@ export class RobotFaceEngine {
     });
   }
 
-  triggerBoundaryPress() {
+  triggerBoundaryPress(options = {}) {
     const state = this._composedState();
-    this.markInteraction();
+    this.markInteraction({ external: !options.idle });
     const edges = [
       { dx: -1, dy: 0, squishX: 0.22, squishY: -0.12 },
       { dx: 1, dy: 0, squishX: 0.22, squishY: -0.12 },
@@ -893,14 +986,23 @@ export class RobotFaceEngine {
   }
 
   _composePresetPatch() {
+    const override = this.getActiveExpressionOverride();
+    if (override) {
+      switch (override.name) {
+        case "curious":
+          return PRESETS["Curious"];
+        case "thinking":
+          return PRESETS["Thinking"];
+        case "deadpan":
+          return PRESETS["Deadpan"];
+        case "sleeping":
+          return PRESETS["Sleepy"];
+        default:
+          break;
+      }
+    }
     if (this.externalState.scene === "sleep") {
       return PRESETS["Sleepy"];
-    }
-    if (this.externalState.lifecycle === "listening") {
-      return PRESETS["Alert"];
-    }
-    if (this.externalState.lifecycle === "processing") {
-      return PRESETS["Thinking"];
     }
     if (this.externalState.emotion === "thinking") {
       return PRESETS["Thinking"];
@@ -908,17 +1010,16 @@ export class RobotFaceEngine {
     if (this.externalState.emotion === "curious") {
       return PRESETS["Curious"];
     }
-    if (this.externalState.emotion === "happy") {
-      return PRESETS["Mischievous"];
-    }
     return null;
   }
 
   _composedState() {
+    const override = this.getActiveExpressionOverride();
     const key = [
       this.externalState.scene,
       this.externalState.lifecycle,
       this.externalState.emotion,
+      override ? override.name : "override-none",
       this.idlePolicy.enabled ? "idle-on" : "idle-off",
       this.idlePolicy.frequency,
       this.idlePolicy.intensity,
@@ -943,6 +1044,9 @@ export class RobotFaceEngine {
     if (!this.idlePolicy.enabled || !state.motionModifiers.idleEnabled) {
       return;
     }
+    if (this.getActiveExpressionOverride(now)) {
+      return;
+    }
     if (this.externalState.scene !== "face" || this.externalState.lifecycle !== "idle" || this.externalState.lifecycle === "speaking") {
       return;
     }
@@ -958,66 +1062,22 @@ export class RobotFaceEngine {
     const choices = [];
     const allow = new Set(this.idlePolicy.allowedBehaviors || []);
     if (allow.has("blink")) {
-      choices.push({ weight: 0.28, run: () => this.triggerBlink(0, 1, "Idle blink") });
-    }
-    if (allow.has("double_blink")) {
-      choices.push({ weight: 0.08, run: () => this.triggerDoubleBlink() });
-    }
-    if (allow.has("look_side")) {
-      choices.push({
-        weight: 0.24,
-        run: () => this.triggerLook((this.random() > 0.5 ? 1 : -1) * 0.85, -0.08, "Idle side stare", {
-          strength: 0.9,
-          hold: 0.18,
-          holdScale: 1.25,
-          wallHit: true,
-        }),
-      });
-    }
-    if (allow.has("look_left")) {
-      choices.push({ weight: 0.08, run: () => this.triggerLook(-0.92, 0, "Idle look left", { hold: 0.14, wallHit: true }) });
-    }
-    if (allow.has("look_right")) {
-      choices.push({ weight: 0.08, run: () => this.triggerLook(0.92, 0, "Idle look right", { hold: 0.14, wallHit: true }) });
-    }
-    if (allow.has("look_up")) {
-      choices.push({ weight: 0.05, run: () => this.triggerLook(0, -0.92, "Idle look up", { hold: 0.10 }) });
-    }
-    if (allow.has("look_down")) {
-      choices.push({ weight: 0.04, run: () => this.triggerLook(0, 0.92, "Idle look down", { hold: 0.08 }) });
+      choices.push({ weight: 0.30, run: () => this.triggerBlink(0, 1, "Idle blink", { idle: true }) });
     }
     if (allow.has("quick_glance")) {
-      choices.push({ weight: 0.14, run: () => this.triggerQuickGlance() });
+      choices.push({ weight: 0.05, run: () => this.triggerQuickGlance({ idle: true }) });
     }
-    if (allow.has("bored")) {
-      choices.push({ weight: 0.12, run: () => this.triggerBoredHalfLid() });
-    }
-    if (allow.has("curious")) {
-      choices.push({ weight: 0.10, run: () => this.triggerCuriousLook() });
+    if (allow.has("bored") && now - this.runtime.recentExternalInteractionAt > 20) {
+      choices.push({ weight: 0.12, run: () => this.triggerBoredHalfLid({ idle: true, holdSeconds: 5 + (this.random() * 3) }) });
     }
     if (allow.has("cute")) {
-      choices.push({ weight: 0.07, run: () => this.triggerCuteMode() });
+      choices.push({ weight: 0.08, run: () => this.triggerCuteMode({ idle: true, holdSeconds: 5 + (this.random() * 3) }) });
     }
     if (allow.has("thinking")) {
-      choices.push({ weight: 0.07, run: () => this.triggerThinking() });
-    }
-    if (allow.has("attention_mode")) {
-      choices.push({ weight: 0.04, run: () => this.triggerAttentionMode() });
-    }
-    if (allow.has("surprise")) {
-      choices.push({ weight: 0.03, run: () => this.triggerSurprise() });
-    }
-    if (allow.has("deadpan_stare")) {
-      choices.push({ weight: 0.05, run: () => this.triggerDeadpanStare() });
-    }
-    if (allow.has("sleep")) {
-      choices.push({ weight: 0.02, run: () => this.triggerSleepyClose() });
+      choices.push({ weight: 0.08, run: () => this.triggerThinking({ idle: true, sideHoldSeconds: 2 + (this.random() * 2) }) });
     }
     if (allow.has("scoot")) {
-      choices.push({ weight: 0.06, run: () => this.triggerScoot() });
-    }
-    if (allow.has("boundary_press")) {
-      choices.push({ weight: 0.06, run: () => this.triggerBoundaryPress() });
+      choices.push({ weight: 0.05, run: () => this.triggerScoot({ idle: true, holdSeconds: 1.4 + (this.random() * 1.0) }) });
     }
     if (!choices.length) {
       return;
@@ -1051,10 +1111,10 @@ export class RobotFaceEngine {
     if (now >= this.runtime.micro.nextTargetAt) {
       const intensity = state.motionModifiers.idleEnabled ? state.timing.idleIntensity : 0.18;
       const randomness = lerp(0.35, 1, state.timing.randomnessAmount);
-      this.runtime.micro.targetX = (this.random() - 0.5) * 0.010 * intensity * randomness;
-      this.runtime.micro.targetY = (this.random() - 0.5) * 0.008 * intensity * randomness;
-      this.runtime.micro.targetLookX = (this.random() - 0.5) * 0.045 * intensity * randomness;
-      this.runtime.micro.targetLookY = (this.random() - 0.5) * 0.040 * intensity * randomness;
+      this.runtime.micro.targetX = (this.random() - 0.5) * 0.015 * intensity * randomness;
+      this.runtime.micro.targetY = (this.random() - 0.5) * 0.012 * intensity * randomness;
+      this.runtime.micro.targetLookX = (this.random() - 0.5) * 0.064 * intensity * randomness;
+      this.runtime.micro.targetLookY = (this.random() - 0.5) * 0.056 * intensity * randomness;
       this.runtime.micro.nextTargetAt = now + lerp(2.2, 0.9, state.timing.idleFrequency) + (this.random() * 0.6);
     }
     const chase = 1 - Math.exp(-dt * 3.4);
@@ -1177,7 +1237,23 @@ export class RobotFaceEngine {
       }
       return true;
     });
-    if (this.externalState.scene === "sleep") {
+    const override = this.getActiveExpressionOverride(now);
+    if (override?.name === "cute") {
+      const direction = override.direction || 1;
+      overlay.cuteMode += 0.86;
+      overlay.eyeOpenBoost += 0.44;
+      overlay.lookX += direction * 0.18;
+      overlay.lookY += -0.12;
+      overlay.lidAngleLeft += 0.34;
+      overlay.lidAngleRight += -0.34;
+      overlay.stretchAmount += 0.10;
+      overlay.tearfulIntensity += 0.12;
+      overlay.leftSizeBias += 0.08;
+      overlay.rightSizeBias += 0.08;
+      overlay.mouthSmile += 0.34;
+      overlay.mouthOpen += 0.10;
+    }
+    if (this.externalState.scene === "sleep" || override?.name === "sleeping") {
       overlay.sleepLine = Math.max(overlay.sleepLine, 1);
       overlay.lidOverride = Math.max(overlay.lidOverride || 0, 1.08);
       overlay.boredIntensity += 0.35;
@@ -1188,25 +1264,33 @@ export class RobotFaceEngine {
 
   buildTargetPose(now, state) {
     const behavior = this.collectBehaviorOverlay(now);
+    const activeOverride = this.getActiveExpressionOverride(now);
+    const forceSpeakingFocus = this.externalState.lifecycle === "speaking" && !activeOverride;
     const cute = clamp(state.expressionModifiers.cuteMode + behavior.cuteMode, 0, 1);
-    const bored = clamp(state.expressionModifiers.boredIntensity + behavior.boredIntensity, 0, 1);
+    const bored = forceSpeakingFocus
+      ? 0
+      : clamp(state.expressionModifiers.boredIntensity + behavior.boredIntensity, 0, 1);
     const curious = clamp(state.expressionModifiers.curiousIntensity + behavior.curiousIntensity, 0, 1);
     const tearful = clamp(state.expressionModifiers.tearfulIntensity + behavior.tearfulIntensity, 0, 1);
     const squish = clamp(state.expressionModifiers.squishAmount + behavior.squishAmount, 0, 1);
     const stretch = clamp(state.expressionModifiers.stretchAmount + behavior.stretchAmount, 0, 1);
-    const lookX = clamp(
+    const resolvedLookX = clamp(
       state.expressionModifiers.lookX + behavior.lookX + this.runtime.micro.lookX + (this.runtime.trap.vx * 0.12),
       -1,
       1,
     );
-    const lookY = clamp(
+    const resolvedLookY = clamp(
       state.expressionModifiers.lookY + behavior.lookY + this.runtime.micro.lookY + (this.runtime.trap.vy * 0.12),
       -1,
       1,
     );
+    const lookX = forceSpeakingFocus ? 0 : resolvedLookX;
+    const lookY = forceSpeakingFocus ? 0 : resolvedLookY;
     const hasActiveClip = this.runtime.activeClips.length > 0;
     const idleLidsHidden = !hasActiveClip && this.externalState.lifecycle !== "speaking";
-    const lidBase = idleLidsHidden
+    const lidBase = forceSpeakingFocus
+      ? 0
+      : idleLidsHidden
       ? 0
       : clamp(state.expressionModifiers.lidAmount + (bored * 0.40) - (behavior.eyeOpenBoost * 0.52), 0, 1);
     const blink = clamp(behavior.blinkClosedness, 0, 1);
@@ -1247,6 +1331,10 @@ export class RobotFaceEngine {
       impactSquashX = -impact * 0.14;
       impactSquashY = impact * 0.18;
     }
+    const sleepingOverride = this.getActiveExpressionOverride(now)?.name === "sleeping";
+    const sleepBreath = (this.externalState.scene === "sleep" || sleepingOverride)
+      ? Math.sin(now * Math.PI * 2 * 0.22) * 0.030
+      : 0;
     return {
       faceScale,
       spacing,
@@ -1263,7 +1351,8 @@ export class RobotFaceEngine {
         behavior.motionY +
         this.runtime.micro.y +
         trapTravelY +
-        (lookY * state.timing.lookTravelAmount * 0.18)
+        (lookY * state.timing.lookTravelAmount * 0.18) +
+        sleepBreath
       ) * movementScale,
       lookX,
       lookY,
@@ -1653,8 +1742,63 @@ export class RobotFaceEngine {
     }
   }
 
+  drawSleepingMouth(centerX, eyeCenterY, mood, now, state) {
+    const ctx = this.ctx;
+    const color = state.baseVisual.eyeColor;
+    const faceScale = mood.faceScale;
+    const width = this.runtime.width * state.baseVisual.mouthWidth * 0.58 * faceScale;
+    const y = eyeCenterY + (this.runtime.height * state.baseVisual.mouthY * (0.8 + (faceScale * 0.2)));
+    const thickness = Math.max(3, state.baseVisual.mouthThickness * 0.72 * faceScale);
+    const breathPeriod = 7.5;
+    const phase = (now % breathPeriod) / breathPeriod;
+    const ease = easeInOutCubic(phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+    const wavePhase = now * 0.72;
+    const amplitude = (2.6 + (ease * 0.9)) * faceScale;
+    const waveWidth = width * 1.52;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = thickness;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (state.baseVisual.glowEnabled) {
+      ctx.strokeStyle = rgba(color, state.baseVisual.glowIntensity * 0.18);
+      ctx.lineWidth = thickness + 10;
+      ctx.beginPath();
+      for (let step = 0; step <= 28; step += 1) {
+        const t = step / 28;
+        const x = centerX - (waveWidth / 2) + (t * waveWidth);
+        const yOffset = Math.sin((t * Math.PI * 2) + wavePhase) * amplitude * (0.36 + (ease * 0.10));
+        if (step === 0) {
+          ctx.moveTo(x, y + yOffset);
+        } else {
+          ctx.lineTo(x, y + yOffset);
+        }
+      }
+      ctx.stroke();
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = thickness;
+    ctx.beginPath();
+    for (let step = 0; step <= 28; step += 1) {
+      const t = step / 28;
+      const x = centerX - (waveWidth / 2) + (t * waveWidth);
+      const yOffset = Math.sin((t * Math.PI * 2) + wavePhase) * amplitude * (0.36 + (ease * 0.10));
+      if (step === 0) {
+        ctx.moveTo(x, y + yOffset);
+      } else {
+        ctx.lineTo(x, y + yOffset);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   drawMouth(centerX, eyeCenterY, mood, now, state) {
     if (!state.baseVisual.mouthEnabled || state.baseVisual.mouthStyle === "none") {
+      return;
+    }
+    if (this.externalState.scene === "sleep" || mood.sleepLine > 0.72) {
+      this.drawSleepingMouth(centerX, eyeCenterY, mood, now, state);
       return;
     }
     const ctx = this.ctx;
@@ -1679,7 +1823,8 @@ export class RobotFaceEngine {
     );
     const talkingEnergy = clamp(state.timing.mouthAnimationAmount * expressiveEnergy, 0, 1);
     const slowPhase = now * lerp(1.3, 2.4, state.timing.idleIntensity);
-    const fastPhase = now * lerp(4.2, 7.5, talkingEnergy);
+    const speakingSpeed = this.externalState.lifecycle === "speaking" ? 2.5 : 1;
+    const fastPhase = now * lerp(4.2, 7.5, talkingEnergy) * speakingSpeed;
     const slowWave = (Math.sin(slowPhase) * 0.5) + 0.5;
     const fastWave = (Math.sin(fastPhase) * 0.5) + 0.5;
     const waveMix = Math.max(slowWave * 0.18, fastWave * talkingEnergy * 0.62);
@@ -1710,7 +1855,10 @@ export class RobotFaceEngine {
         const t = step / 24;
         const x = centerX - (waveWidth / 2) + (t * waveWidth);
         const activePhase = talkingEnergy > 0.14 ? fastPhase : slowPhase;
-        const yOffset = Math.sin((t * Math.PI * 2) + activePhase) * amplitude * 0.42;
+        const smileArc = smileBias > 0
+          ? (1 - Math.pow((t * 2) - 1, 2)) * smileBias * 5.0 * faceScale
+          : 0;
+        const yOffset = (Math.sin((t * Math.PI * 2) + activePhase) * amplitude * 0.42) - smileArc;
         if (step === 0) {
           ctx.moveTo(x, y + yOffset);
         } else {
@@ -1799,6 +1947,64 @@ export class RobotFaceEngine {
     ctx.restore();
   }
 
+  drawSleepBackgroundSparkles(now, state) {
+    const sleepActive = this.externalState.scene === "sleep" || this.getActiveExpressionOverride(now)?.name === "sleeping";
+    if (!sleepActive) {
+      this.runtime.sleepSparkles = [];
+      this.runtime.nextSleepSparkleAt = now + 1.0;
+      return;
+    }
+    if (now >= this.runtime.nextSleepSparkleAt && this.runtime.sleepSparkles.length < 3) {
+      const marginX = this.runtime.width * 0.14;
+      const marginY = this.runtime.height * 0.14;
+      const burstCount = this.random() > 0.70 ? 2 : 1;
+      for (let index = 0; index < burstCount && this.runtime.sleepSparkles.length < 3; index += 1) {
+        this.runtime.sleepSparkles.push({
+          x: marginX + (this.random() * Math.max(1, this.runtime.width - (marginX * 2))),
+          y: marginY + (this.random() * Math.max(1, this.runtime.height - (marginY * 2))),
+          startAt: now + (index * 0.12),
+          duration: 1.05 + (this.random() * 0.60),
+          size: this.runtime.width * (0.011 + (this.random() * 0.012)),
+          spin: (this.random() > 0.5 ? 1 : -1) * (0.9 + (this.random() * 0.8)),
+        });
+      }
+      this.runtime.nextSleepSparkleAt = now + 1.4 + (this.random() * 2.4);
+    }
+    const ctx = this.ctx;
+    const color = state.baseVisual.eyeColor;
+    this.runtime.sleepSparkles = this.runtime.sleepSparkles.filter((sparkle) => {
+      const age = now - sparkle.startAt;
+      if (age < 0 || age > sparkle.duration) {
+        return false;
+      }
+      const t = clamp(age / sparkle.duration, 0, 1);
+      const alpha = Math.sin(t * Math.PI);
+      const size = sparkle.size * (0.55 + (easeOutCubic(t) * 0.72));
+      ctx.save();
+      ctx.translate(sparkle.x, sparkle.y);
+      ctx.rotate((now - sparkle.startAt) * sparkle.spin * Math.PI);
+      ctx.globalCompositeOperation = "screen";
+      ctx.strokeStyle = rgba(color, 0.16 * alpha);
+      ctx.lineWidth = Math.max(4, size * 0.42);
+      ctx.beginPath();
+      ctx.moveTo(-size * 1.5, 0);
+      ctx.lineTo(size * 1.5, 0);
+      ctx.moveTo(0, -size * 1.5);
+      ctx.lineTo(0, size * 1.5);
+      ctx.stroke();
+      ctx.strokeStyle = rgba(color, 0.56 * alpha);
+      ctx.lineWidth = Math.max(2, size * 0.16);
+      ctx.beginPath();
+      ctx.moveTo(-size, 0);
+      ctx.lineTo(size, 0);
+      ctx.moveTo(0, -size);
+      ctx.lineTo(0, size);
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    });
+  }
+
   drawSleepAccents(centerX, centerY, pose, now, state) {
     if (pose.sleepLine < 0.72) {
       return;
@@ -1806,19 +2012,24 @@ export class RobotFaceEngine {
     const ctx = this.ctx;
     const color = state.baseVisual.eyeColor;
     const sleepAlpha = clamp((pose.sleepLine - 0.72) / 0.28, 0, 1);
-    const drift = (now * 18) % 22;
     const zBaseX = centerX + (this.runtime.width * 0.10);
     const zBaseY = centerY - (this.runtime.height * 0.06);
     ctx.save();
-    ctx.fillStyle = rgba(color, 0.42 * sleepAlpha);
-    ctx.font = `${Math.round(this.runtime.width * 0.026)}px ui-rounded, "Trebuchet MS", sans-serif`;
-    ctx.fillText("z", zBaseX, zBaseY - drift);
-    ctx.globalAlpha = 0.82;
-    ctx.font = `${Math.round(this.runtime.width * 0.034)}px ui-rounded, "Trebuchet MS", sans-serif`;
-    ctx.fillText("z", zBaseX + 16, zBaseY - 20 - (drift * 0.78));
+    const specs = [
+      { glyph: "z", size: 0.030, x: 0, offset: 0.00 },
+      { glyph: "z", size: 0.038, x: 18, offset: 0.34 },
+      { glyph: "Z", size: 0.050, x: 40, offset: 0.68 },
+    ];
+    for (const spec of specs) {
+      const phase = (now * 0.18 + spec.offset) % 1;
+      const alpha = Math.sin(phase * Math.PI) * sleepAlpha;
+      const y = zBaseY - (phase * this.runtime.height * 0.19);
+      ctx.globalAlpha = clamp(alpha * 0.92, 0, 0.92);
+      ctx.fillStyle = rgba(color, 0.78);
+      ctx.font = `${Math.round(this.runtime.width * spec.size)}px ui-rounded, "Trebuchet MS", sans-serif`;
+      ctx.fillText(spec.glyph, zBaseX + spec.x, y);
+    }
     ctx.globalAlpha = 1;
-    ctx.font = `${Math.round(this.runtime.width * 0.044)}px ui-rounded, "Trebuchet MS", sans-serif`;
-    ctx.fillText("Z", zBaseX + 34, zBaseY - 44 - (drift * 0.54));
     ctx.restore();
   }
 
@@ -1827,6 +2038,7 @@ export class RobotFaceEngine {
     ctx.clearRect(0, 0, this.runtime.width, this.runtime.height);
     ctx.fillStyle = state.baseVisual.backgroundColor;
     ctx.fillRect(0, 0, this.runtime.width, this.runtime.height);
+    this.drawSleepBackgroundSparkles(now, state);
     const box = this.getBoxRect(state);
     this.drawOuterBox(box, state, now);
     const minDim = Math.min(this.runtime.width, this.runtime.height);

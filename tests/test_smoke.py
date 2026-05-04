@@ -129,6 +129,21 @@ def test_interactive_console_handles_eof_cleanly(monkeypatch) -> None:
     assert service.state.last_error is None
 
 
+def test_interactive_console_numeric_input_triggers_face_shortcut(monkeypatch) -> None:
+    config = AppConfig()
+    config.runtime.interactive_console = True
+    service = build_application(config)
+    inputs = iter(("i", "1", "exit"))
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+
+    asyncio.run(service.run())
+
+    assert service.ui.triggered_face_behaviors == [("blink", "Blink", "interactive_console")]
+    assert service.ui.face_idle_enabled is False
+    assert service.state.interaction_id == 0
+
+
 def test_orchestrator_manual_turn_completes_and_returns_to_idle() -> None:
     config = AppConfig()
     config.runtime.manual_inputs = ("look at me",)

@@ -78,20 +78,31 @@
       gap: 16px;
     }
 
+    .status-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
     .status-pill {
       display: inline-flex;
       align-items: center;
       min-height: 32px;
       padding: 7px 12px;
       border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel);
+      border: 1px solid rgba(155, 109, 255, 0.36);
+      background: rgba(28, 16, 55, 0.76);
       box-shadow: var(--shadow);
-      color: var(--muted);
+      color: var(--ink);
       font-size: 0.82rem;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       backdrop-filter: blur(14px);
+    }
+
+    .animation-pill {
+      color: var(--ink);
     }
 
     .text-overlay {
@@ -188,6 +199,10 @@
         font-size: 0.72rem;
       }
 
+      .status-group {
+        gap: 7px;
+      }
+
       .text-overlay {
         bottom: 14px;
         width: min(92vw, 92vw);
@@ -214,7 +229,10 @@
   </div>
   <div class="overlay-stage">
     <div class="top-bar">
-      <div class="status-pill" id="bridgeStatus">Connecting</div>
+      <div class="status-group">
+        <div class="status-pill" id="bridgeStatus">Connecting</div>
+        <div class="status-pill animation-pill" id="animationStatus" hidden>Animation</div>
+      </div>
     </div>
     <div class="content-overlay" id="contentOverlay" hidden>
       <section class="content-card" aria-live="polite">

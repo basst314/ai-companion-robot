@@ -98,52 +98,41 @@ def build_default_capability_registry() -> CapabilityRegistry:
     """Return the default capability catalog exposed to the orchestrator."""
 
     definitions = {
-        "look_at_user": CapabilityDefinition(
-            capability_id="look_at_user",
-            description="Orient the robot head toward the active speaker or user.",
-            kind=CapabilityKind.ACTION,
-            target=ComponentName.HARDWARE,
-            phase=StepPhase.IMMEDIATE,
-            requires_components=(ComponentName.HARDWARE,),
-        ),
-        "turn_head": CapabilityDefinition(
-            capability_id="turn_head",
-            description="Turn the robot head in a requested direction.",
-            kind=CapabilityKind.ACTION,
-            target=ComponentName.HARDWARE,
-            phase=StepPhase.IMMEDIATE,
-            requires_components=(ComponentName.HARDWARE,),
-            argument_schema={
-                "direction": {
-                    "type": "string",
-                    "enum": ("left", "right", "center", "user"),
-                    "required": True,
-                }
-            },
-        ),
-        "set_emotion": CapabilityDefinition(
-            capability_id="set_emotion",
-            description="Update the robot's visible emotion or attention state.",
+        "set_face_animation": CapabilityDefinition(
+            capability_id="set_face_animation",
+            description=(
+                "Optionally set a brief robot face animation during responses. Use sparingly — only when it meaningfully enhances tone or clarity."
+                "Prefer no animation by default; add one only for clear emotional or communicative value."
+                "Good use cases: humor, sarcasm, gratitude, confusion, emphasis, or reacting to user emotion."
+                "Avoid for neutral, factual, or routine responses."
+                "Time the animation to fit naturally with the response (start/end aligned with tone). "
+
+                "'curious' (observing, neutral_questioning, processing new information), "
+                "'cute' (cute, thankful, puppy eyes), "
+                "'thinking' (tired, low energy, bored, unimpressed), "
+                "'deadpan' (deadpan stare, dry joke, obvious, flat, understated reaction), "
+                "'sleeping' (eyes closed, sleeping), "
+                "'speaking' (return to the normal speaking face)."
+            ),
             kind=CapabilityKind.ACTION,
             target=ComponentName.UI,
             phase=StepPhase.IMMEDIATE,
             requires_components=(ComponentName.UI,),
             allow_parallel=True,
             argument_schema={
-                "emotion": {
+                "animation": {
                     "type": "string",
-                    "enum": tuple(emotion.value for emotion in EmotionState),
+                    "enum": ("curious", "cute", "thinking", "deadpan", "sleeping", "speaking"),
+                    "description": "The timed expression to show, or speaking to clear the override.",
                     "required": True,
-                }
+                },
+                "duration_seconds": {
+                    "type": "number",
+                    "description": "Optional duration in seconds. Values are clamped from 0.5 to 10.",
+                    "minimum": 0.5,
+                    "maximum": 10,
+                },
             },
-        ),
-        "visible_people": CapabilityDefinition(
-            capability_id="visible_people",
-            description="Answer what people are currently visible to the robot.",
-            kind=CapabilityKind.QUERY,
-            target=ComponentName.VISION,
-            phase=StepPhase.QUERY,
-            requires_components=(ComponentName.VISION,),
         ),
         "camera_snapshot": CapabilityDefinition(
             capability_id="camera_snapshot",
@@ -152,30 +141,7 @@ def build_default_capability_registry() -> CapabilityRegistry:
             target=ComponentName.VISION,
             phase=StepPhase.QUERY,
             requires_components=(ComponentName.VISION,),
-        ),
-        "user_summary": CapabilityDefinition(
-            capability_id="user_summary",
-            description="Answer what the robot currently knows about the active user.",
-            kind=CapabilityKind.QUERY,
-            target=ComponentName.MEMORY,
-            phase=StepPhase.QUERY,
-            requires_components=(ComponentName.MEMORY,),
-        ),
-        "robot_status": CapabilityDefinition(
-            capability_id="robot_status",
-            description="Answer with the robot's current lifecycle and hardware state.",
-            kind=CapabilityKind.QUERY,
-            target=ComponentName.ORCHESTRATOR,
-            phase=StepPhase.QUERY,
-        ),
-        "cloud_reply": CapabilityDefinition(
-            capability_id="cloud_reply",
-            description="Generate a conversational reply from the cloud backend using transcript and prior observations.",
-            kind=CapabilityKind.RESPONSE,
-            target=ComponentName.CLOUD,
-            phase=StepPhase.REPLY,
-            requires_components=(ComponentName.CLOUD,),
-        ),
+        )
     }
 
     return CapabilityRegistry(definitions=definitions)
