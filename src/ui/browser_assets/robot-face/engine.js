@@ -103,6 +103,7 @@ export class RobotFaceEngine {
       dpr: 1,
       lastTime: 0,
       nextIdleAt: 0,
+      nextSpeakingBlinkAt: 0,
       recentInteractionAt: 0,
       recentExternalInteractionAt: 0,
       suppressMicroUntil: 0,
@@ -156,6 +157,7 @@ export class RobotFaceEngine {
     this.runtime.recentInteractionAt = now;
     this.runtime.recentExternalInteractionAt = now;
     this.runtime.nextIdleAt = now + 2.0;
+    this.runtime.nextSpeakingBlinkAt = now + 1.4;
     this.runtime.micro.nextTargetAt = now + 1.2;
   }
 
@@ -1088,6 +1090,21 @@ export class RobotFaceEngine {
     this.runtime.nextIdleAt = now + basePause + randomPause;
   }
 
+  updateSpeakingBlinkScheduler(now, state) {
+    if (this.externalState.scene !== "face" || this.externalState.lifecycle !== "speaking") {
+      this.runtime.nextSpeakingBlinkAt = now + 0.8 + (this.random() * 1.4);
+      return;
+    }
+    if (now < this.runtime.nextSpeakingBlinkAt) {
+      return;
+    }
+    const closeChance = 0.72 + (state.timing.idleIntensity * 0.18);
+    if (this.random() < closeChance) {
+      this.triggerBlink(0, 0.88, "Speaking blink", { idle: true });
+    }
+    this.runtime.nextSpeakingBlinkAt = now + 2.4 + (this.random() * 2.8);
+  }
+
   updateMicroMotion(now, dt, state) {
     if (!state.timing.secondaryMicroMotion) {
       this.runtime.micro.x *= 0.82;
@@ -1823,13 +1840,17 @@ export class RobotFaceEngine {
     );
     const talkingEnergy = clamp(state.timing.mouthAnimationAmount * expressiveEnergy, 0, 1);
     const slowPhase = now * lerp(1.3, 2.4, state.timing.idleIntensity);
-    const speakingSpeed = this.externalState.lifecycle === "speaking" ? 2.5 : 1;
+    const speakingSpeed = this.externalState.lifecycle === "speaking" ? 1.9 : 1;
     const fastPhase = now * lerp(4.2, 7.5, talkingEnergy) * speakingSpeed;
     const slowWave = (Math.sin(slowPhase) * 0.5) + 0.5;
     const fastWave = (Math.sin(fastPhase) * 0.5) + 0.5;
     const waveMix = Math.max(slowWave * 0.18, fastWave * talkingEnergy * 0.62);
-    const openAmount = clamp(state.baseVisual.mouthOpenBias + mood.mouthOpen + waveMix, 0, 1);
-    const widthScale = clamp(1 - (mood.bored * 0.22) + (mood.cute * 0.08) + (mood.curious * 0.06) + (openAmount * 0.18) + (mood.mouthWidthBias || 0), 0.55, 1.45);
+    const speakingWobble = this.externalState.lifecycle === "speaking"
+      ? Math.sin(now * 10.8) * 0.5
+      : 0;
+    const wobbleOpen = Math.abs(speakingWobble) * talkingEnergy * 0.08;
+    const openAmount = clamp(state.baseVisual.mouthOpenBias + mood.mouthOpen + waveMix + wobbleOpen, 0, 1);
+    const widthScale = clamp(1 - (mood.bored * 0.22) + (mood.cute * 0.08) + (mood.curious * 0.06) + (openAmount * 0.18) + (mood.mouthWidthBias || 0) + (speakingWobble * talkingEnergy * 0.09), 0.55, 1.45);
     const mouthWidth = width * widthScale;
     const animateMouth = (this.runtime.activeClips.length > 0 || this.externalState.lifecycle === "speaking") && !mood.mouthStill;
     ctx.strokeStyle = color;
@@ -1869,7 +1890,8 @@ export class RobotFaceEngine {
       return;
     }
     if (state.baseVisual.mouthStyle === "flat-line") {
-      if (openAmount > 0.12) {
+      const allowFlatOpenBox = this.externalState.lifecycle !== "speaking";
+      if (allowFlatOpenBox && openAmount > 0.12) {
         const height = Math.max(thickness * 0.9, 10 + (openAmount * 24 * faceScale));
         roundedRectPath(ctx, centerX - mouthWidth, y - (height / 2), mouthWidth * 2, height, height / 2);
         ctx.stroke();
@@ -2104,6 +2126,7 @@ export class RobotFaceEngine {
     this.runtime.lastTime = now;
     const state = this._composedState();
     this.updateIdleScheduler(now, state);
+    this.updateSpeakingBlinkScheduler(now, state);
     this.updateMicroMotion(now, dt, state);
     this.updateTrapMotion(now, dt, state);
     const targetPose = this.buildTargetPose(now, state);
